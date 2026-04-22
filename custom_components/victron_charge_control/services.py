@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
-from .const import ACTION_CHARGE, ACTION_DISCHARGE, ACTION_IDLE, DOMAIN
+from .const import ACTION_BLOCKED, ACTION_CHARGE, ACTION_DISCHARGE, ACTION_IDLE, DOMAIN
 from .coordinator import VictronChargeControlCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ SCHEMA_TOGGLE_HOUR = vol.Schema(
 SCHEMA_SET_HOUR_ACTION = vol.Schema(
     {
         vol.Required("hour"): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-        vol.Required("action"): vol.In([ACTION_IDLE, ACTION_CHARGE, ACTION_DISCHARGE]),
+        vol.Required("action"): vol.In([ACTION_IDLE, ACTION_CHARGE, ACTION_DISCHARGE, ACTION_BLOCKED]),
     }
 )
 

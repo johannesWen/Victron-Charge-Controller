@@ -31,6 +31,7 @@ async def async_setup_entry(
             TargetSetpointSensor(coordinator, entry),
             ScheduleSensor(coordinator, entry, "charge"),
             ScheduleSensor(coordinator, entry, "discharge"),
+            ScheduleSensor(coordinator, entry, "blocked"),
             ChargePlanSensor(coordinator, entry),
         ]
     )
@@ -84,6 +85,7 @@ class DesiredActionSensor(VictronCCBaseSensor):
             "mode": self.coordinator.control_mode,
             "charge_hours": self.coordinator.charge_hours,
             "discharge_hours": self.coordinator.discharge_hours,
+            "blocked_hours": self.coordinator.blocked_hours,
         }
         self.async_write_ha_state()
 
@@ -140,9 +142,11 @@ class ScheduleSensor(VictronCCBaseSensor):
         self._schedule_type = schedule_type
         self._attr_unique_id = f"{entry.entry_id}_{schedule_type}_hours"
         self._attr_translation_key = f"{schedule_type}_hours"
-        self._attr_icon = (
-            "mdi:battery-charging" if schedule_type == "charge" else "mdi:battery-arrow-down"
-        )
+        self._attr_icon = {
+            "charge": "mdi:battery-charging",
+            "discharge": "mdi:battery-arrow-down",
+            "blocked": "mdi:cancel",
+        }.get(schedule_type, "mdi:clock-outline")
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -150,11 +154,11 @@ class ScheduleSensor(VictronCCBaseSensor):
         if data is None:
             self._attr_native_value = ""
         else:
-            hours = (
-                data.charge_hours
-                if self._schedule_type == "charge"
-                else data.discharge_hours
-            )
+            hours = {
+                "charge": data.charge_hours,
+                "discharge": data.discharge_hours,
+                "blocked": data.blocked_hours,
+            }.get(self._schedule_type, [])
             self._attr_native_value = ",".join(str(h) for h in hours)
         self.async_write_ha_state()
 
@@ -163,11 +167,11 @@ class ScheduleSensor(VictronCCBaseSensor):
         data = self.coordinator.data
         if data is None:
             return ""
-        hours = (
-            data.charge_hours
-            if self._schedule_type == "charge"
-            else data.discharge_hours
-        )
+        hours = {
+            "charge": data.charge_hours,
+            "discharge": data.discharge_hours,
+            "blocked": data.blocked_hours,
+        }.get(self._schedule_type, [])
         return ",".join(str(h) for h in hours)
 
 
@@ -190,7 +194,9 @@ class ChargePlanSensor(VictronCCBaseSensor):
         price_map = {p["hour"]: p["price"] for p in data.prices_today}
         plan = []
         for hour in range(24):
-            if hour in data.charge_hours:
+            if hour in data.blocked_hours:
+                action = "blocked"
+            elif hour in data.charge_hours:
                 action = "charge"
             elif hour in data.discharge_hours:
                 action = "discharge"
@@ -218,6 +224,7 @@ class ChargePlanSensor(VictronCCBaseSensor):
                 "plan": self._build_plan(data),
                 "charge_hours": data.charge_hours,
                 "discharge_hours": data.discharge_hours,
+                "blocked_hours": data.blocked_hours,
             }
         self.async_write_ha_state()
 

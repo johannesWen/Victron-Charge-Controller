@@ -1,6 +1,6 @@
 toggle_hour:
   name: Toggle Hour
-  description: "Cycle an hour through idle → charge → discharge → idle"
+  description: "Cycle an hour through idle → charge → discharge → blocked → idle"
   fields:
     hour:
       name: Hour
@@ -38,6 +38,7 @@ set_hour_action:
             - "idle"
             - "charge"
             - "discharge"
+            - "blocked"
 
 calculate_schedule:
   name: Calculate Schedule

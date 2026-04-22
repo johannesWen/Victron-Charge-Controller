@@ -21,6 +21,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    ACTION_BLOCKED,
     ACTION_CHARGE,
     ACTION_DISCHARGE,
     ACTION_IDLE,
@@ -65,6 +66,7 @@ class ChargeControlData:
     target_setpoint: float = 0.0
     charge_hours: list[int] = field(default_factory=list)
     discharge_hours: list[int] = field(default_factory=list)
+    blocked_hours: list[int] = field(default_factory=list)
     current_price: float | None = None
     prices_today: list[dict[str, Any]] = field(default_factory=list)
 
@@ -109,6 +111,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # --- Schedule state ---
         self._charge_hours: list[int] = []
         self._discharge_hours: list[int] = []
+        self._blocked_hours: list[int] = []
 
         # --- Listener removal callbacks ---
         self._unsub_listeners: list[Any] = []
@@ -156,6 +159,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def discharge_hours(self) -> list[int]:
         return list(self._discharge_hours)
 
+    @property
+    def blocked_hours(self) -> list[int]:
+        return list(self._blocked_hours)
+
     # ------------------------------------------------------------------
     # Schedule management
     # ------------------------------------------------------------------
@@ -170,8 +177,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._discharge_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self.hass.async_create_task(self.async_request_refresh())
 
+    def set_blocked_hours(self, hours: list[int]) -> None:
+        """Set blocked hours and trigger update."""
+        self._blocked_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+        self.hass.async_create_task(self.async_request_refresh())
+
     def toggle_hour(self, hour: int) -> None:
-        """Cycle an hour: idle → charge → discharge → idle."""
+        """Cycle an hour: idle → charge → discharge → blocked → idle."""
         if hour < 0 or hour > 23:
             return
         if hour in self._charge_hours:
@@ -180,31 +192,40 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if hour not in self._discharge_hours:
                 self._discharge_hours = sorted(self._discharge_hours + [hour])
         elif hour in self._discharge_hours:
-            # discharge → idle
+            # discharge → blocked
             self._discharge_hours = [h for h in self._discharge_hours if h != hour]
+            if hour not in self._blocked_hours:
+                self._blocked_hours = sorted(self._blocked_hours + [hour])
+        elif hour in self._blocked_hours:
+            # blocked → idle
+            self._blocked_hours = [h for h in self._blocked_hours if h != hour]
         else:
             # idle → charge
             self._charge_hours = sorted(self._charge_hours + [hour])
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_hour_action(self, hour: int, action: str) -> None:
-        """Set a specific hour to charge, discharge, or idle."""
+        """Set a specific hour to charge, discharge, blocked, or idle."""
         if hour < 0 or hour > 23:
             return
-        # Remove from both lists
+        # Remove from all lists
         self._charge_hours = [h for h in self._charge_hours if h != hour]
         self._discharge_hours = [h for h in self._discharge_hours if h != hour]
+        self._blocked_hours = [h for h in self._blocked_hours if h != hour]
         # Add to correct list
         if action == ACTION_CHARGE:
             self._charge_hours = sorted(self._charge_hours + [hour])
         elif action == ACTION_DISCHARGE:
             self._discharge_hours = sorted(self._discharge_hours + [hour])
+        elif action == ACTION_BLOCKED:
+            self._blocked_hours = sorted(self._blocked_hours + [hour])
         self.hass.async_create_task(self.async_request_refresh())
 
     def clear_schedule(self) -> None:
         """Clear all scheduled hours."""
         self._charge_hours = []
         self._discharge_hours = []
+        self._blocked_hours = []
         self.hass.async_create_task(self.async_request_refresh())
 
     # ------------------------------------------------------------------
@@ -335,6 +356,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if item["price"] >= self.discharge_price_threshold:
                 discharge_hours.append(item["hour"])
 
+        # Exclude blocked hours from both lists
+        charge_hours = [h for h in charge_hours if h not in self._blocked_hours]
+        discharge_hours = [h for h in discharge_hours if h not in self._blocked_hours]
+
         # Resolve conflicts: discharge wins (remove from charge)
         charge_hours = [h for h in charge_hours if h not in discharge_hours]
 
@@ -385,9 +410,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 return ACTION_DISCHARGE
             return ACTION_IDLE
 
-        # Priority 4: Auto or Manual — look up schedule
+        # Priority 4: Blocked hours — override schedule with idle
         if self.control_mode in (MODE_AUTO, MODE_MANUAL):
             hour = dt_util.now().hour
+            if hour in self._blocked_hours:
+                return ACTION_IDLE
+
+            # Priority 5: Auto or Manual — look up schedule
             if hour in self._charge_hours and self.charge_allowed and soc < self.max_soc:
                 return ACTION_CHARGE
             if hour in self._discharge_hours and self.discharge_allowed and soc > self.min_soc:
@@ -541,6 +570,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             target_setpoint=setpoint,
             charge_hours=list(self._charge_hours),
             discharge_hours=list(self._discharge_hours),
+            blocked_hours=list(self._blocked_hours),
             current_price=current_price,
             prices_today=prices_today,
         )

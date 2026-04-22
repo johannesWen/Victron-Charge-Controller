@@ -30,6 +30,7 @@ CONTROL_MODES = [
 ACTION_IDLE = "idle"
 ACTION_CHARGE = "charge"
 ACTION_DISCHARGE = "discharge"
+ACTION_BLOCKED = "blocked"
 
 # --- Defaults ---
 DEFAULT_MIN_SOC = 10.0
