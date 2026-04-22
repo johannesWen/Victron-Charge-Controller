@@ -31,6 +31,7 @@ async def async_setup_entry(
             TargetSetpointSensor(coordinator, entry),
             ScheduleSensor(coordinator, entry, "charge"),
             ScheduleSensor(coordinator, entry, "discharge"),
+            ChargePlanSensor(coordinator, entry),
         ]
     )
 
@@ -168,3 +169,61 @@ class ScheduleSensor(VictronCCBaseSensor):
             else data.discharge_hours
         )
         return ",".join(str(h) for h in hours)
+
+
+class ChargePlanSensor(VictronCCBaseSensor):
+    """Sensor showing the full charge/discharge plan based on EPEX prices."""
+
+    _attr_translation_key = "charge_plan"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_charge_plan"
+
+    def _build_plan(self, data: ChargeControlData) -> list[dict]:
+        """Build hour-by-hour plan from coordinator data."""
+        price_map = {p["hour"]: p["price"] for p in data.prices_today}
+        plan = []
+        for hour in range(24):
+            if hour in data.charge_hours:
+                action = "charge"
+            elif hour in data.discharge_hours:
+                action = "discharge"
+            else:
+                action = "idle"
+            entry = {"hour": hour, "action": action}
+            if hour in price_map:
+                entry["price"] = price_map[hour]
+            plan.append(entry)
+        return plan
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data: ChargeControlData | None = self.coordinator.data
+        if data is None:
+            self._attr_native_value = "unknown"
+            self._attr_extra_state_attributes = {"plan": []}
+        else:
+            charge_count = len(data.charge_hours)
+            discharge_count = len(data.discharge_hours)
+            self._attr_native_value = (
+                f"{charge_count} charge, {discharge_count} discharge"
+            )
+            self._attr_extra_state_attributes = {
+                "plan": self._build_plan(data),
+                "charge_hours": data.charge_hours,
+                "discharge_hours": data.discharge_hours,
+            }
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> str:
+        data = self.coordinator.data
+        if data is None:
+            return "unknown"
+        return f"{len(data.charge_hours)} charge, {len(data.discharge_hours)} discharge"

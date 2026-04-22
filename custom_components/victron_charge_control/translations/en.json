@@ -51,6 +51,14 @@
       },
       "discharge_hours": {
         "name": "Discharge Hours"
+      },
+      "charge_plan": {
+        "name": "Charge Plan"
+      }
+    },
+    "button": {
+      "recalculate_schedule": {
+        "name": "Recalculate Schedule"
       }
     },
     "number": {
