@@ -139,6 +139,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def epex_spot_entity(self) -> str:
         return self._epex_spot_entity
 
+    def update_entity_references(self, data: dict[str, str]) -> None:
+        """Update entity references from config entry data."""
+        self._battery_soc_entity = data[CONF_BATTERY_SOC_ENTITY]
+        self._grid_setpoint_entity = data[CONF_GRID_SETPOINT_ENTITY]
+        self._grid_power_entity = data[CONF_GRID_POWER_ENTITY]
+        self._battery_power_entity = data[CONF_BATTERY_POWER_ENTITY]
+        self._epex_spot_entity = data[CONF_EPEX_SPOT_ENTITY]
+
     @property
     def charge_hours(self) -> list[int]:
         return list(self._charge_hours)

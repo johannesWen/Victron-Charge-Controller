@@ -34,8 +34,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if len(hass.data[DOMAIN]) == 1:
         await async_setup_services(hass)
 
+    # Reload integration when config entry data changes (options flow)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     _LOGGER.info("Victron Charge Control loaded")
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the integration when the config entry is updated."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

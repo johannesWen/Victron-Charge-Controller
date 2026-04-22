@@ -6,7 +6,13 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
@@ -44,6 +50,14 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> VictronChargeControlOptionsFlow:
+        """Get the options flow handler."""
+        return VictronChargeControlOptionsFlow(config_entry)
+
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
@@ -78,5 +92,84 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+        )
+
+
+class VictronChargeControlOptionsFlow(OptionsFlow):
+    """Handle options flow — allows changing entities after setup."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Manage the options — same entity selectors, pre-filled with current values."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            # Validate that all entities exist
+            for key in (
+                CONF_BATTERY_SOC_ENTITY,
+                CONF_GRID_SETPOINT_ENTITY,
+                CONF_GRID_POWER_ENTITY,
+                CONF_BATTERY_POWER_ENTITY,
+                CONF_EPEX_SPOT_ENTITY,
+            ):
+                entity_id = user_input[key]
+                state = self.hass.states.get(entity_id)
+                if state is None:
+                    errors[key] = "entity_not_found"
+
+            if not errors:
+                # Update the config entry data with new values
+                self.hass.config_entries.async_update_entry(
+                    self._config_entry,
+                    data={**self._config_entry.data, **user_input},
+                )
+                return self.async_create_entry(title="", data={})
+
+        # Pre-fill with current values
+        current = self._config_entry.data
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_BATTERY_SOC_ENTITY,
+                    default=current.get(CONF_BATTERY_SOC_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Required(
+                    CONF_GRID_SETPOINT_ENTITY,
+                    default=current.get(CONF_GRID_SETPOINT_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="number"),
+                ),
+                vol.Required(
+                    CONF_GRID_POWER_ENTITY,
+                    default=current.get(CONF_GRID_POWER_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Required(
+                    CONF_BATTERY_POWER_ENTITY,
+                    default=current.get(CONF_BATTERY_POWER_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Required(
+                    CONF_EPEX_SPOT_ENTITY,
+                    default=current.get(CONF_EPEX_SPOT_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor"),
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
             errors=errors,
         )

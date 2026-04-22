@@ -20,6 +20,24 @@
       "already_configured": "Already configured. Only one instance is supported."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Victron Charge Control — Settings",
+        "description": "Update your Victron and EPEX Spot entities.",
+        "data": {
+          "battery_soc_entity": "Battery SOC sensor",
+          "grid_setpoint_entity": "Grid setpoint entity (writable)",
+          "grid_power_entity": "Grid power sensor",
+          "battery_power_entity": "Battery power sensor",
+          "epex_spot_entity": "EPEX Spot price sensor"
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Entity not found. Make sure it exists."
+    }
+  },
   "entity": {
     "sensor": {
       "desired_action": {
