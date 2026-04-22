@@ -1,0 +1,5 @@
+{
+  "name": "Victron Charge Control",
+  "hacs": "integration",
+  "render_readme": true
+}

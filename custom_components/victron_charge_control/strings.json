@@ -1,0 +1,94 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Victron Charge Control",
+        "description": "Select your Victron and EPEX Spot entities.",
+        "data": {
+          "battery_soc_entity": "Battery SOC sensor",
+          "grid_setpoint_entity": "Grid setpoint entity (writable)",
+          "grid_power_entity": "Grid power sensor",
+          "battery_power_entity": "Battery power sensor",
+          "epex_spot_entity": "EPEX Spot price sensor"
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Entity not found. Make sure it exists."
+    },
+    "abort": {
+      "already_configured": "Already configured. Only one instance is supported."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "desired_action": {
+        "name": "Desired Action"
+      },
+      "target_setpoint": {
+        "name": "Target Setpoint"
+      },
+      "charge_hours": {
+        "name": "Charge Hours"
+      },
+      "discharge_hours": {
+        "name": "Discharge Hours"
+      }
+    },
+    "number": {
+      "min_soc": {
+        "name": "Min SOC"
+      },
+      "max_soc": {
+        "name": "Max SOC"
+      },
+      "charge_power": {
+        "name": "Charge Power"
+      },
+      "discharge_power": {
+        "name": "Discharge Power"
+      },
+      "idle_setpoint": {
+        "name": "Idle Setpoint"
+      },
+      "min_grid_setpoint": {
+        "name": "Min Grid Setpoint"
+      },
+      "max_grid_setpoint": {
+        "name": "Max Grid Setpoint"
+      },
+      "cheapest_hours": {
+        "name": "Cheapest Hours (Auto Charge)"
+      },
+      "expensive_hours": {
+        "name": "Expensive Hours (Auto Discharge)"
+      },
+      "charge_price_threshold": {
+        "name": "Charge Price Threshold"
+      },
+      "discharge_price_threshold": {
+        "name": "Discharge Price Threshold"
+      }
+    },
+    "select": {
+      "control_mode": {
+        "name": "Control Mode",
+        "state": {
+          "off": "Off",
+          "auto": "Auto",
+          "manual": "Manual",
+          "force_charge": "Force Charge",
+          "force_discharge": "Force Discharge"
+        }
+      }
+    },
+    "switch": {
+      "charge_allowed": {
+        "name": "Charge Allowed"
+      },
+      "discharge_allowed": {
+        "name": "Discharge Allowed"
+      }
+    }
+  }
+}

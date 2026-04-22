@@ -1,0 +1,48 @@
+toggle_hour:
+  name: Toggle Hour
+  description: "Cycle an hour through idle → charge → discharge → idle"
+  fields:
+    hour:
+      name: Hour
+      description: "Hour to toggle (0-23)"
+      required: true
+      example: 14
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+
+set_hour_action:
+  name: Set Hour Action
+  description: "Set a specific hour to charge, discharge, or idle"
+  fields:
+    hour:
+      name: Hour
+      description: "Hour (0-23)"
+      required: true
+      example: 14
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+    action:
+      name: Action
+      description: "Target action for this hour"
+      required: true
+      example: "charge"
+      selector:
+        select:
+          options:
+            - "idle"
+            - "charge"
+            - "discharge"
+
+calculate_schedule:
+  name: Calculate Schedule
+  description: "Recalculate charge/discharge hours from EPEX Spot prices"
+
+clear_schedule:
+  name: Clear Schedule
+  description: "Clear all scheduled charge and discharge hours"

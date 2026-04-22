@@ -1,0 +1,708 @@
+# ==============================================================================
+# VICTRON CHARGE CONTROL — Home Assistant Package
+# ==============================================================================
+#
+# Controls Victron battery charge/discharge via grid setpoint based on
+# EPEX Spot hourly prices, with manual scheduling and safety limits.
+#
+# INSTALLATION:
+#   1. Copy this file to your HA config/packages/ directory
+#   2. Add to configuration.yaml:
+#        homeassistant:
+#          packages:
+#            victron_charge_control: !include packages/victron_charge_control.yaml
+#   3. Replace all YOUR_* placeholders below with your actual entity IDs
+#   4. Restart Home Assistant
+#
+# ENTITY ID PLACEHOLDERS — Replace these 5 with your actual entities:
+#   sensor.YOUR_VICTRON_BATTERY_SOC      → Battery state of charge (0-100%)
+#   number.YOUR_VICTRON_GRID_SETPOINT    → ESS grid setpoint (Watts, writable)
+#   sensor.YOUR_VICTRON_GRID_POWER       → Grid power (W, pos=import, neg=export)
+#   sensor.YOUR_VICTRON_BATTERY_POWER    → Battery power (W, pos=charge, neg=discharge)
+#   sensor.YOUR_EPEX_SPOT_PRICE          → EPEX Spot price sensor (ct/kWh, has 'data' attribute)
+#
+# ==============================================================================
+
+
+# ==============================================================================
+# INPUT HELPERS
+# ==============================================================================
+
+input_select:
+  victron_control_mode:
+    name: "Victron Control Mode"
+    options:
+      - "off"
+      - "auto"
+      - "manual"
+      - "force_charge"
+      - "force_discharge"
+    initial: "off"
+    icon: mdi:battery-sync
+
+input_boolean:
+  victron_charge_allowed:
+    name: "Victron Charge Allowed"
+    initial: true
+    icon: mdi:battery-plus
+
+  victron_discharge_allowed:
+    name: "Victron Discharge Allowed"
+    initial: true
+    icon: mdi:battery-minus
+
+input_number:
+  # --- SOC Limits ---
+  victron_min_soc:
+    name: "Victron Min SOC"
+    min: 0
+    max: 100
+    step: 1
+    initial: 10
+    unit_of_measurement: "%"
+    icon: mdi:battery-low
+    mode: slider
+
+  victron_max_soc:
+    name: "Victron Max SOC"
+    min: 0
+    max: 100
+    step: 1
+    initial: 95
+    unit_of_measurement: "%"
+    icon: mdi:battery-high
+    mode: slider
+
+  # --- Power Settings ---
+  victron_charge_power:
+    name: "Victron Charge Power"
+    min: 0
+    max: 15000
+    step: 100
+    initial: 3000
+    unit_of_measurement: "W"
+    icon: mdi:flash
+    mode: slider
+
+  victron_discharge_power:
+    name: "Victron Discharge Power"
+    min: 0
+    max: 15000
+    step: 100
+    initial: 3000
+    unit_of_measurement: "W"
+    icon: mdi:flash
+    mode: slider
+
+  victron_idle_setpoint:
+    name: "Victron Idle Setpoint"
+    min: -500
+    max: 500
+    step: 10
+    initial: 0
+    unit_of_measurement: "W"
+    icon: mdi:pause-circle
+    mode: slider
+
+  # --- Setpoint Limits ---
+  victron_min_grid_setpoint:
+    name: "Victron Min Grid Setpoint"
+    min: -15000
+    max: 0
+    step: 100
+    initial: -5000
+    unit_of_measurement: "W"
+    icon: mdi:arrow-down-bold
+    mode: slider
+
+  victron_max_grid_setpoint:
+    name: "Victron Max Grid Setpoint"
+    min: 0
+    max: 15000
+    step: 100
+    initial: 5000
+    unit_of_measurement: "W"
+    icon: mdi:arrow-up-bold
+    mode: slider
+
+  # --- Auto Schedule Parameters ---
+  victron_cheapest_hours:
+    name: "Victron Cheapest Hours (Auto Charge)"
+    min: 0
+    max: 12
+    step: 1
+    initial: 4
+    icon: mdi:clock-fast
+    mode: slider
+
+  victron_expensive_hours:
+    name: "Victron Expensive Hours (Auto Discharge)"
+    min: 0
+    max: 12
+    step: 1
+    initial: 4
+    icon: mdi:clock-alert
+    mode: slider
+
+  victron_charge_price_threshold:
+    name: "Victron Charge Price Threshold"
+    min: -50
+    max: 100
+    step: 0.5
+    initial: 10
+    unit_of_measurement: "ct/kWh"
+    icon: mdi:currency-eur
+    mode: box
+
+  victron_discharge_price_threshold:
+    name: "Victron Discharge Price Threshold"
+    min: -50
+    max: 100
+    step: 0.5
+    initial: 20
+    unit_of_measurement: "ct/kWh"
+    icon: mdi:currency-eur
+    mode: box
+
+input_text:
+  # Comma-separated hours, e.g. "1,2,3,4"
+  victron_charge_hours:
+    name: "Victron Charge Hours"
+    initial: ""
+    max: 100
+    icon: mdi:battery-charging
+
+  # Comma-separated hours, e.g. "17,18,19,20"
+  victron_discharge_hours:
+    name: "Victron Discharge Hours"
+    initial: ""
+    max: 100
+    icon: mdi:battery-arrow-down
+
+
+# ==============================================================================
+# TEMPLATE SENSORS
+# ==============================================================================
+
+template:
+  - sensor:
+      # ------------------------------------------------------------------
+      # DECISION ENGINE — determines what the system should do right now
+      # Evaluates the priority stack: off → safety → force → schedule → idle
+      # Re-evaluates every minute (via now()) and on any input state change
+      # ------------------------------------------------------------------
+      - name: "Victron Desired Action"
+        unique_id: victron_desired_action
+        icon: >
+          {% set action = this.state %}
+          {% if action == 'charge' %}mdi:battery-charging
+          {% elif action == 'discharge' %}mdi:battery-arrow-down
+          {% else %}mdi:battery-outline{% endif %}
+        state: >
+          {% set mode = states('input_select.victron_control_mode') %}
+          {% set soc = states('sensor.YOUR_VICTRON_BATTERY_SOC') | float(-1) %}
+          {% set min_soc = states('input_number.victron_min_soc') | float(10) %}
+          {% set max_soc = states('input_number.victron_max_soc') | float(95) %}
+          {% set charge_ok = is_state('input_boolean.victron_charge_allowed', 'on') %}
+          {% set discharge_ok = is_state('input_boolean.victron_discharge_allowed', 'on') %}
+          {% set hour = now().hour %}
+          {# Priority 1: System off #}
+          {% if mode == 'off' %}
+            idle
+          {# Priority 2: SOC data unavailable — safe fallback #}
+          {% elif soc < 0 %}
+            idle
+          {# Priority 3: Force modes with SOC safety #}
+          {% elif mode == 'force_charge' %}
+            {{ 'charge' if (charge_ok and soc < max_soc) else 'idle' }}
+          {% elif mode == 'force_discharge' %}
+            {{ 'discharge' if (discharge_ok and soc > min_soc) else 'idle' }}
+          {# Priority 4: Auto or Manual — look up schedule #}
+          {% elif mode in ['auto', 'manual'] %}
+            {% set ch = states('input_text.victron_charge_hours').split(',')
+                        | map('trim') | reject('eq', '') | map('int', default=-1) | list %}
+            {% set dh = states('input_text.victron_discharge_hours').split(',')
+                        | map('trim') | reject('eq', '') | map('int', default=-1) | list %}
+            {% if hour in ch and charge_ok and soc < max_soc %}
+              charge
+            {% elif hour in dh and discharge_ok and soc > min_soc %}
+              discharge
+            {% else %}
+              idle
+            {% endif %}
+          {# Priority 5: Fallback #}
+          {% else %}
+            idle
+          {% endif %}
+        attributes:
+          mode: "{{ states('input_select.victron_control_mode') }}"
+          soc: "{{ states('sensor.YOUR_VICTRON_BATTERY_SOC') }}"
+          hour: "{{ now().hour }}"
+          charge_hours: "{{ states('input_text.victron_charge_hours') }}"
+          discharge_hours: "{{ states('input_text.victron_discharge_hours') }}"
+
+      # ------------------------------------------------------------------
+      # TARGET SETPOINT — the grid setpoint to apply, clamped to limits
+      # ------------------------------------------------------------------
+      - name: "Victron Target Setpoint"
+        unique_id: victron_target_setpoint
+        unit_of_measurement: "W"
+        device_class: power
+        state: >
+          {% set action = states('sensor.victron_desired_action') %}
+          {% set charge_w = states('input_number.victron_charge_power') | float(3000) %}
+          {% set discharge_w = states('input_number.victron_discharge_power') | float(3000) %}
+          {% set idle_w = states('input_number.victron_idle_setpoint') | float(0) %}
+          {% set sp_min = states('input_number.victron_min_grid_setpoint') | float(-5000) %}
+          {% set sp_max = states('input_number.victron_max_grid_setpoint') | float(5000) %}
+          {% if action == 'charge' %}
+            {% set raw = charge_w %}
+          {% elif action == 'discharge' %}
+            {% set raw = -1 * discharge_w %}
+          {% else %}
+            {% set raw = idle_w %}
+          {% endif %}
+          {{ [[raw, sp_min] | max, sp_max] | min }}
+
+
+# ==============================================================================
+# AUTOMATIONS
+# ==============================================================================
+
+automation:
+  # ------------------------------------------------------------------
+  # MAIN CONTROL LOOP — applies the target setpoint to the Victron
+  # Runs every minute and on setpoint change. Deadband of 50W.
+  # ------------------------------------------------------------------
+  - id: victron_apply_setpoint
+    alias: "Victron: Apply Grid Setpoint"
+    description: "Writes the calculated grid setpoint to the Victron ESS"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.victron_target_setpoint
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: input_select.victron_control_mode
+            state: "off"
+      # Only actuate if Victron entity is available
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: number.YOUR_VICTRON_GRID_SETPOINT
+            state: "unavailable"
+    action:
+      - variables:
+          target_sp: "{{ states('sensor.victron_target_setpoint') | float(0) }}"
+          current_sp: "{{ states('number.YOUR_VICTRON_GRID_SETPOINT') | float(0) }}"
+      # Deadband: only write if difference > 50W
+      - condition: template
+        value_template: "{{ (target_sp - current_sp) | abs > 50 }}"
+      - action: number.set_value
+        target:
+          entity_id: number.YOUR_VICTRON_GRID_SETPOINT
+        data:
+          value: "{{ target_sp }}"
+      - action: system_log.write
+        data:
+          message: >
+            Victron setpoint: {{ current_sp }}W → {{ target_sp }}W
+            (action={{ states('sensor.victron_desired_action') }},
+            mode={{ states('input_select.victron_control_mode') }},
+            SOC={{ states('sensor.YOUR_VICTRON_BATTERY_SOC') }}%)
+          level: info
+          logger: victron_charge_control
+
+  # ------------------------------------------------------------------
+  # AUTO SCHEDULE — recalculates charge/discharge hours from EPEX prices
+  # Triggers: price data update, 14:00, 00:05, mode change, param change
+  # ------------------------------------------------------------------
+  - id: victron_calculate_auto_schedule
+    alias: "Victron: Calculate Auto Schedule"
+    description: "Recalculates optimal charge/discharge hours from EPEX prices"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.YOUR_EPEX_SPOT_PRICE
+        attribute: data
+      - platform: time
+        at: "14:05:00"
+      - platform: time
+        at: "00:05:00"
+      - platform: state
+        entity_id: input_select.victron_control_mode
+        to: "auto"
+      - platform: state
+        entity_id:
+          - input_number.victron_cheapest_hours
+          - input_number.victron_expensive_hours
+          - input_number.victron_charge_price_threshold
+          - input_number.victron_discharge_price_threshold
+    condition:
+      - condition: state
+        entity_id: input_select.victron_control_mode
+        state: "auto"
+    action:
+      - action: script.victron_calculate_schedule
+
+  # ------------------------------------------------------------------
+  # SAFETY: reset setpoint when mode switches to off
+  # ------------------------------------------------------------------
+  - id: victron_safety_mode_off
+    alias: "Victron: Safety Reset on Off"
+    description: "Resets grid setpoint to idle when system is turned off"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_select.victron_control_mode
+        to: "off"
+    action:
+      - action: number.set_value
+        target:
+          entity_id: number.YOUR_VICTRON_GRID_SETPOINT
+        data:
+          value: "{{ states('input_number.victron_idle_setpoint') | float(0) }}"
+      - action: system_log.write
+        data:
+          message: "Victron charge control OFF — setpoint reset to idle"
+          level: warning
+          logger: victron_charge_control
+
+  # ------------------------------------------------------------------
+  # SAFETY: watchdog — switch off if critical entities become unavailable
+  # ------------------------------------------------------------------
+  - id: victron_safety_watchdog
+    alias: "Victron: Safety Watchdog"
+    description: "Switches to OFF if battery SOC or grid setpoint becomes unavailable"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.YOUR_VICTRON_BATTERY_SOC
+        to: "unavailable"
+        for: "00:02:00"
+      - platform: state
+        entity_id: sensor.YOUR_VICTRON_BATTERY_SOC
+        to: "unknown"
+        for: "00:02:00"
+      - platform: state
+        entity_id: number.YOUR_VICTRON_GRID_SETPOINT
+        to: "unavailable"
+        for: "00:02:00"
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.victron_control_mode
+        data:
+          option: "off"
+      - action: persistent_notification.create
+        data:
+          title: "⚠ Victron Charge Control — Safety Stop"
+          message: >
+            A critical Victron entity became unavailable for >2 minutes.
+            System switched to OFF. Check your Victron connection.
+            SOC: {{ states('sensor.YOUR_VICTRON_BATTERY_SOC') }}
+            Setpoint entity: {{ states('number.YOUR_VICTRON_GRID_SETPOINT') }}
+          notification_id: victron_safety_stop
+
+  # ------------------------------------------------------------------
+  # NOTIFICATION: action change
+  # ------------------------------------------------------------------
+  - id: victron_notify_action_change
+    alias: "Victron: Notify Action Change"
+    description: "Creates a notification when the charge/discharge action changes"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.victron_desired_action
+    condition:
+      - condition: template
+        value_template: >
+          {{ trigger.from_state is not none
+             and trigger.from_state.state not in ['unknown', 'unavailable']
+             and trigger.from_state.state != trigger.to_state.state }}
+    action:
+      - action: persistent_notification.create
+        data:
+          title: "Victron: {{ states('sensor.victron_desired_action') | title }}"
+          message: >
+            Action: {{ trigger.from_state.state }} → {{ trigger.to_state.state }}
+            Mode: {{ states('input_select.victron_control_mode') }}
+            SOC: {{ states('sensor.YOUR_VICTRON_BATTERY_SOC') }}%
+            Price: {{ states('sensor.YOUR_EPEX_SPOT_PRICE') }} ct/kWh
+            Setpoint: {{ states('sensor.victron_target_setpoint') }} W
+          notification_id: victron_action_change
+
+  # ------------------------------------------------------------------
+  # DAILY SCHEDULE CLEAR — clears schedule at midnight for manual mode
+  # In auto mode, the 00:05 recalculation handles this.
+  # ------------------------------------------------------------------
+  - id: victron_daily_schedule_reset
+    alias: "Victron: Daily Schedule Reset"
+    description: "Clears the schedule at midnight in manual mode"
+    mode: single
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    condition:
+      - condition: state
+        entity_id: input_select.victron_control_mode
+        state: "manual"
+    action:
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.victron_charge_hours
+        data:
+          value: ""
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.victron_discharge_hours
+        data:
+          value: ""
+      - action: system_log.write
+        data:
+          message: "Victron daily schedule reset (manual mode)"
+          level: info
+          logger: victron_charge_control
+
+
+# ==============================================================================
+# SCRIPTS
+# ==============================================================================
+
+script:
+  # ------------------------------------------------------------------
+  # CALCULATE SCHEDULE — ranks hours by EPEX price, picks best to charge/discharge
+  # ------------------------------------------------------------------
+  victron_calculate_schedule:
+    alias: "Victron: Calculate Schedule"
+    description: "Calculates charge/discharge hours from EPEX Spot prices"
+    mode: single
+    sequence:
+      - variables:
+          epex_data: "{{ state_attr('sensor.YOUR_EPEX_SPOT_PRICE', 'data') }}"
+          n_charge: "{{ states('input_number.victron_cheapest_hours') | int(4) }}"
+          n_discharge: "{{ states('input_number.victron_expensive_hours') | int(4) }}"
+          charge_threshold: "{{ states('input_number.victron_charge_price_threshold') | float(10) }}"
+          discharge_threshold: "{{ states('input_number.victron_discharge_price_threshold') | float(20) }}"
+          today_str: "{{ now().strftime('%Y-%m-%d') }}"
+          current_hour: "{{ now().hour }}"
+      - choose:
+          # --- Data available: calculate schedule ---
+          - conditions:
+              - condition: template
+                value_template: "{{ epex_data is not none and epex_data | length > 0 }}"
+            sequence:
+              - variables:
+                  # Build sorted price list for today's remaining hours
+                  sorted_asc: >
+                    {% set ns = namespace(prices=[]) %}
+                    {% for item in epex_data %}
+                      {% if item.start_time is string %}
+                        {% set sdt = item.start_time | as_datetime | as_local %}
+                      {% else %}
+                        {% set sdt = item.start_time | as_local %}
+                      {% endif %}
+                      {% if sdt.strftime('%Y-%m-%d') == today_str and sdt.hour >= current_hour | int %}
+                        {% set ns.prices = ns.prices + [{'hour': sdt.hour, 'price': item.price_ct_per_kwh | float}] %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.prices | sort(attribute='price') }}
+              - variables:
+                  # Pick cheapest N hours below charge threshold
+                  new_charge_hours: >
+                    {% set sorted_list = sorted_asc %}
+                    {% set ns = namespace(hours=[]) %}
+                    {% for item in sorted_list %}
+                      {% if ns.hours | length < n_charge | int and item.price <= charge_threshold | float %}
+                        {% set ns.hours = ns.hours + [item.hour | string] %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.hours | map('int') | sort | map('string') | join(',') }}
+                  # Pick most expensive N hours above discharge threshold
+                  new_discharge_hours: >
+                    {% set sorted_list = sorted_asc | reverse | list %}
+                    {% set ns = namespace(hours=[]) %}
+                    {% for item in sorted_list %}
+                      {% if ns.hours | length < n_discharge | int and item.price >= discharge_threshold | float %}
+                        {% set ns.hours = ns.hours + [item.hour | string] %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.hours | map('int') | sort | map('string') | join(',') }}
+              # Validate: no hour should be in both lists
+              - variables:
+                  final_charge: >
+                    {% set dh = new_discharge_hours.split(',') | map('trim') | reject('eq', '') | list %}
+                    {% set ch = new_charge_hours.split(',') | map('trim') | reject('eq', '') | list %}
+                    {{ ch | reject('in', dh) | join(',') }}
+                  final_discharge: "{{ new_discharge_hours }}"
+              # Store schedule
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_charge_hours
+                data:
+                  value: "{{ final_charge }}"
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_discharge_hours
+                data:
+                  value: "{{ final_discharge }}"
+              - action: system_log.write
+                data:
+                  message: >
+                    Victron auto schedule calculated —
+                    Charge: [{{ final_charge }}],
+                    Discharge: [{{ final_discharge }}]
+                    ({{ sorted_asc | length }} hours evaluated)
+                  level: info
+                  logger: victron_charge_control
+        # --- No data: log and skip ---
+        default:
+          - action: system_log.write
+            data:
+              message: "Victron schedule calculation skipped — no EPEX price data available"
+              level: warning
+              logger: victron_charge_control
+
+  # ------------------------------------------------------------------
+  # TOGGLE HOUR — cycles an hour: idle → charge → discharge → idle
+  # Called from dashboard button taps
+  # ------------------------------------------------------------------
+  victron_toggle_hour:
+    alias: "Victron: Toggle Hour Action"
+    description: "Cycles an hour through idle → charge → discharge → idle"
+    mode: single
+    fields:
+      hour:
+        description: "Hour to toggle (0-23)"
+        required: true
+        example: 14
+        selector:
+          number:
+            min: 0
+            max: 23
+    sequence:
+      - variables:
+          h: "{{ hour | string }}"
+          charge_list: >
+            {{ states('input_text.victron_charge_hours').split(',')
+               | map('trim') | reject('eq', '') | list }}
+          discharge_list: >
+            {{ states('input_text.victron_discharge_hours').split(',')
+               | map('trim') | reject('eq', '') | list }}
+          is_charge: "{{ h in charge_list }}"
+          is_discharge: "{{ h in discharge_list }}"
+      - choose:
+          # Currently idle → set to charge
+          - conditions:
+              - condition: template
+                value_template: "{{ not is_charge and not is_discharge }}"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_charge_hours
+                data:
+                  value: >
+                    {{ (charge_list + [h]) | map('int') | sort | map('string') | join(',') }}
+          # Currently charge → set to discharge
+          - conditions:
+              - condition: template
+                value_template: "{{ is_charge }}"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_charge_hours
+                data:
+                  value: >
+                    {{ charge_list | reject('eq', h) | join(',') }}
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_discharge_hours
+                data:
+                  value: >
+                    {{ (discharge_list + [h]) | map('int') | sort | map('string') | join(',') }}
+          # Currently discharge → set to idle
+          - conditions:
+              - condition: template
+                value_template: "{{ is_discharge }}"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_discharge_hours
+                data:
+                  value: >
+                    {{ discharge_list | reject('eq', h) | join(',') }}
+
+  # ------------------------------------------------------------------
+  # SET HOUR ACTION — directly set an hour to a specific action
+  # ------------------------------------------------------------------
+  victron_set_hour_action:
+    alias: "Victron: Set Hour Action"
+    description: "Sets a specific hour to charge, discharge, or idle"
+    mode: single
+    fields:
+      hour:
+        description: "Hour (0-23)"
+        required: true
+        example: 14
+        selector:
+          number:
+            min: 0
+            max: 23
+      set_action:
+        description: "Target action"
+        required: true
+        example: "charge"
+        selector:
+          select:
+            options:
+              - "idle"
+              - "charge"
+              - "discharge"
+    sequence:
+      - variables:
+          h: "{{ hour | string }}"
+          charge_list: >
+            {{ states('input_text.victron_charge_hours').split(',')
+               | map('trim') | reject('eq', '') | list }}
+          discharge_list: >
+            {{ states('input_text.victron_discharge_hours').split(',')
+               | map('trim') | reject('eq', '') | list }}
+      # Remove from both lists first
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.victron_charge_hours
+        data:
+          value: "{{ charge_list | reject('eq', h) | join(',') }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.victron_discharge_hours
+        data:
+          value: "{{ discharge_list | reject('eq', h) | join(',') }}"
+      # Add to correct list
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ set_action == 'charge' }}"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_charge_hours
+                data:
+                  value: >
+                    {{ (charge_list | reject('eq', h) | list + [h])
+                       | map('int') | sort | map('string') | join(',') }}
+          - conditions:
+              - condition: template
+                value_template: "{{ set_action == 'discharge' }}"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.victron_discharge_hours
+                data:
+                  value: >
+                    {{ (discharge_list | reject('eq', h) | list + [h])
+                       | map('int') | sort | map('string') | join(',') }}

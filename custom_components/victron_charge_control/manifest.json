@@ -1,0 +1,10 @@
+{
+  "domain": "victron_charge_control",
+  "name": "Victron Charge Control",
+  "codeowners": ["@johannesWen"],
+  "config_flow": true,
+  "documentation": "https://github.com/johannesWen/Victron-Charge-Controller",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/johannesWen/Victron-Charge-Controller/issues",
+  "version": "1.0.0"
+}
