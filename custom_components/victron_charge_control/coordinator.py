@@ -44,6 +44,7 @@ from .const import (
     DOMAIN,
     EPEX_ATTR_DATA,
     EPEX_KEY_PRICE,
+    EPEX_KEY_PRICE_EUR,
     EPEX_KEY_START_TIME,
     MODE_AUTO,
     MODE_FORCE_CHARGE,
@@ -207,6 +208,54 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.hass.async_create_task(self.async_request_refresh())
 
     # ------------------------------------------------------------------
+    # EPEX data extraction helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_epex_data(attributes: dict[str, Any]) -> list[dict[str, Any]]:
+        """Find the list of price entries from EPEX entity attributes.
+
+        Supports mampfes/ha-epex-spot ('data' attribute) and other integrations
+        that store entries under alternative attribute names.
+        """
+        # Try the known attribute name first
+        data = attributes.get(EPEX_ATTR_DATA)
+        if isinstance(data, list) and data:
+            return data
+        # Fallback: search for any list attribute containing price-like dicts
+        for attr_name, attr_value in attributes.items():
+            if not isinstance(attr_value, list) or not attr_value:
+                continue
+            first = attr_value[0]
+            if isinstance(first, dict) and (
+                EPEX_KEY_START_TIME in first
+                or EPEX_KEY_PRICE in first
+                or EPEX_KEY_PRICE_EUR in first
+            ):
+                return attr_value
+        return []
+
+    @staticmethod
+    def _extract_price_ct(item: dict[str, Any]) -> float | None:
+        """Extract price in ct/kWh from a single EPEX entry.
+
+        Handles both 'price_ct_per_kwh' (cents) and 'price_per_kwh' (EUR).
+        """
+        price = item.get(EPEX_KEY_PRICE)
+        if price is not None:
+            try:
+                return float(price)
+            except (ValueError, TypeError):
+                return None
+        price_eur = item.get(EPEX_KEY_PRICE_EUR)
+        if price_eur is not None:
+            try:
+                return float(price_eur) * 100.0  # EUR → ct
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    # ------------------------------------------------------------------
     # Auto schedule calculation from EPEX prices
     # ------------------------------------------------------------------
 
@@ -220,7 +269,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             _LOGGER.warning("EPEX entity %s not found", self._epex_spot_entity)
             return
 
-        epex_data = epex_state.attributes.get(EPEX_ATTR_DATA)
+        epex_data = self._find_epex_data(epex_state.attributes)
         if not epex_data:
             _LOGGER.warning("No EPEX price data available in %s", self._epex_spot_entity)
             return
@@ -251,10 +300,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 continue
 
             if sdt.strftime("%Y-%m-%d") == today_str and sdt.hour >= current_hour:
-                price = item.get(EPEX_KEY_PRICE)
+                price = self._extract_price_ct(item)
                 if price is not None:
                     try:
-                        prices.append({"hour": sdt.hour, "price": float(price)})
+                        prices.append({"hour": sdt.hour, "price": price})
                     except (ValueError, TypeError):
                         continue
 
@@ -455,7 +504,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 current_price = float(epex_state.state)
             except (ValueError, TypeError):
                 pass
-            raw_data = epex_state.attributes.get(EPEX_ATTR_DATA, [])
+            raw_data = self._find_epex_data(epex_state.attributes)
             if raw_data:
                 now = dt_util.now()
                 today_str = now.strftime("%Y-%m-%d")
@@ -475,14 +524,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     else:
                         continue
                     if sdt is not None and sdt.strftime("%Y-%m-%d") == today_str:
-                        price = item.get(EPEX_KEY_PRICE)
+                        price = self._extract_price_ct(item)
                         if price is not None:
-                            try:
-                                prices_today.append(
-                                    {"hour": sdt.hour, "price": float(price)}
-                                )
-                            except (ValueError, TypeError):
-                                continue
+                            prices_today.append(
+                                {"hour": sdt.hour, "price": price}
+                            )
                 prices_today.sort(key=lambda x: x["hour"])
 
         return ChargeControlData(

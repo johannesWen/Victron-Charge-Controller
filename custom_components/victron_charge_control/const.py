@@ -53,3 +53,5 @@ EPEX_ATTR_DATA = "data"
 EPEX_KEY_START_TIME = "start_time"
 EPEX_KEY_END_TIME = "end_time"
 EPEX_KEY_PRICE = "price_ct_per_kwh"
+# Alternative price key (EUR/kWh, used by some integrations)
+EPEX_KEY_PRICE_EUR = "price_per_kwh"
