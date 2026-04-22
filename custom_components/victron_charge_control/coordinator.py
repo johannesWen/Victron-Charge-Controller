@@ -275,10 +275,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return
 
         now = dt_util.now()
-        today_str = now.strftime("%Y-%m-%d")
-        current_hour = now.hour
 
-        # Build price list for today's remaining hours
+        # Build price list for all future hours (today's remaining + tomorrow)
         prices: list[dict[str, Any]] = []
         for item in epex_data:
             start_time = item.get(EPEX_KEY_START_TIME)
@@ -299,24 +297,31 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if sdt is None:
                 continue
 
-            if sdt.strftime("%Y-%m-%d") == today_str and sdt.hour >= current_hour:
+            # Include any hour that hasn't ended yet
+            if sdt >= now.replace(minute=0, second=0, microsecond=0):
                 price = self._extract_price_ct(item)
                 if price is not None:
-                    try:
-                        prices.append({"hour": sdt.hour, "price": price})
-                    except (ValueError, TypeError):
-                        continue
+                    prices.append({"hour": sdt.hour, "price": price})
 
         if not prices:
-            _LOGGER.info("No remaining hours with price data for today")
+            _LOGGER.info("No future hours with price data available")
             return
 
+        # When multiple days have the same hour, keep the one closest to now
+        # (deduplicate by hour, preferring the earliest future occurrence)
+        seen_hours: dict[int, float] = {}
+        for item in prices:
+            h = item["hour"]
+            if h not in seen_hours:
+                seen_hours[h] = item["price"]
+        deduped = [{"hour": h, "price": p} for h, p in seen_hours.items()]
+
         # Sort ascending by price
-        prices.sort(key=lambda x: x["price"])
+        deduped.sort(key=lambda x: x["price"])
 
         # Pick cheapest N hours below charge threshold
         charge_hours: list[int] = []
-        for item in prices:
+        for item in deduped:
             if len(charge_hours) >= self.cheapest_hours:
                 break
             if item["price"] <= self.charge_price_threshold:
@@ -324,7 +329,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Pick most expensive N hours above discharge threshold
         discharge_hours: list[int] = []
-        for item in reversed(prices):
+        for item in reversed(deduped):
             if len(discharge_hours) >= self.expensive_hours:
                 break
             if item["price"] >= self.discharge_price_threshold:
@@ -340,7 +345,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             "Auto schedule calculated — Charge: %s, Discharge: %s (%d hours evaluated)",
             self._charge_hours,
             self._discharge_hours,
-            len(prices),
+            len(deduped),
         )
 
     # ------------------------------------------------------------------
@@ -607,6 +612,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Initial data
         self.data = ChargeControlData()
+
+        # Initial schedule calculation if already in auto mode (e.g. after restart)
+        if self.control_mode == MODE_AUTO:
+            self.calculate_auto_schedule()
+
         await self.async_request_refresh()
 
     async def async_shutdown(self) -> None:
