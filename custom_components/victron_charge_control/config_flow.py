@@ -21,6 +21,7 @@ from .const import (
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_POWER_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
+    CONF_MAX_GRID_FEED_IN_ENTITY,
     DOMAIN,
 )
 
@@ -40,6 +41,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
         vol.Required(CONF_EPEX_SPOT_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor"),
+        ),
+        vol.Required(CONF_MAX_GRID_FEED_IN_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="number"),
         ),
     }
 )
@@ -77,6 +81,7 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_GRID_POWER_ENTITY,
                 CONF_BATTERY_POWER_ENTITY,
                 CONF_EPEX_SPOT_ENTITY,
+                CONF_MAX_GRID_FEED_IN_ENTITY,
             ):
                 entity_id = user_input[key]
                 state = self.hass.states.get(entity_id)
@@ -117,6 +122,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 CONF_GRID_POWER_ENTITY,
                 CONF_BATTERY_POWER_ENTITY,
                 CONF_EPEX_SPOT_ENTITY,
+                CONF_MAX_GRID_FEED_IN_ENTITY,
             ):
                 entity_id = user_input[key]
                 state = self.hass.states.get(entity_id)
@@ -164,6 +170,12 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     default=current.get(CONF_EPEX_SPOT_ENTITY, ""),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Required(
+                    CONF_MAX_GRID_FEED_IN_ENTITY,
+                    default=current.get(CONF_MAX_GRID_FEED_IN_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="number"),
                 ),
             }
         )

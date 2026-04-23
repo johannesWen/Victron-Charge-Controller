@@ -9,7 +9,8 @@
           "grid_setpoint_entity": "Grid setpoint entity (writable)",
           "grid_power_entity": "Grid power sensor",
           "battery_power_entity": "Battery power sensor",
-          "epex_spot_entity": "EPEX Spot price sensor"
+          "epex_spot_entity": "EPEX Spot price sensor",
+          "max_grid_feed_in_entity": "Max grid feed-in entity (writable)"
         }
       }
     },
@@ -30,7 +31,8 @@
           "grid_setpoint_entity": "Grid setpoint entity (writable)",
           "grid_power_entity": "Grid power sensor",
           "battery_power_entity": "Battery power sensor",
-          "epex_spot_entity": "EPEX Spot price sensor"
+          "epex_spot_entity": "EPEX Spot price sensor",
+          "max_grid_feed_in_entity": "Max grid feed-in entity (writable)"
         }
       }
     },
@@ -97,6 +99,15 @@
       },
       "discharge_price_threshold": {
         "name": "Discharge Price Threshold"
+      },
+      "grid_feed_in_price_threshold": {
+        "name": "Grid Feed-in Price Threshold"
+      },
+      "default_max_grid_feed_in": {
+        "name": "Default Max Grid Feed-in"
+      },
+      "reduced_max_grid_feed_in": {
+        "name": "Reduced Max Grid Feed-in"
       }
     },
     "select": {
@@ -117,6 +128,9 @@
       },
       "discharge_allowed": {
         "name": "Discharge Allowed"
+      },
+      "grid_feed_in_control_enabled": {
+        "name": "Grid Feed-in Control"
       }
     },
     "text": {

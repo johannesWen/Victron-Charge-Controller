@@ -30,6 +30,7 @@ from .const import (
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_POWER_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
+    CONF_MAX_GRID_FEED_IN_ENTITY,
     DEFAULT_CHARGE_POWER,
     DEFAULT_CHARGE_PRICE_THRESHOLD,
     DEFAULT_CHEAPEST_HOURS,
@@ -37,11 +38,14 @@ from .const import (
     DEFAULT_DISCHARGE_POWER,
     DEFAULT_DISCHARGE_PRICE_THRESHOLD,
     DEFAULT_EXPENSIVE_HOURS,
+    DEFAULT_GRID_FEED_IN_PRICE_THRESHOLD,
     DEFAULT_IDLE_SETPOINT,
+    DEFAULT_MAX_GRID_FEED_IN,
     DEFAULT_MAX_GRID_SETPOINT,
     DEFAULT_MAX_SOC,
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_MIN_SOC,
+    DEFAULT_REDUCED_GRID_FEED_IN,
     DOMAIN,
     EPEX_ATTR_DATA,
     EPEX_KEY_PRICE,
@@ -69,6 +73,8 @@ class ChargeControlData:
     blocked_hours: list[int] = field(default_factory=list)
     current_price: float | None = None
     prices_today: list[dict[str, Any]] = field(default_factory=list)
+    grid_feed_in_active: bool = False
+    applied_max_grid_feed_in: float | None = None
 
 
 class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
@@ -91,6 +97,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_power_entity: str = entry.data[CONF_GRID_POWER_ENTITY]
         self._battery_power_entity: str = entry.data[CONF_BATTERY_POWER_ENTITY]
         self._epex_spot_entity: str = entry.data[CONF_EPEX_SPOT_ENTITY]
+        self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
 
         # --- Configurable parameters (modified by number/select/switch entities) ---
         self.control_mode: str = MODE_OFF
@@ -107,6 +114,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.expensive_hours: int = DEFAULT_EXPENSIVE_HOURS
         self.charge_price_threshold: float = DEFAULT_CHARGE_PRICE_THRESHOLD
         self.discharge_price_threshold: float = DEFAULT_DISCHARGE_PRICE_THRESHOLD
+
+        # --- Grid feed-in control ---
+        self.grid_feed_in_control_enabled: bool = False
+        self.grid_feed_in_price_threshold: float = DEFAULT_GRID_FEED_IN_PRICE_THRESHOLD
+        self.default_max_grid_feed_in: float = DEFAULT_MAX_GRID_FEED_IN
+        self.reduced_max_grid_feed_in: float = DEFAULT_REDUCED_GRID_FEED_IN
+        self._last_applied_feed_in: float | None = None
 
         # --- Schedule state ---
         self._charge_hours: list[int] = []
@@ -143,6 +157,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def epex_spot_entity(self) -> str:
         return self._epex_spot_entity
 
+    @property
+    def max_grid_feed_in_entity(self) -> str:
+        return self._max_grid_feed_in_entity
+
     def update_entity_references(self, data: dict[str, str]) -> None:
         """Update entity references from config entry data."""
         self._battery_soc_entity = data[CONF_BATTERY_SOC_ENTITY]
@@ -150,6 +168,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_power_entity = data[CONF_GRID_POWER_ENTITY]
         self._battery_power_entity = data[CONF_BATTERY_POWER_ENTITY]
         self._epex_spot_entity = data[CONF_EPEX_SPOT_ENTITY]
+        self._max_grid_feed_in_entity = data[CONF_MAX_GRID_FEED_IN_ENTITY]
 
     @property
     def charge_hours(self) -> list[int]:
@@ -477,6 +496,67 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         )
 
     # ------------------------------------------------------------------
+    # Grid feed-in control
+    # ------------------------------------------------------------------
+
+    async def _apply_grid_feed_in(self, current_price: float | None) -> tuple[bool, float | None]:
+        """Control max grid feed-in based on spot price.
+
+        Returns (is_reduced, applied_value).
+        """
+        if not self.grid_feed_in_control_enabled:
+            return False, None
+
+        if current_price is None:
+            _LOGGER.debug("No current price available — skipping grid feed-in control")
+            return False, None
+
+        # Determine target feed-in value
+        if current_price < self.grid_feed_in_price_threshold:
+            target_feed_in = self.reduced_max_grid_feed_in
+            is_reduced = True
+        else:
+            target_feed_in = self.default_max_grid_feed_in
+            is_reduced = False
+
+        # Check entity availability
+        state = self.hass.states.get(self._max_grid_feed_in_entity)
+        if state is None or state.state in ("unavailable", "unknown"):
+            _LOGGER.warning(
+                "Max grid feed-in entity %s is unavailable — skipping",
+                self._max_grid_feed_in_entity,
+            )
+            return is_reduced, None
+
+        # Skip if value hasn't changed
+        try:
+            current_val = float(state.state)
+        except (ValueError, TypeError):
+            current_val = 0.0
+
+        if (
+            self._last_applied_feed_in is not None
+            and abs(target_feed_in - current_val) <= DEFAULT_DEADBAND
+        ):
+            return is_reduced, target_feed_in
+
+        await self.hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": self._max_grid_feed_in_entity, "value": target_feed_in},
+            blocking=True,
+        )
+        self._last_applied_feed_in = target_feed_in
+        _LOGGER.info(
+            "Grid feed-in: %.0fW → %.0fW (price=%.2f ct/kWh, threshold=%.2f ct/kWh)",
+            current_val,
+            target_feed_in,
+            current_price,
+            self.grid_feed_in_price_threshold,
+        )
+        return is_reduced, target_feed_in
+
+    # ------------------------------------------------------------------
     # Safety watchdog
     # ------------------------------------------------------------------
 
@@ -561,6 +641,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                             )
                 prices_today.sort(key=lambda x: x["hour"])
 
+        # Grid feed-in control
+        feed_in_active, applied_feed_in = await self._apply_grid_feed_in(current_price)
+
         return ChargeControlData(
             desired_action=action,
             target_setpoint=setpoint,
@@ -569,6 +652,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             blocked_hours=list(self._blocked_hours),
             current_price=current_price,
             prices_today=prices_today,
+            grid_feed_in_active=feed_in_active,
+            applied_max_grid_feed_in=applied_feed_in,
         )
 
     # ------------------------------------------------------------------

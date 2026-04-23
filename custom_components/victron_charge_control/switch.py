@@ -40,6 +40,13 @@ SWITCHES: tuple[VictronCCSwitchDescription, ...] = (
         coordinator_attr="discharge_allowed",
         default_value=True,
     ),
+    VictronCCSwitchDescription(
+        key="grid_feed_in_control_enabled",
+        translation_key="grid_feed_in_control_enabled",
+        icon="mdi:transmission-tower",
+        coordinator_attr="grid_feed_in_control_enabled",
+        default_value=False,
+    ),
 )
 
 
