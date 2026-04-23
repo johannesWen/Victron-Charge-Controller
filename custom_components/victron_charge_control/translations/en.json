@@ -118,6 +118,11 @@
       "discharge_allowed": {
         "name": "Discharge Allowed"
       }
+    },
+    "text": {
+      "blocked_hours": {
+        "name": "Blocked Hours"
+      }
     }
   }
 }
