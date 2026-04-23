@@ -505,6 +505,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         Returns (is_reduced, applied_value).
         """
         if not self.grid_feed_in_control_enabled:
+            # Reset to default when feature is disabled
+            if self._last_applied_feed_in is not None and self._last_applied_feed_in != self.default_max_grid_feed_in:
+                state = self.hass.states.get(self._max_grid_feed_in_entity)
+                if state is not None and state.state not in ("unavailable", "unknown"):
+                    await self.hass.services.async_call(
+                        "number",
+                        "set_value",
+                        {"entity_id": self._max_grid_feed_in_entity, "value": self.default_max_grid_feed_in},
+                        blocking=True,
+                    )
+                    _LOGGER.info(
+                        "Grid feed-in control disabled — reset to default %.0fW",
+                        self.default_max_grid_feed_in,
+                    )
+                self._last_applied_feed_in = None
             return False, None
 
         if current_price is None:
