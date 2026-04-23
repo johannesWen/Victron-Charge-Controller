@@ -340,25 +340,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Sort ascending by price
         deduped.sort(key=lambda x: x["price"])
 
-        # Pick cheapest N hours below charge threshold
+        # Pick cheapest N hours below charge threshold (skip blocked hours)
         charge_hours: list[int] = []
         for item in deduped:
             if len(charge_hours) >= self.cheapest_hours:
                 break
-            if item["price"] <= self.charge_price_threshold:
+            if item["hour"] not in self._blocked_hours and item["price"] <= self.charge_price_threshold:
                 charge_hours.append(item["hour"])
 
-        # Pick most expensive N hours above discharge threshold
+        # Pick most expensive N hours above discharge threshold (skip blocked hours)
         discharge_hours: list[int] = []
         for item in reversed(deduped):
             if len(discharge_hours) >= self.expensive_hours:
                 break
-            if item["price"] >= self.discharge_price_threshold:
+            if item["hour"] not in self._blocked_hours and item["price"] >= self.discharge_price_threshold:
                 discharge_hours.append(item["hour"])
-
-        # Exclude blocked hours from both lists
-        charge_hours = [h for h in charge_hours if h not in self._blocked_hours]
-        discharge_hours = [h for h in discharge_hours if h not in self._blocked_hours]
 
         # Resolve conflicts: discharge wins (remove from charge)
         charge_hours = [h for h in charge_hours if h not in discharge_hours]
