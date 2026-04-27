@@ -54,8 +54,11 @@
       "discharge_hours": {
         "name": "Discharge Hours"
       },
-      "blocked_hours": {
-        "name": "Blocked Hours"
+      "blocked_charging_hours": {
+        "name": "Blocked Charging Hours"
+      },
+      "blocked_discharging_hours": {
+        "name": "Blocked Discharging Hours"
       },
       "charge_plan": {
         "name": "Charge Plan"
@@ -134,8 +137,11 @@
       }
     },
     "text": {
-      "blocked_hours": {
-        "name": "Blocked Hours"
+      "blocked_charging_hours": {
+        "name": "Blocked Charging Hours"
+      },
+      "blocked_discharging_hours": {
+        "name": "Blocked Discharging Hours"
       }
     }
   }

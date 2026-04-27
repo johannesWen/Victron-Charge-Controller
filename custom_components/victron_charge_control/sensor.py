@@ -31,7 +31,8 @@ async def async_setup_entry(
             TargetSetpointSensor(coordinator, entry),
             ScheduleSensor(coordinator, entry, "charge"),
             ScheduleSensor(coordinator, entry, "discharge"),
-            ScheduleSensor(coordinator, entry, "blocked"),
+            ScheduleSensor(coordinator, entry, "blocked_charging"),
+            ScheduleSensor(coordinator, entry, "blocked_discharging"),
             ChargePlanSensor(coordinator, entry),
         ]
     )
@@ -85,7 +86,8 @@ class DesiredActionSensor(VictronCCBaseSensor):
             "mode": self.coordinator.control_mode,
             "charge_hours": self.coordinator.charge_hours,
             "discharge_hours": self.coordinator.discharge_hours,
-            "blocked_hours": self.coordinator.blocked_hours,
+            "blocked_charging_hours": self.coordinator.blocked_charging_hours,
+            "blocked_discharging_hours": self.coordinator.blocked_discharging_hours,
         }
         self.async_write_ha_state()
 
@@ -145,7 +147,8 @@ class ScheduleSensor(VictronCCBaseSensor):
         self._attr_icon = {
             "charge": "mdi:battery-charging",
             "discharge": "mdi:battery-arrow-down",
-            "blocked": "mdi:cancel",
+            "blocked_charging": "mdi:cancel",
+            "blocked_discharging": "mdi:cancel",
         }.get(schedule_type, "mdi:clock-outline")
 
     @callback
@@ -157,7 +160,8 @@ class ScheduleSensor(VictronCCBaseSensor):
             hours = {
                 "charge": data.charge_hours,
                 "discharge": data.discharge_hours,
-                "blocked": data.blocked_hours,
+                "blocked_charging": data.blocked_charging_hours,
+                "blocked_discharging": data.blocked_discharging_hours,
             }.get(self._schedule_type, [])
             self._attr_native_value = ",".join(str(h) for h in hours)
         self.async_write_ha_state()
@@ -170,7 +174,8 @@ class ScheduleSensor(VictronCCBaseSensor):
         hours = {
             "charge": data.charge_hours,
             "discharge": data.discharge_hours,
-            "blocked": data.blocked_hours,
+            "blocked_charging": data.blocked_charging_hours,
+            "blocked_discharging": data.blocked_discharging_hours,
         }.get(self._schedule_type, [])
         return ",".join(str(h) for h in hours)
 
@@ -194,8 +199,12 @@ class ChargePlanSensor(VictronCCBaseSensor):
         price_map = {p["hour"]: p["price"] for p in data.prices_today}
         plan = []
         for hour in range(24):
-            if hour in data.blocked_hours:
+            if hour in data.blocked_charging_hours and hour in data.blocked_discharging_hours:
                 action = "blocked"
+            elif hour in data.blocked_charging_hours:
+                action = "blocked_charging"
+            elif hour in data.blocked_discharging_hours:
+                action = "blocked_discharging"
             elif hour in data.charge_hours:
                 action = "charge"
             elif hour in data.discharge_hours:
@@ -224,7 +233,8 @@ class ChargePlanSensor(VictronCCBaseSensor):
                 "plan": self._build_plan(data),
                 "charge_hours": data.charge_hours,
                 "discharge_hours": data.discharge_hours,
-                "blocked_hours": data.blocked_hours,
+                "blocked_charging_hours": data.blocked_charging_hours,
+                "blocked_discharging_hours": data.blocked_discharging_hours,
             }
         self.async_write_ha_state()
 
