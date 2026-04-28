@@ -1,4 +1,7 @@
 {
   "name": "Victron Charge Control",
-  "render_readme": true
+  "content_in_root": false,
+  "filename": "victron_charge_control.zip",
+  "render_readme": true,
+  "zip_release": true
 }
