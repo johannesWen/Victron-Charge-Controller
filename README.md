@@ -1,6 +1,9 @@
-# Victron Charge Controller
+# Victron Charge Controller for Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0)
+[![CI](https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml/badge.svg)](https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml)
+<!-- [![codecov](https://codecov.io/gh/johannesWen/Victron-Charge-Controller/graph/badge.svg?token=MU30OBSTG3)](https://codecov.io/gh/johannesWen/Victron-Charge-Controller) -->
 
 Automated battery charge/discharge control for Victron ESS systems using EPEX Spot hourly electricity prices, with a Home Assistant custom integration installable via HACS.
 
@@ -15,16 +18,14 @@ Automated battery charge/discharge control for Victron ESS systems using EPEX Sp
 
 | Component | Purpose |
 |-----------|---------|
-| Home Assistant 2024.1+ | Core platform |
+| Home Assistant 2026.2+ | Core platform |
 | [Victron GX modbusTCP](https://github.com/sfstar/hass-victron) | Provides writable grid setpoint entity |
-| [Victron Venus MQTT](https://github.com/birdie1/victron) | Provides battery SOC, power readings |
-| [EPEX Spot](https://github.com/mampfes/ha-epex-spot) | Provides hourly electricity prices |
-| [apexcharts-card](https://github.com/RomRider/apexcharts-card) (HACS) | Price chart on dashboard (optional) |
-| [button-card](https://github.com/custom-cards/button-card) (HACS) | Hour selector grid on dashboard (optional) |
-
+| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC, power readings |
+| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly electricity prices |
+|
 ## Installation
 
-### Option A — HACS Custom Integration (recommended)
+### HACS Custom Integration
 
 1. Open HACS in your Home Assistant instance
 2. Click the three dots menu → **Custom repositories**
@@ -33,16 +34,6 @@ Automated battery charge/discharge control for Victron ESS systems using EPEX Sp
 5. Restart Home Assistant
 6. Go to **Settings → Devices & Services → Add Integration → Victron Charge Control**
 7. Select your Victron and EPEX Spot entities in the config flow
-
-### Option B — Manual Installation
-
-1. Copy the `custom_components/victron_charge_control/` folder to your HA `config/custom_components/` directory
-2. Restart Home Assistant
-3. Go to **Settings → Devices & Services → Add Integration → Victron Charge Control**
-
-### Option C — YAML Package (legacy)
-
-See the `homeassistant/packages/` directory for a standalone YAML package that uses HA helpers/automations instead of the custom integration. This requires manually replacing entity ID placeholders.
 
 ## Setup
 
@@ -91,13 +82,6 @@ The integration creates a device with all configuration entities:
 | `victron_charge_control.calculate_schedule` | Recalculate auto schedule from EPEX prices |
 | `victron_charge_control.clear_schedule` | Clear all scheduled hours |
 
-## Dashboard
-
-The dashboard YAML in `homeassistant/dashboards/victron_energy.yaml` is designed for use with both the HACS integration and the YAML package. When using the HACS integration, the entity IDs follow the pattern `select.victron_charge_control_control_mode`, `number.victron_charge_control_min_soc`, etc.
-
-For the dashboard, install these HACS frontend cards:
-- `apexcharts-card` — price bar chart with color-coded schedule
-- `button-card` — hour selector grid
 
 ## Configuration Defaults
 
@@ -114,42 +98,6 @@ For the dashboard, install these HACS frontend cards:
 
 All parameters are adjustable at runtime via the UI — no YAML editing needed.
 
-## Architecture
-
-See [docs/DESIGN.md](docs/DESIGN.md) for the full design document covering:
-- Solution architecture
-- Control logic priority stack
-- Price-processing approach
-- Safety constraints
-- Implementation phases
-
-## File Structure
-
-```
-custom_components/
-  victron_charge_control/
-    __init__.py                   ← integration setup
-    config_flow.py                ← UI configuration flow
-    const.py                      ← constants and defaults
-    coordinator.py                ← decision engine, schedule calculator, setpoint actuation
-    sensor.py                     ← sensor entities (action, setpoint, schedule)
-    number.py                     ← number entities (all configuration parameters)
-    select.py                     ← select entity (control mode)
-    switch.py                     ← switch entities (charge/discharge allowed)
-    services.py                   ← service handlers
-    services.yaml                 ← service definitions
-    manifest.json                 ← integration metadata
-    strings.json                  ← UI strings
-    translations/en.json          ← English translations
-homeassistant/
-  packages/
-    victron_charge_control.yaml   ← legacy YAML package alternative
-  dashboards/
-    victron_energy.yaml           ← Lovelace dashboard
-docs/
-  DESIGN.md                       ← complete design document
-```
-
 ## Sign Convention
 
 | Setpoint Value | Meaning |
@@ -157,7 +105,3 @@ docs/
 | Positive (e.g., +3000 W) | Import from grid → charge battery |
 | Negative (e.g., -3000 W) | Export to grid → discharge battery |
 | Zero | Idle / self-consumption |
-
-## License
-
-See [LICENSE](LICENSE).
