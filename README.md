@@ -41,12 +41,13 @@ After installation, add the integration via the UI:
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **Victron Charge Control**
-3. Select your 5 entities:
+3. Select your 6 entities:
    - **Battery SOC sensor** — battery state of charge (0–100%)
    - **Grid setpoint entity** — writable ESS grid setpoint (Watts)
    - **Grid power sensor** — current grid import/export (Watts)
    - **Battery power sensor** — current battery charge/discharge (Watts)
    - **EPEX Spot price sensor** — hourly electricity prices
+   - **Max grid feed-in entity** — writable max grid feed-in limit (Watts)
 
 The integration creates a device with all configuration entities:
 
@@ -57,6 +58,7 @@ The integration creates a device with all configuration entities:
 | Control Mode | Select | off / auto / manual / force_charge / force_discharge |
 | Charge Allowed | Switch | Master enable for charging |
 | Discharge Allowed | Switch | Master enable for discharging |
+| Grid Feed-in Control Enabled | Switch | Enable grid feed-in limiting based on price |
 | Min SOC | Number | Floor SOC — never discharge below this |
 | Max SOC | Number | Ceiling SOC — never charge above this |
 | Charge Power | Number | Grid import power when charging (W) |
@@ -68,17 +70,29 @@ The integration creates a device with all configuration entities:
 | Expensive Hours | Number | # most expensive hours to auto-discharge |
 | Charge Price Threshold | Number | Max price for auto-charge (ct/kWh) |
 | Discharge Price Threshold | Number | Min price for auto-discharge (ct/kWh) |
+| Grid Feed-in Price Threshold | Number | Price threshold for reducing grid feed-in (ct/kWh) |
+| Default Max Grid Feed-in | Number | Normal max grid feed-in power (W) |
+| Reduced Max Grid Feed-in | Number | Reduced max grid feed-in power when price is low (W) |
+| Blocked Charging Hours | Text | Comma-separated hours blocked for charging |
+| Blocked Discharging Hours | Text | Comma-separated hours blocked for discharging |
+| Recalculate Schedule | Button | Recalculate schedule from EPEX prices |
 | Desired Action | Sensor | Current computed action (charge/discharge/idle) |
 | Target Setpoint | Sensor | Computed grid setpoint (W) |
 | Charge Hours | Sensor | Currently scheduled charge hours |
 | Discharge Hours | Sensor | Currently scheduled discharge hours |
+| Blocked Charging Hours | Sensor | Currently blocked charging hours |
+| Blocked Discharging Hours | Sensor | Currently blocked discharging hours |
+| Charge Plan | Sensor | Full hour-by-hour charge/discharge plan |
+| Last Schedule Update | Sensor | Timestamp of last schedule recalculation |
 
 ### Services
 
 | Service | Description |
 |---------|-------------|
-| `victron_charge_control.toggle_hour` | Cycle an hour: idle → charge → discharge → idle |
-| `victron_charge_control.set_hour_action` | Set a specific hour to charge/discharge/idle |
+| `victron_charge_control.toggle_hour` | Cycle an hour: idle → charge → discharge → blocked → idle |
+| `victron_charge_control.set_hour_action` | Set a specific hour to charge/discharge/blocked/idle |
+| `victron_charge_control.set_blocked_charging_hours` | Set which hours are blocked for charging |
+| `victron_charge_control.set_blocked_discharging_hours` | Set which hours are blocked for discharging |
 | `victron_charge_control.calculate_schedule` | Recalculate auto schedule from EPEX prices |
 | `victron_charge_control.clear_schedule` | Clear all scheduled hours |
 
@@ -91,10 +105,18 @@ The integration creates a device with all configuration entities:
 | Max SOC | 95% | Battery won't charge above this |
 | Charge Power | 3000 W | Grid import power when charging |
 | Discharge Power | 3000 W | Grid export power when discharging |
+| Idle Setpoint | 0 W | Grid setpoint during idle |
+| Min Grid Setpoint | -5000 W | Hard floor for setpoint |
+| Max Grid Setpoint | 5000 W | Hard ceiling for setpoint |
 | Cheapest Hours | 4 | Number of cheapest hours to auto-charge |
 | Expensive Hours | 4 | Number of most expensive hours to auto-discharge |
 | Charge Price Threshold | 10 ct/kWh | Only auto-charge when price ≤ this |
 | Discharge Price Threshold | 20 ct/kWh | Only auto-discharge when price ≥ this |
+| Grid Feed-in Price Threshold | 0 ct/kWh | Reduce feed-in when price ≤ this |
+| Default Max Grid Feed-in | 5000 W | Normal max grid feed-in limit |
+| Reduced Max Grid Feed-in | 0 W | Feed-in limit when price is low |
+| Blocked Charging Hours | 18–23 | Hours blocked for charging |
+| Blocked Discharging Hours | 15–17 | Hours blocked for discharging |
 
 All parameters are adjustable at runtime via the UI — no YAML editing needed.
 
