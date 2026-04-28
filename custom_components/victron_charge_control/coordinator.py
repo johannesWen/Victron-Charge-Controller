@@ -88,10 +88,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=None,  # driven by events, not polling
         )
-        self.config_entry = entry
 
         # --- Entity references from config ---
         self._battery_soc_entity: str = entry.data[CONF_BATTERY_SOC_ENTITY]
