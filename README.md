@@ -1,7 +1,7 @@
 # Victron Charge Controller for Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0)
+[![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml/badge.svg)](https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml)
 <!-- [![codecov](https://codecov.io/gh/johannesWen/Victron-Charge-Controller/graph/badge.svg?token=MU30OBSTG3)](https://codecov.io/gh/johannesWen/Victron-Charge-Controller) -->
 
