@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -34,6 +36,7 @@ async def async_setup_entry(
             ScheduleSensor(coordinator, entry, "blocked_charging"),
             ScheduleSensor(coordinator, entry, "blocked_discharging"),
             ChargePlanSensor(coordinator, entry),
+            LastScheduleUpdateSensor(coordinator, entry),
         ]
     )
 
@@ -244,3 +247,33 @@ class ChargePlanSensor(VictronCCBaseSensor):
         if data is None:
             return "unknown"
         return f"{len(data.charge_hours)} charge, {len(data.discharge_hours)} discharge"
+
+
+class LastScheduleUpdateSensor(VictronCCBaseSensor):
+    """Sensor showing the timestamp of the last schedule update."""
+
+    _attr_translation_key = "last_schedule_update"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:clock-check-outline"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_last_schedule_update"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data: ChargeControlData | None = self.coordinator.data
+        if data is None:
+            self._attr_native_value = None
+        else:
+            self._attr_native_value = data.last_schedule_update
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> datetime | None:
+        data = self.coordinator.data
+        return data.last_schedule_update if data else None

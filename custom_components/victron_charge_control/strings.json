@@ -62,6 +62,9 @@
       },
       "charge_plan": {
         "name": "Charge Plan"
+      },
+      "last_schedule_update": {
+        "name": "Last Schedule Update"
       }
     },
     "button": {

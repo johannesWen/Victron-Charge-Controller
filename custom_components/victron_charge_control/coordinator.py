@@ -76,6 +76,7 @@ class ChargeControlData:
     prices_today: list[dict[str, Any]] = field(default_factory=list)
     grid_feed_in_active: bool = False
     applied_max_grid_feed_in: float | None = None
+    last_schedule_update: datetime | None = None
 
 
 class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
@@ -134,6 +135,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # --- Last applied setpoint (for deadband) ---
         self._last_applied_setpoint: float | None = None
+
+        # --- Last schedule update timestamp ---
+        self._last_schedule_update: datetime | None = None
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -195,21 +199,25 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def set_charge_hours(self, hours: list[int]) -> None:
         """Set charge hours and trigger update."""
         self._charge_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+        self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_discharge_hours(self, hours: list[int]) -> None:
         """Set discharge hours and trigger update."""
         self._discharge_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+        self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_charging_hours(self, hours: list[int]) -> None:
         """Set blocked charging hours and trigger update."""
         self._blocked_charging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+        self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_discharging_hours(self, hours: list[int]) -> None:
         """Set blocked discharging hours and trigger update."""
         self._blocked_discharging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+        self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def toggle_hour(self, hour: int) -> None:
@@ -238,6 +246,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         else:
             # idle → charge
             self._charge_hours = sorted(self._charge_hours + [hour])
+        self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_hour_action(self, hour: int, action: str) -> None:
@@ -257,6 +266,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         elif action == ACTION_BLOCKED:
             self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
             self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
+        self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def clear_schedule(self) -> None:
@@ -265,6 +275,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._discharge_hours = []
         self._blocked_charging_hours = []
         self._blocked_discharging_hours = []
+        self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     # ------------------------------------------------------------------
@@ -400,6 +411,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         self._charge_hours = sorted(charge_hours)
         self._discharge_hours = sorted(discharge_hours)
+        self._last_schedule_update = dt_util.now()
 
         _LOGGER.info(
             "Auto schedule calculated — Charge: %s, Discharge: %s (%d hours evaluated)",
@@ -690,6 +702,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             prices_today=prices_today,
             grid_feed_in_active=feed_in_active,
             applied_max_grid_feed_in=applied_feed_in,
+            last_schedule_update=self._last_schedule_update,
         )
 
     # ------------------------------------------------------------------
@@ -744,7 +757,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             async_track_time_change(self.hass, _daily_recalc, hour=0, minute=5, second=0)
         )
 
-        # At 14:05 — recalculate for tomorrow prices
+        # At 14:30 — recalculate for tomorrow prices
         @callback
         def _afternoon_recalc(_now: datetime) -> None:
             if self.control_mode == MODE_AUTO:
@@ -753,7 +766,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         self._unsub_listeners.append(
             async_track_time_change(
-                self.hass, _afternoon_recalc, hour=14, minute=5, second=0
+                self.hass, _afternoon_recalc, hour=14, minute=30, second=0
             )
         )
 
