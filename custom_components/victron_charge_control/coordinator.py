@@ -721,10 +721,6 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         @callback
         def _state_changed(event: Any) -> None:
             """Handle state changes of tracked entities."""
-            entity_id = event.data.get("entity_id", "")
-            # If EPEX price data attribute changed and we're in auto mode, recalculate
-            if entity_id == self._epex_spot_entity and self.control_mode == MODE_AUTO:
-                self.calculate_auto_schedule()
             self.hass.async_create_task(self.async_request_refresh())
 
         self._unsub_listeners.append(
