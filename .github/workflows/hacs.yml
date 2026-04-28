@@ -1,0 +1,22 @@
+name: HACS
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  workflow_call:
+
+jobs:
+  validation:
+    name: HACS Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+      - name: Run hassfest validation
+        uses: home-assistant/actions/hassfest@master
+      - name: Run HACS validation
+        uses: hacs/action@22.5.0
+        with:
+          category: integration

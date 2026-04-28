@@ -1,0 +1,44 @@
+name-template: 'v$RESOLVED_VERSION 🌈'
+tag-template: 'v$RESOLVED_VERSION'
+categories:
+  - title: '🚀 Features'
+    labels:
+      - 'type-feature'
+      - 'type-enhancement'
+  - title: '🐛 Bug Fixes'
+    labels:
+      - 'type-fix'
+      - 'type-bug'
+  - title: '🧰 Maintenance'
+    labels: 
+      - 'type-chore'
+      - 'type-test'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks. 
+version-resolver:
+  major:
+    labels:
+      - 'version-major'
+  minor:
+    labels:
+      - 'version-minor'
+  patch:
+    labels:
+      - 'version-patch'
+  default: patch
+template: |
+  ## Changes
+
+  $CHANGES
+
+autolabeler:
+  - label: 'type-bug'
+    branch:
+      - '/fix\/.+/'
+    title:
+      - '/fix/i'
+  - label: 'type-enhancement'
+    branch:
+      - '/feature\/.+/'
+    body:
+      - '/JIRA-[0-9]{1,4}/'
