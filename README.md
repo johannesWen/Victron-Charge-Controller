@@ -1,5 +1,5 @@
 <p align="left">
-    <img src="https://github.com/johannesWen/Victron-Charge-Controller/blob/main/custom_components/victron_charge_control/brand/icon.png" height="150" alt="Victron Charge Controller logo">
+    <img src="https://github.com/johannesWen/Victron-Charge-Controller/blob/main/custom_components/victron_charge_control/brand/icon.png" height="100" alt="Victron Charge Controller logo">
 </p>
 
 # Victron Charge Controller for Home Assistant
