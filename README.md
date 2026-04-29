@@ -48,8 +48,6 @@ After installation, add the integration via the UI:
 3. Select your 6 entities:
    - **Battery SOC sensor** — battery state of charge (0–100%)
    - **Grid setpoint entity** — writable ESS grid setpoint (Watts)
-   - **Grid power sensor** — current grid import/export (Watts)
-   - **Battery power sensor** — current battery charge/discharge (Watts)
    - **EPEX Spot price sensor** — hourly electricity prices
    - **Max grid feed-in entity** — writable max grid feed-in limit (Watts)
 

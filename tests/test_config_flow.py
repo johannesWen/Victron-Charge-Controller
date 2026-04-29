@@ -11,10 +11,8 @@ from custom_components.victron_charge_control.config_flow import (
     VictronChargeControlOptionsFlow,
 )
 from custom_components.victron_charge_control.const import (
-    CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
-    CONF_GRID_POWER_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     DOMAIN,

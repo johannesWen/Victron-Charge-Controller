@@ -16,10 +16,8 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
-    CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
-    CONF_GRID_POWER_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     DOMAIN,
@@ -32,12 +30,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
         vol.Required(CONF_GRID_SETPOINT_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="number"),
-        ),
-        vol.Required(CONF_GRID_POWER_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="sensor"),
-        ),
-        vol.Required(CONF_BATTERY_POWER_ENTITY): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain="sensor"),
         ),
         vol.Required(CONF_EPEX_SPOT_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor"),
@@ -78,8 +70,6 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
             for key in (
                 CONF_BATTERY_SOC_ENTITY,
                 CONF_GRID_SETPOINT_ENTITY,
-                CONF_GRID_POWER_ENTITY,
-                CONF_BATTERY_POWER_ENTITY,
                 CONF_EPEX_SPOT_ENTITY,
                 CONF_MAX_GRID_FEED_IN_ENTITY,
             ):
@@ -119,8 +109,6 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
             for key in (
                 CONF_BATTERY_SOC_ENTITY,
                 CONF_GRID_SETPOINT_ENTITY,
-                CONF_GRID_POWER_ENTITY,
-                CONF_BATTERY_POWER_ENTITY,
                 CONF_EPEX_SPOT_ENTITY,
                 CONF_MAX_GRID_FEED_IN_ENTITY,
             ):
@@ -152,18 +140,6 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     default=current.get(CONF_GRID_SETPOINT_ENTITY, ""),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="number"),
-                ),
-                vol.Required(
-                    CONF_GRID_POWER_ENTITY,
-                    default=current.get(CONF_GRID_POWER_ENTITY, ""),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor"),
-                ),
-                vol.Required(
-                    CONF_BATTERY_POWER_ENTITY,
-                    default=current.get(CONF_BATTERY_POWER_ENTITY, ""),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor"),
                 ),
                 vol.Required(
                     CONF_EPEX_SPOT_ENTITY,
