@@ -22,7 +22,7 @@ Automated battery charge/discharge control for Victron ESS systems using EPEX Sp
 | [Victron GX modbusTCP](https://github.com/sfstar/hass-victron) | Provides writable grid setpoint entity |
 | [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC, power readings |
 | [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly electricity prices |
-|
+
 ## Installation
 
 ### HACS Custom Integration
