@@ -1,3 +1,7 @@
+<p align="left">
+    <img src="https://github.com/johannesWen/Victron-Charge-Controller/blob/main/custom_components/victron_charge_control/brand/icon.png" height="150" alt="Victron Charge Controller logo">
+</p>
+
 # Victron Charge Controller for Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
@@ -127,3 +131,212 @@ All parameters are adjustable at runtime via the UI — no YAML editing needed.
 | Positive (e.g., +3000 W) | Import from grid → charge battery |
 | Negative (e.g., -3000 W) | Export to grid → discharge battery |
 | Zero | Idle / self-consumption |
+
+## Home Assistant Entities
+
+![](assets/entities.png)
+
+<details>
+<summary>Show dashboard YAML</summary>
+
+```yaml
+  - type: sections
+    max_columns: 4
+    title: ESS
+    path: ess
+    icon: mdi:home-battery
+    subview: true
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Enable
+            heading_style: title
+          - type: tile
+            entity: switch.victron_charge_control_charge_allowed
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: switch.victron_charge_control_discharge_allowed
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: select.victron_charge_control_control_mode
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: heading
+            heading: Grid Feed In Control
+            heading_style: title
+          - type: tile
+            entity: switch.victron_charge_control_grid_feed_in_control
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_grid_feed_in_price_threshold
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_default_max_grid_feed_in
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_reduced_max_grid_feed_in
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: heading
+            heading: Inputs
+            heading_style: title
+          - type: tile
+            entity: number.victron_charge_control_charge_power
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_discharge_power
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_charge_price_threshold
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_discharge_price_threshold
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_max_grid_setpoint
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_min_grid_setpoint
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_cheapest_hours_auto_charge
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_expensive_hours_auto_discharge
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_min_soc
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_max_soc
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: text.victron_charge_control_blocked_charging_hours
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: text.victron_charge_control_blocked_discharging_hours
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.victron_charge_control_idle_setpoint
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: button.victron_charge_control_recalculate_schedule
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+      - type: grid
+        cards:
+          - type: heading
+            heading: Sensors
+            heading_style: title
+          - type: tile
+            entity: sensor.victron_charge_control_charge_hours
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: sensor.victron_charge_control_discharge_hours
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: sensor.victron_charge_control_target_setpoint
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: sensor.victron_charge_control_desired_action
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: sensor.victron_charge_control_blocked_charging_hours
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: sensor.victron_charge_control_blocked_discharging_hours
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: sensor.victron_charge_control_charge_plan
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: sensor.victron_charge_control_last_schedule_update
+            name:
+              type: entity
+            vertical: false
+            features_position: bottom
+```
+
+</details>
