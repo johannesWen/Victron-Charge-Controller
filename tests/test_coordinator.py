@@ -71,8 +71,6 @@ class TestCoordinatorInit:
     def test_entity_references(self, coordinator):
         assert coordinator.battery_soc_entity == "sensor.battery_soc"
         assert coordinator.grid_setpoint_entity == "number.grid_setpoint"
-        assert coordinator.grid_power_entity == "sensor.grid_power"
-        assert coordinator.battery_power_entity == "sensor.battery_power"
         assert coordinator.epex_spot_entity == "sensor.epex_spot"
         assert coordinator.max_grid_feed_in_entity == "number.max_grid_feed_in"
 

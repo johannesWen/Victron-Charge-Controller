@@ -25,10 +25,8 @@ from .const import (
     ACTION_CHARGE,
     ACTION_DISCHARGE,
     ACTION_IDLE,
-    CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
-    CONF_GRID_POWER_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     DEFAULT_CHARGE_POWER,
@@ -96,8 +94,6 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # --- Entity references from config ---
         self._battery_soc_entity: str = entry.data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity: str = entry.data[CONF_GRID_SETPOINT_ENTITY]
-        self._grid_power_entity: str = entry.data[CONF_GRID_POWER_ENTITY]
-        self._battery_power_entity: str = entry.data[CONF_BATTERY_POWER_ENTITY]
         self._epex_spot_entity: str = entry.data[CONF_EPEX_SPOT_ENTITY]
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
 
@@ -152,14 +148,6 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return self._grid_setpoint_entity
 
     @property
-    def grid_power_entity(self) -> str:
-        return self._grid_power_entity
-
-    @property
-    def battery_power_entity(self) -> str:
-        return self._battery_power_entity
-
-    @property
     def epex_spot_entity(self) -> str:
         return self._epex_spot_entity
 
@@ -171,8 +159,6 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Update entity references from config entry data."""
         self._battery_soc_entity = data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity = data[CONF_GRID_SETPOINT_ENTITY]
-        self._grid_power_entity = data[CONF_GRID_POWER_ENTITY]
-        self._battery_power_entity = data[CONF_BATTERY_POWER_ENTITY]
         self._epex_spot_entity = data[CONF_EPEX_SPOT_ENTITY]
         self._max_grid_feed_in_entity = data[CONF_MAX_GRID_FEED_IN_ENTITY]
 

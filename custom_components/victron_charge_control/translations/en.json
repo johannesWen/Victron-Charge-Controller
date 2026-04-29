@@ -7,8 +7,6 @@
         "data": {
           "battery_soc_entity": "Battery SOC sensor",
           "grid_setpoint_entity": "Grid setpoint entity (writable)",
-          "grid_power_entity": "Grid power sensor",
-          "battery_power_entity": "Battery power sensor",
           "epex_spot_entity": "EPEX Spot price sensor",
           "max_grid_feed_in_entity": "Max grid feed-in entity (writable)"
         }
@@ -29,8 +27,6 @@
         "data": {
           "battery_soc_entity": "Battery SOC sensor",
           "grid_setpoint_entity": "Grid setpoint entity (writable)",
-          "grid_power_entity": "Grid power sensor",
-          "battery_power_entity": "Battery power sensor",
           "epex_spot_entity": "EPEX Spot price sensor",
           "max_grid_feed_in_entity": "Max grid feed-in entity (writable)"
         }

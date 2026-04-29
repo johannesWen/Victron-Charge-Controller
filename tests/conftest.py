@@ -73,10 +73,8 @@ _patch_ha_compat()
 
 # Now safe to import project modules
 from custom_components.victron_charge_control.const import (  # noqa: E402
-    CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
-    CONF_GRID_POWER_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     DOMAIN,
@@ -91,8 +89,6 @@ MOCK_ENTRY_ID = "test_entry_id_123"
 MOCK_CONFIG_DATA = {
     CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
     CONF_GRID_SETPOINT_ENTITY: "number.grid_setpoint",
-    CONF_GRID_POWER_ENTITY: "sensor.grid_power",
-    CONF_BATTERY_POWER_ENTITY: "sensor.battery_power",
     CONF_EPEX_SPOT_ENTITY: "sensor.epex_spot",
     CONF_MAX_GRID_FEED_IN_ENTITY: "number.max_grid_feed_in",
 }

@@ -7,8 +7,6 @@ DOMAIN = "victron_charge_control"
 # --- Config entry keys (from config flow) ---
 CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_GRID_SETPOINT_ENTITY = "grid_setpoint_entity"
-CONF_GRID_POWER_ENTITY = "grid_power_entity"
-CONF_BATTERY_POWER_ENTITY = "battery_power_entity"
 CONF_EPEX_SPOT_ENTITY = "epex_spot_entity"
 CONF_MAX_GRID_FEED_IN_ENTITY = "max_grid_feed_in_entity"
 
