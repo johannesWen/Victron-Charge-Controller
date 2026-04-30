@@ -73,6 +73,7 @@ jobs:
           commitish: main
           prerelease: true
           prerelease-identifier: "rc"
+          publish: true
 
       - name: Create Home Assistant release archive
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
