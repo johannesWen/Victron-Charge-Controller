@@ -71,6 +71,7 @@ class ChargeControlData:
     blocked_charging_hours: list[int] = field(default_factory=list)
     blocked_discharging_hours: list[int] = field(default_factory=list)
     current_price: float | None = None
+    epex_attributes: dict[str, Any] = field(default_factory=dict)
     prices_today: list[dict[str, Any]] = field(default_factory=list)
     grid_feed_in_active: bool = False
     applied_max_grid_feed_in: float | None = None
@@ -638,6 +639,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Current price
         epex_state = self.hass.states.get(self._epex_spot_entity)
         current_price = None
+        epex_attributes: dict[str, Any] = {}
         prices_today: list[dict[str, Any]] = []
         if epex_state is not None and epex_state.state not in (
             "unavailable",
@@ -647,6 +649,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 current_price = float(epex_state.state)
             except (ValueError, TypeError):
                 pass
+            epex_attributes = dict(epex_state.attributes)
             raw_data = self._find_epex_data(epex_state.attributes)
             if raw_data:
                 now = dt_util.now()
@@ -685,6 +688,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             blocked_charging_hours=list(self._blocked_charging_hours),
             blocked_discharging_hours=list(self._blocked_discharging_hours),
             current_price=current_price,
+            epex_attributes=epex_attributes,
             prices_today=prices_today,
             grid_feed_in_active=feed_in_active,
             applied_max_grid_feed_in=applied_feed_in,

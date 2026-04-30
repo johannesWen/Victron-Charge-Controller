@@ -140,7 +140,7 @@ class CurrentPriceSensor(VictronCCBaseSensor):
     _attr_translation_key = "current_price"
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "ct/kWh"
+    _attr_native_unit_of_measurement = "€/kWh"
     _attr_icon = "mdi:currency-eur"
 
     def __init__(
@@ -156,8 +156,10 @@ class CurrentPriceSensor(VictronCCBaseSensor):
         data: ChargeControlData | None = self.coordinator.data
         if data is None:
             self._attr_native_value = None
+            self._attr_extra_state_attributes = {}
         else:
             self._attr_native_value = data.current_price
+            self._attr_extra_state_attributes = dict(data.epex_attributes)
         self.async_write_ha_state()
 
     @property
