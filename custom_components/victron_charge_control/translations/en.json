@@ -44,6 +44,9 @@
       "target_setpoint": {
         "name": "Target Setpoint"
       },
+      "current_price": {
+        "name": "Current Price"
+      },
       "charge_hours": {
         "name": "Charge Hours"
       },

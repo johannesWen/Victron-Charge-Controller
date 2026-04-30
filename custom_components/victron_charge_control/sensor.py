@@ -31,6 +31,7 @@ async def async_setup_entry(
         [
             DesiredActionSensor(coordinator, entry),
             TargetSetpointSensor(coordinator, entry),
+            CurrentPriceSensor(coordinator, entry),
             ScheduleSensor(coordinator, entry, "charge"),
             ScheduleSensor(coordinator, entry, "discharge"),
             ScheduleSensor(coordinator, entry, "blocked_charging"),
@@ -131,6 +132,38 @@ class TargetSetpointSensor(VictronCCBaseSensor):
     def native_value(self) -> float:
         data = self.coordinator.data
         return data.target_setpoint if data else 0.0
+
+
+class CurrentPriceSensor(VictronCCBaseSensor):
+    """Sensor showing the current EPEX spot price."""
+
+    _attr_translation_key = "current_price"
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "ct/kWh"
+    _attr_icon = "mdi:currency-eur"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_current_price"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data: ChargeControlData | None = self.coordinator.data
+        if data is None:
+            self._attr_native_value = None
+        else:
+            self._attr_native_value = data.current_price
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        return data.current_price if data else None
 
 
 class ScheduleSensor(VictronCCBaseSensor):
