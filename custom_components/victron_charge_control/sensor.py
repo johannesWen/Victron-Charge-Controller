@@ -37,6 +37,7 @@ async def async_setup_entry(
             ScheduleSensor(coordinator, entry, "blocked_discharging"),
             ChargePlanSensor(coordinator, entry),
             LastScheduleUpdateSensor(coordinator, entry),
+            GridFeedInStatusSensor(coordinator, entry),
         ]
     )
 
@@ -277,3 +278,37 @@ class LastScheduleUpdateSensor(VictronCCBaseSensor):
     def native_value(self) -> datetime | None:
         data = self.coordinator.data
         return data.last_schedule_update if data else None
+
+
+class GridFeedInStatusSensor(VictronCCBaseSensor):
+    """Sensor showing whether grid feed-in is in default or reduced mode."""
+
+    _attr_translation_key = "grid_feed_in_status"
+    _attr_icon = "mdi:transmission-tower"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_grid_feed_in_status"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data: ChargeControlData | None = self.coordinator.data
+        if data is None:
+            self._attr_native_value = "default"
+        else:
+            self._attr_native_value = "reduced" if data.grid_feed_in_active else "default"
+        self._attr_extra_state_attributes = {
+            "applied_max_grid_feed_in": data.applied_max_grid_feed_in if data else None,
+        }
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> str:
+        data = self.coordinator.data
+        if data is None:
+            return "default"
+        return "reduced" if data.grid_feed_in_active else "default"

@@ -61,6 +61,9 @@
       },
       "last_schedule_update": {
         "name": "Last Schedule Update"
+      },
+      "grid_feed_in_status": {
+        "name": "Grid Feed-in Status"
       }
     },
     "button": {
