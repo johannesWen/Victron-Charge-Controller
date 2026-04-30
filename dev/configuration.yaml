@@ -1,0 +1,119 @@
+# Dev configuration for testing Victron Charge Control integration
+# without real hardware. Provides dummy entities that simulate
+# Victron ESS + EPEX Spot.
+
+homeassistant:
+  name: HA Dev
+  unit_system: metric
+  time_zone: Europe/Berlin
+  currency: EUR
+
+# Enable default_config for a usable UI
+default_config:
+
+# ---------------------------------------------------------------
+# Backing input_numbers (internal state stores for template numbers)
+# ---------------------------------------------------------------
+input_number:
+  grid_setpoint_store:
+    name: "Grid Setpoint Store"
+    min: -15000
+    max: 15000
+    step: 1
+    initial: 0
+    unit_of_measurement: "W"
+
+  max_grid_feed_in_store:
+    name: "Max Grid Feed-in Store"
+    min: -15000
+    max: 15000
+    step: 1
+    initial: 5000
+    unit_of_measurement: "W"
+
+  battery_soc_value:
+    name: "Battery SOC Control"
+    min: 0
+    max: 100
+    step: 1
+    initial: 50
+    unit_of_measurement: "%"
+    icon: mdi:battery
+
+# ---------------------------------------------------------------
+# Template entities
+# ---------------------------------------------------------------
+template:
+  # --- number domain entities (required by config flow) ---
+  - number:
+      - name: "Grid Setpoint"
+        unique_id: dummy_grid_setpoint
+        unit_of_measurement: "W"
+        icon: mdi:transmission-tower
+        state: "{{ states('input_number.grid_setpoint_store') | float(0) }}"
+        min: -15000
+        max: 15000
+        step: 1
+        set_value:
+          action: input_number.set_value
+          target:
+            entity_id: input_number.grid_setpoint_store
+          data:
+            value: "{{ value }}"
+
+      - name: "Max Grid Feed-in"
+        unique_id: dummy_max_grid_feed_in
+        unit_of_measurement: "W"
+        icon: mdi:transmission-tower-export
+        state: "{{ states('input_number.max_grid_feed_in_store') | float(5000) }}"
+        min: -15000
+        max: 15000
+        step: 1
+        set_value:
+          action: input_number.set_value
+          target:
+            entity_id: input_number.max_grid_feed_in_store
+          data:
+            value: "{{ value }}"
+
+  # --- sensor domain entities ---
+  - sensor:
+      # Battery SOC sensor — adjust via input_number.battery_soc_value
+      - name: "Battery SOC"
+        unique_id: dummy_battery_soc
+        unit_of_measurement: "%"
+        device_class: battery
+        state: "{{ states('input_number.battery_soc_value') | int(50) }}"
+        icon: mdi:battery
+
+      # EPEX Spot price sensor with 24h of simulated prices.
+      # Prices are realistic: cheap at night (1-5 ct), moderate midday
+      # (8-15 ct), expensive in the evening peak (18-32 ct).
+      # The data attribute uses today's date so the schedule calculator
+      # always sees current-day hours.
+      - name: "EPEX Spot Price"
+        unique_id: dummy_epex_spot
+        unit_of_measurement: "ct/kWh"
+        icon: mdi:currency-eur
+        state: >-
+          {% set h = now().hour %}
+          {% set prices = [3.2,2.8,2.1,1.5,2.3,5.7,8.4,12.3,15.6,14.2,11.8,10.5,9.1,8.7,11.2,18.9,22.5,28.3,32.1,25.7,19.4,14.8,9.6,5.2] %}
+          {{ prices[h] }}
+        attributes:
+          data: >-
+            {% set prices = [3.2,2.8,2.1,1.5,2.3,5.7,8.4,12.3,15.6,14.2,11.8,10.5,9.1,8.7,11.2,18.9,22.5,28.3,32.1,25.7,19.4,14.8,9.6,5.2] %}
+            {% set today = now().replace(hour=0, minute=0, second=0, microsecond=0) %}
+            {% set ns = namespace(entries=[]) %}
+            {% for h in range(24) %}
+              {% set start = today + timedelta(hours=h) %}
+              {% set end = today + timedelta(hours=h+1) %}
+              {% set ns.entries = ns.entries + [{"start_time": start.isoformat(), "end_time": end.isoformat(), "price_ct_per_kwh": prices[h]}] %}
+            {% endfor %}
+            {{ ns.entries }}
+
+# ---------------------------------------------------------------
+# Automations / scripts / scenes (required files)
+# ---------------------------------------------------------------
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml

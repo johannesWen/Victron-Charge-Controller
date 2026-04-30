@@ -1,0 +1,18 @@
+services:
+  homeassistant:
+    container_name: ha-dev
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    volumes:
+      # Mount the integration under development
+      - ./custom_components/victron_charge_control:/config/custom_components/victron_charge_control
+      # Mount dev HA configuration with dummy sensors
+      - ./dev/configuration.yaml:/config/configuration.yaml
+      - ./dev/automations.yaml:/config/automations.yaml
+      - ./dev/scripts.yaml:/config/scripts.yaml
+      - ./dev/scenes.yaml:/config/scenes.yaml
+      - ./dev/python_scripts:/config/python_scripts
+    environment:
+      - TZ=Europe/Berlin
