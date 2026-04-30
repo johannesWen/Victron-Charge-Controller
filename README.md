@@ -18,6 +18,10 @@ Automated battery charge/discharge control for Victron ESS systems using EPEX Sp
 - **Force modes:** Immediately charge or discharge at the configured power level.
 - **Safety:** Enforces SOC limits, setpoint limits, and automatically shuts down if Victron entities become unavailable.
 
+## Lovelace Dashboard Card
+
+A Lovelace dashboard card for this integration is available in the [Victron Charge Controller Dashboard](https://github.com/johannesWen/Victron-Charge-Controller-Dashboard) repository.
+
 ## Prerequisites
 
 | Component | Purpose |
