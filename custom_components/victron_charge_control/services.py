@@ -24,6 +24,7 @@ SERVICE_CLEAR_SCHEDULE = "clear_schedule"
 SCHEMA_TOGGLE_HOUR = vol.Schema(
     {
         vol.Required("hour"): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+        vol.Optional("date"): cv.string,
     }
 )
 
@@ -31,6 +32,7 @@ SCHEMA_SET_HOUR_ACTION = vol.Schema(
     {
         vol.Required("hour"): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
         vol.Required("action"): vol.In([ACTION_IDLE, ACTION_CHARGE, ACTION_DISCHARGE, ACTION_BLOCKED]),
+        vol.Optional("date"): cv.string,
     }
 )
 
@@ -68,14 +70,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         if coordinator is None:
             _LOGGER.error("No Victron Charge Control instance found")
             return
-        coordinator.toggle_hour(call.data["hour"])
+        coordinator.toggle_hour(call.data["hour"], call.data.get("date"))
 
     async def handle_set_hour_action(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass)
         if coordinator is None:
             _LOGGER.error("No Victron Charge Control instance found")
             return
-        coordinator.set_hour_action(call.data["hour"], call.data["action"])
+        coordinator.set_hour_action(call.data["hour"], call.data["action"], call.data.get("date"))
 
     async def handle_set_blocked_charging_hours(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass)

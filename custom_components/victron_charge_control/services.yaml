@@ -12,6 +12,13 @@ toggle_hour:
           min: 0
           max: 23
           step: 1
+    date:
+      name: Date
+      description: "Date for the schedule slot (YYYY-MM-DD). Defaults to today."
+      required: false
+      example: "2026-05-02"
+      selector:
+        date:
 
 set_hour_action:
   name: Set Hour Action
@@ -39,6 +46,13 @@ set_hour_action:
             - "charge"
             - "discharge"
             - "blocked"
+    date:
+      name: Date
+      description: "Date for the schedule slot (YYYY-MM-DD). Defaults to today."
+      required: false
+      example: "2026-05-02"
+      selector:
+        date:
 
 set_blocked_charging_hours:
   name: Set Blocked Charging Hours

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import ChargeControlData, VictronChargeControlCoordinator
@@ -89,8 +90,8 @@ class DesiredActionSensor(VictronCCBaseSensor):
             }.get(data.desired_action, "mdi:battery-outline")
         self._attr_extra_state_attributes = {
             "mode": self.coordinator.control_mode,
-            "charge_hours": self.coordinator.charge_hours,
-            "discharge_hours": self.coordinator.discharge_hours,
+            "charge_hours": self.coordinator.data.charge_hours if self.coordinator.data else [],
+            "discharge_hours": self.coordinator.data.discharge_hours if self.coordinator.data else [],
             "blocked_charging_hours": self.coordinator.blocked_charging_hours,
             "blocked_discharging_hours": self.coordinator.blocked_discharging_hours,
         }
@@ -190,19 +191,42 @@ class ScheduleSensor(VictronCCBaseSensor):
             "blocked_discharging": "mdi:cancel",
         }.get(schedule_type, "mdi:clock-outline")
 
+    @staticmethod
+    def _format_slots(slots: list[dict]) -> str:
+        """Format date-aware slots into compact grouped string.
+
+        Input:  [{"date": "2026-05-05", "hour": 2}, {"date": "2026-05-05", "hour": 3}, {"date": "2026-05-06", "hour": 1}]
+        Output: "2026-05-05:2,3|2026-05-06:1"
+        """
+        if not slots:
+            return ""
+        grouped: dict[str, list[int]] = {}
+        for s in slots:
+            grouped.setdefault(s["date"], []).append(s["hour"])
+        parts = []
+        for date_str in sorted(grouped):
+            hours = ",".join(str(h) for h in sorted(grouped[date_str]))
+            parts.append(f"{date_str}:{hours}")
+        return "|".join(parts)
+
     @callback
     def _handle_coordinator_update(self) -> None:
         data: ChargeControlData | None = self.coordinator.data
         if data is None:
             self._attr_native_value = ""
         else:
-            hours = {
-                "charge": data.charge_hours,
-                "discharge": data.discharge_hours,
-                "blocked_charging": data.blocked_charging_hours,
-                "blocked_discharging": data.blocked_discharging_hours,
-            }.get(self._schedule_type, [])
-            self._attr_native_value = ",".join(str(h) for h in hours)
+            if self._schedule_type in ("charge", "discharge"):
+                slots = {
+                    "charge": data.charge_hours,
+                    "discharge": data.discharge_hours,
+                }.get(self._schedule_type, [])
+                self._attr_native_value = self._format_slots(slots)
+            else:
+                hours = {
+                    "blocked_charging": data.blocked_charging_hours,
+                    "blocked_discharging": data.blocked_discharging_hours,
+                }.get(self._schedule_type, [])
+                self._attr_native_value = ",".join(str(h) for h in hours)
         self.async_write_ha_state()
 
     @property
@@ -210,9 +234,13 @@ class ScheduleSensor(VictronCCBaseSensor):
         data = self.coordinator.data
         if data is None:
             return ""
+        if self._schedule_type in ("charge", "discharge"):
+            slots = {
+                "charge": data.charge_hours,
+                "discharge": data.discharge_hours,
+            }.get(self._schedule_type, [])
+            return self._format_slots(slots)
         hours = {
-            "charge": data.charge_hours,
-            "discharge": data.discharge_hours,
             "blocked_charging": data.blocked_charging_hours,
             "blocked_discharging": data.blocked_discharging_hours,
         }.get(self._schedule_type, [])
@@ -234,26 +262,38 @@ class ChargePlanSensor(VictronCCBaseSensor):
         self._attr_unique_id = f"{entry.entry_id}_charge_plan"
 
     def _build_plan(self, data: ChargeControlData) -> list[dict]:
-        """Build hour-by-hour plan from coordinator data."""
-        price_map = {p["hour"]: p["price"] for p in data.prices_today}
+        """Build hour-by-hour plan from coordinator data (today + tomorrow)."""
+        now = dt_util.now()
+        today_str = now.strftime("%Y-%m-%d")
+        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # Build lookup sets for charge/discharge slots
+        charge_set = {(s["date"], s["hour"]) for s in data.charge_hours}
+        discharge_set = {(s["date"], s["hour"]) for s in data.discharge_hours}
+
+        # Price maps per day
+        price_map_today = {p["hour"]: p["price"] for p in data.prices_today}
+        price_map_tomorrow = {p["hour"]: p["price"] for p in data.prices_tomorrow}
+
         plan = []
-        for hour in range(24):
-            if hour in data.blocked_charging_hours and hour in data.blocked_discharging_hours:
-                action = "blocked"
-            elif hour in data.blocked_charging_hours:
-                action = "blocked_charging"
-            elif hour in data.blocked_discharging_hours:
-                action = "blocked_discharging"
-            elif hour in data.charge_hours:
-                action = "charge"
-            elif hour in data.discharge_hours:
-                action = "discharge"
-            else:
-                action = "idle"
-            entry = {"hour": hour, "action": action}
-            if hour in price_map:
-                entry["price"] = price_map[hour]
-            plan.append(entry)
+        for day_str, price_map in [(today_str, price_map_today), (tomorrow_str, price_map_tomorrow)]:
+            for hour in range(24):
+                if hour in data.blocked_charging_hours and hour in data.blocked_discharging_hours:
+                    action = "blocked"
+                elif hour in data.blocked_charging_hours:
+                    action = "blocked_charging"
+                elif hour in data.blocked_discharging_hours:
+                    action = "blocked_discharging"
+                elif (day_str, hour) in charge_set:
+                    action = "charge"
+                elif (day_str, hour) in discharge_set:
+                    action = "discharge"
+                else:
+                    action = "idle"
+                entry = {"date": day_str, "hour": hour, "action": action}
+                if hour in price_map:
+                    entry["price"] = price_map[hour]
+                plan.append(entry)
         return plan
 
     @callback

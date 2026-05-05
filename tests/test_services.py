@@ -106,13 +106,13 @@ class TestServiceHandlers:
 
         assert handler is not None
 
-        # Create mock service call
+        # Create mock service call (date defaults to today via coordinator)
         service_call = MagicMock()
-        service_call.data = {"hour": 5}
+        service_call.data = {"hour": 5, "date": "2026-05-02"}
 
         await handler(service_call)
 
-        assert 5 in coordinator.charge_hours
+        assert ("2026-05-02", 5) in coordinator.charge_hours
 
     @pytest.mark.asyncio
     async def test_set_hour_action_handler(self, mock_hass, coordinator):
@@ -126,17 +126,17 @@ class TestServiceHandlers:
                 break
 
         service_call = MagicMock()
-        service_call.data = {"hour": 10, "action": ACTION_DISCHARGE}
+        service_call.data = {"hour": 10, "action": ACTION_DISCHARGE, "date": "2026-05-02"}
 
         await handler(service_call)
 
-        assert 10 in coordinator.discharge_hours
+        assert ("2026-05-02", 10) in coordinator.discharge_hours
 
     @pytest.mark.asyncio
     async def test_clear_schedule_handler(self, mock_hass, coordinator):
         mock_hass.data[DOMAIN] = {"entry1": coordinator}
-        coordinator._charge_hours = [1, 2, 3]
-        coordinator._discharge_hours = [20, 21]
+        coordinator._charge_hours = [("2026-05-02", 1), ("2026-05-02", 2)]
+        coordinator._discharge_hours = [("2026-05-02", 20)]
 
         await async_setup_services(mock_hass)
 
