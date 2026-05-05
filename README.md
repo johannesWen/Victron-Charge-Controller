@@ -22,6 +22,10 @@ Automated battery charge/discharge control for Victron ESS systems using EPEX Sp
 
 A Lovelace dashboard card for this integration is available in the [Victron Charge Controller Dashboard](https://github.com/johannesWen/Victron-Charge-Controller-Dashboard) repository.
 
+| Settings Card | Plan Card |
+|:---:|:---:| 
+|<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/settings_card.png" height="500" alt="Victron Charge Controller logo">|<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/refs/heads/main/assets/screenshots/plan_card.png" height="500" alt="Victron Charge Controller logo">|
+
 ## Prerequisites
 
 | Component | Purpose |
