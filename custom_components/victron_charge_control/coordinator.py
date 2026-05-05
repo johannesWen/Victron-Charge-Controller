@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -59,6 +59,9 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Type alias for a date-qualified schedule slot: (ISO date "YYYY-MM-DD", hour 0-23)
+ScheduleSlot = tuple[str, int]
+
 
 @dataclass
 class ChargeControlData:
@@ -66,13 +69,14 @@ class ChargeControlData:
 
     desired_action: str = ACTION_IDLE
     target_setpoint: float = 0.0
-    charge_hours: list[int] = field(default_factory=list)
-    discharge_hours: list[int] = field(default_factory=list)
+    charge_hours: list[dict[str, Any]] = field(default_factory=list)
+    discharge_hours: list[dict[str, Any]] = field(default_factory=list)
     blocked_charging_hours: list[int] = field(default_factory=list)
     blocked_discharging_hours: list[int] = field(default_factory=list)
     current_price: float | None = None
     epex_attributes: dict[str, Any] = field(default_factory=dict)
     prices_today: list[dict[str, Any]] = field(default_factory=list)
+    prices_tomorrow: list[dict[str, Any]] = field(default_factory=list)
     grid_feed_in_active: bool = False
     applied_max_grid_feed_in: float | None = None
     last_schedule_update: datetime | None = None
@@ -122,8 +126,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._last_applied_feed_in: float | None = None
 
         # --- Schedule state ---
-        self._charge_hours: list[int] = []
-        self._discharge_hours: list[int] = []
+        # Charge/discharge are date-aware: list of (date_iso, hour) tuples
+        self._charge_hours: list[ScheduleSlot] = []
+        self._discharge_hours: list[ScheduleSlot] = []
+        # Blocked hours are recurring (hour-of-day only)
         self._blocked_charging_hours: list[int] = []
         self._blocked_discharging_hours: list[int] = []
 
@@ -164,11 +170,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._max_grid_feed_in_entity = data[CONF_MAX_GRID_FEED_IN_ENTITY]
 
     @property
-    def charge_hours(self) -> list[int]:
+    def charge_hours(self) -> list[ScheduleSlot]:
         return list(self._charge_hours)
 
     @property
-    def discharge_hours(self) -> list[int]:
+    def discharge_hours(self) -> list[ScheduleSlot]:
         return list(self._discharge_hours)
 
     @property
@@ -183,45 +189,98 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Schedule management
     # ------------------------------------------------------------------
 
-    def set_charge_hours(self, hours: list[int]) -> None:
-        """Set charge hours and trigger update."""
-        self._charge_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+    @staticmethod
+    def _sort_slots(slots: list[ScheduleSlot]) -> list[ScheduleSlot]:
+        """Sort schedule slots by (date, hour)."""
+        return sorted(set(slots))
+
+    @staticmethod
+    def _valid_slot(date_str: str, hour: int) -> bool:
+        """Validate a schedule slot."""
+        if not (0 <= hour <= 23):
+            return False
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
+    def _today_str(self) -> str:
+        """Get today's date as ISO string."""
+        return dt_util.now().strftime("%Y-%m-%d")
+
+    def _clean_expired_slots(self) -> None:
+        """Remove schedule slots that are in the past."""
+        now = dt_util.now()
+        current_date = now.strftime("%Y-%m-%d")
+        current_hour = now.hour
+
+        def is_future(slot: ScheduleSlot) -> bool:
+            d, h = slot
+            if d > current_date:
+                return True
+            if d == current_date and h >= current_hour:
+                return True
+            return False
+
+        self._charge_hours = [s for s in self._charge_hours if is_future(s)]
+        self._discharge_hours = [s for s in self._discharge_hours if is_future(s)]
+
+    def set_charge_hours(self, slots: list[ScheduleSlot]) -> None:
+        """Set charge hours (date-aware) and trigger update."""
+        self._charge_hours = self._sort_slots(
+            [s for s in slots if self._valid_slot(s[0], s[1])]
+        )
         self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
-    def set_discharge_hours(self, hours: list[int]) -> None:
-        """Set discharge hours and trigger update."""
-        self._discharge_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+    def set_discharge_hours(self, slots: list[ScheduleSlot]) -> None:
+        """Set discharge hours (date-aware) and trigger update."""
+        self._discharge_hours = self._sort_slots(
+            [s for s in slots if self._valid_slot(s[0], s[1])]
+        )
         self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_charging_hours(self, hours: list[int]) -> None:
-        """Set blocked charging hours and trigger update."""
+        """Set blocked charging hours (recurring daily) and trigger update."""
         self._blocked_charging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_discharging_hours(self, hours: list[int]) -> None:
-        """Set blocked discharging hours and trigger update."""
+        """Set blocked discharging hours (recurring daily) and trigger update."""
         self._blocked_discharging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
-    def toggle_hour(self, hour: int) -> None:
+    def toggle_hour(self, hour: int, date_str: str | None = None) -> None:
         """Cycle an hour: idle → charge → discharge → blocked → idle.
 
-        'blocked' in this cycle means blocked for both charging and discharging.
+        'blocked' in this cycle means blocked for both charging and discharging
+        (recurring, hour-of-day only).
+
+        Args:
+            hour: Hour of day (0-23).
+            date_str: ISO date string (YYYY-MM-DD). Defaults to today.
         """
         if hour < 0 or hour > 23:
             return
-        if hour in self._charge_hours:
+        if date_str is None:
+            date_str = self._today_str()
+        if not self._valid_slot(date_str, hour):
+            return
+
+        slot: ScheduleSlot = (date_str, hour)
+
+        if slot in self._charge_hours:
             # charge → discharge
-            self._charge_hours = [h for h in self._charge_hours if h != hour]
-            if hour not in self._discharge_hours:
-                self._discharge_hours = sorted(self._discharge_hours + [hour])
-        elif hour in self._discharge_hours:
-            # discharge → blocked (both)
-            self._discharge_hours = [h for h in self._discharge_hours if h != hour]
+            self._charge_hours = [s for s in self._charge_hours if s != slot]
+            if slot not in self._discharge_hours:
+                self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
+        elif slot in self._discharge_hours:
+            # discharge → blocked (both, recurring)
+            self._discharge_hours = [s for s in self._discharge_hours if s != slot]
             if hour not in self._blocked_charging_hours:
                 self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
             if hour not in self._blocked_discharging_hours:
@@ -232,24 +291,39 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._blocked_discharging_hours = [h for h in self._blocked_discharging_hours if h != hour]
         else:
             # idle → charge
-            self._charge_hours = sorted(self._charge_hours + [hour])
+            self._charge_hours = self._sort_slots(self._charge_hours + [slot])
         self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
-    def set_hour_action(self, hour: int, action: str) -> None:
-        """Set a specific hour to charge, discharge, blocked, or idle."""
+    def set_hour_action(self, hour: int, action: str, date_str: str | None = None) -> None:
+        """Set a specific hour to charge, discharge, blocked, or idle.
+
+        Args:
+            hour: Hour of day (0-23).
+            action: One of ACTION_CHARGE, ACTION_DISCHARGE, ACTION_BLOCKED, ACTION_IDLE.
+            date_str: ISO date string (YYYY-MM-DD). Defaults to today.
+        """
         if hour < 0 or hour > 23:
             return
-        # Remove from all lists
-        self._charge_hours = [h for h in self._charge_hours if h != hour]
-        self._discharge_hours = [h for h in self._discharge_hours if h != hour]
+        if date_str is None:
+            date_str = self._today_str()
+        if not self._valid_slot(date_str, hour):
+            return
+
+        slot: ScheduleSlot = (date_str, hour)
+
+        # Remove from charge/discharge lists (date-specific)
+        self._charge_hours = [s for s in self._charge_hours if s != slot]
+        self._discharge_hours = [s for s in self._discharge_hours if s != slot]
+        # Remove from blocked lists (recurring)
         self._blocked_charging_hours = [h for h in self._blocked_charging_hours if h != hour]
         self._blocked_discharging_hours = [h for h in self._blocked_discharging_hours if h != hour]
+
         # Add to correct list
         if action == ACTION_CHARGE:
-            self._charge_hours = sorted(self._charge_hours + [hour])
+            self._charge_hours = self._sort_slots(self._charge_hours + [slot])
         elif action == ACTION_DISCHARGE:
-            self._discharge_hours = sorted(self._discharge_hours + [hour])
+            self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
         elif action == ACTION_BLOCKED:
             self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
             self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
@@ -333,8 +407,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return
 
         now = dt_util.now()
+        current_slot = (now.strftime("%Y-%m-%d"), now.hour)
 
-        # Build price list for all future hours (today's remaining + tomorrow)
+        # Build price list for all future hours (today + tomorrow)
         prices: list[dict[str, Any]] = []
         for item in epex_data:
             start_time = item.get(EPEX_KEY_START_TIME)
@@ -355,56 +430,52 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if sdt is None:
                 continue
 
+            slot_date = sdt.strftime("%Y-%m-%d")
+            slot_hour = sdt.hour
+            slot = (slot_date, slot_hour)
+
             # Include any hour that hasn't ended yet
-            if sdt >= now.replace(minute=0, second=0, microsecond=0):
+            if slot >= current_slot:
                 price = self._extract_price_ct(item)
                 if price is not None:
-                    prices.append({"hour": sdt.hour, "price": price})
+                    prices.append({"date": slot_date, "hour": slot_hour, "price": price})
 
         if not prices:
             _LOGGER.info("No future hours with price data available")
             return
 
-        # When multiple days have the same hour, keep the one closest to now
-        # (deduplicate by hour, preferring the earliest future occurrence)
-        seen_hours: dict[int, float] = {}
-        for item in prices:
-            h = item["hour"]
-            if h not in seen_hours:
-                seen_hours[h] = item["price"]
-        deduped = [{"hour": h, "price": p} for h, p in seen_hours.items()]
-
         # Sort ascending by price
-        deduped.sort(key=lambda x: x["price"])
+        prices.sort(key=lambda x: x["price"])
 
         # Pick cheapest N hours below charge threshold (skip blocked charging hours)
-        charge_hours: list[int] = []
-        for item in deduped:
-            if len(charge_hours) >= self.cheapest_hours:
+        charge_slots: list[ScheduleSlot] = []
+        for item in prices:
+            if len(charge_slots) >= self.cheapest_hours:
                 break
             if item["hour"] not in self._blocked_charging_hours and item["price"] <= self.charge_price_threshold:
-                charge_hours.append(item["hour"])
+                charge_slots.append((item["date"], item["hour"]))
 
         # Pick most expensive N hours above discharge threshold (skip blocked discharging hours)
-        discharge_hours: list[int] = []
-        for item in reversed(deduped):
-            if len(discharge_hours) >= self.expensive_hours:
+        discharge_slots: list[ScheduleSlot] = []
+        for item in reversed(prices):
+            if len(discharge_slots) >= self.expensive_hours:
                 break
             if item["hour"] not in self._blocked_discharging_hours and item["price"] >= self.discharge_price_threshold:
-                discharge_hours.append(item["hour"])
+                discharge_slots.append((item["date"], item["hour"]))
 
         # Resolve conflicts: discharge wins (remove from charge)
-        charge_hours = [h for h in charge_hours if h not in discharge_hours]
+        discharge_set = set(discharge_slots)
+        charge_slots = [s for s in charge_slots if s not in discharge_set]
 
-        self._charge_hours = sorted(charge_hours)
-        self._discharge_hours = sorted(discharge_hours)
+        self._charge_hours = self._sort_slots(charge_slots)
+        self._discharge_hours = self._sort_slots(discharge_slots)
         self._last_schedule_update = dt_util.now()
 
         _LOGGER.info(
             "Auto schedule calculated — Charge: %s, Discharge: %s (%d hours evaluated)",
             self._charge_hours,
             self._discharge_hours,
-            len(deduped),
+            len(prices),
         )
 
     # ------------------------------------------------------------------
@@ -446,13 +517,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Priority 4: Blocked hours — override schedule per action type
         if self.control_mode in (MODE_AUTO, MODE_MANUAL):
-            hour = dt_util.now().hour
+            now = dt_util.now()
+            current_date = now.strftime("%Y-%m-%d")
+            hour = now.hour
+            current_slot: ScheduleSlot = (current_date, hour)
 
-            # Priority 5: Auto or Manual — look up schedule
-            if hour in self._charge_hours and self.charge_allowed and soc < self.max_soc:
+            # Priority 5: Auto or Manual — look up schedule (date-aware)
+            if current_slot in self._charge_hours and self.charge_allowed and soc < self.max_soc:
                 if hour not in self._blocked_charging_hours:
                     return ACTION_CHARGE
-            if hour in self._discharge_hours and self.discharge_allowed and soc > self.min_soc:
+            if current_slot in self._discharge_hours and self.discharge_allowed and soc > self.min_soc:
                 if hour not in self._blocked_discharging_hours:
                     return ACTION_DISCHARGE
             return ACTION_IDLE
@@ -641,6 +715,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         current_price = None
         epex_attributes: dict[str, Any] = {}
         prices_today: list[dict[str, Any]] = []
+        prices_tomorrow: list[dict[str, Any]] = []
         if epex_state is not None and epex_state.state not in (
             "unavailable",
             "unknown",
@@ -654,6 +729,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if raw_data:
                 now = dt_util.now()
                 today_str = now.strftime("%Y-%m-%d")
+                tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
                 for item in raw_data:
                     st = item.get(EPEX_KEY_START_TIME)
                     if st is None:
@@ -669,27 +745,39 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                         sdt = dt_util.as_local(st)
                     else:
                         continue
-                    if sdt is not None and sdt.strftime("%Y-%m-%d") == today_str:
+                    if sdt is not None:
+                        date_str = sdt.strftime("%Y-%m-%d")
                         price = self._extract_price_ct(item)
                         if price is not None:
-                            prices_today.append(
-                                {"hour": sdt.hour, "price": price}
-                            )
+                            entry = {"hour": sdt.hour, "price": price}
+                            if date_str == today_str:
+                                prices_today.append(entry)
+                            elif date_str == tomorrow_str:
+                                prices_tomorrow.append(entry)
                 prices_today.sort(key=lambda x: x["hour"])
+                prices_tomorrow.sort(key=lambda x: x["hour"])
+
+        # Clean expired schedule slots
+        self._clean_expired_slots()
 
         # Grid feed-in control
         feed_in_active, applied_feed_in = await self._apply_grid_feed_in(current_price)
 
+        # Serialize schedule slots to dicts for sensor consumption
+        charge_hours_data = [{"date": d, "hour": h} for d, h in self._charge_hours]
+        discharge_hours_data = [{"date": d, "hour": h} for d, h in self._discharge_hours]
+
         return ChargeControlData(
             desired_action=action,
             target_setpoint=setpoint,
-            charge_hours=list(self._charge_hours),
-            discharge_hours=list(self._discharge_hours),
+            charge_hours=charge_hours_data,
+            discharge_hours=discharge_hours_data,
             blocked_charging_hours=list(self._blocked_charging_hours),
             blocked_discharging_hours=list(self._blocked_discharging_hours),
             current_price=current_price,
             epex_attributes=epex_attributes,
             prices_today=prices_today,
+            prices_tomorrow=prices_tomorrow,
             grid_feed_in_active=feed_in_active,
             applied_max_grid_feed_in=applied_feed_in,
             last_schedule_update=self._last_schedule_update,
@@ -731,6 +819,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # At 00:05 — daily schedule recalculation for auto mode
         @callback
         def _daily_recalc(_now: datetime) -> None:
+            self._clean_expired_slots()
             if self.control_mode == MODE_AUTO:
                 self.calculate_auto_schedule()
             elif self.control_mode == MODE_MANUAL:

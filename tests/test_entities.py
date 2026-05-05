@@ -92,16 +92,31 @@ class TestScheduleSensor:
     """Tests for the ScheduleSensor."""
 
     def test_charge_hours(self, coordinator):
-        coordinator.data = ChargeControlData(charge_hours=[1, 2, 3])
+        coordinator.data = ChargeControlData(
+            charge_hours=[{"date": "2026-05-02", "hour": 1}, {"date": "2026-05-02", "hour": 2}, {"date": "2026-05-02", "hour": 3}]
+        )
         entry = MockConfigEntry()
         sensor = ScheduleSensor(coordinator, entry, "charge")
-        assert sensor.native_value == "1,2,3"
+        assert sensor.native_value == "2026-05-02:1,2,3"
 
     def test_discharge_hours(self, coordinator):
-        coordinator.data = ChargeControlData(discharge_hours=[20, 21])
+        coordinator.data = ChargeControlData(
+            discharge_hours=[{"date": "2026-05-02", "hour": 20}, {"date": "2026-05-02", "hour": 21}]
+        )
         entry = MockConfigEntry()
         sensor = ScheduleSensor(coordinator, entry, "discharge")
-        assert sensor.native_value == "20,21"
+        assert sensor.native_value == "2026-05-02:20,21"
+
+    def test_multi_day_charge_hours(self, coordinator):
+        coordinator.data = ChargeControlData(
+            charge_hours=[
+                {"date": "2026-05-02", "hour": 2}, {"date": "2026-05-02", "hour": 3},
+                {"date": "2026-05-03", "hour": 1}, {"date": "2026-05-03", "hour": 4},
+            ]
+        )
+        entry = MockConfigEntry()
+        sensor = ScheduleSensor(coordinator, entry, "charge")
+        assert sensor.native_value == "2026-05-02:2,3|2026-05-03:1,4"
 
     def test_blocked_charging_hours(self, coordinator):
         coordinator.data = ChargeControlData(blocked_charging_hours=[18, 19])
@@ -127,8 +142,8 @@ class TestChargePlanSensor:
 
     def test_native_value_with_data(self, coordinator):
         coordinator.data = ChargeControlData(
-            charge_hours=[1, 2],
-            discharge_hours=[20],
+            charge_hours=[{"date": "2026-05-02", "hour": 1}, {"date": "2026-05-02", "hour": 2}],
+            discharge_hours=[{"date": "2026-05-02", "hour": 20}],
         )
         entry = MockConfigEntry()
         sensor = ChargePlanSensor(coordinator, entry)
@@ -140,10 +155,13 @@ class TestChargePlanSensor:
         sensor = ChargePlanSensor(coordinator, entry)
         assert sensor.native_value == "unknown"
 
-    def test_build_plan(self, coordinator):
+    @patch("custom_components.victron_charge_control.sensor.dt_util")
+    def test_build_plan(self, mock_dt_util, coordinator):
+        from datetime import datetime, timezone
+        mock_dt_util.now.return_value = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
         coordinator.data = ChargeControlData(
-            charge_hours=[2],
-            discharge_hours=[20],
+            charge_hours=[{"date": "2026-05-02", "hour": 2}],
+            discharge_hours=[{"date": "2026-05-02", "hour": 20}],
             blocked_charging_hours=[5],
             blocked_discharging_hours=[5],
             prices_today=[{"hour": 2, "price": 5.0}, {"hour": 20, "price": 25.0}],
@@ -151,12 +169,15 @@ class TestChargePlanSensor:
         entry = MockConfigEntry()
         sensor = ChargePlanSensor(coordinator, entry)
         plan = sensor._build_plan(coordinator.data)
-        assert len(plan) == 24
-        assert plan[2]["action"] == "charge"
-        assert plan[2]["price"] == 5.0
-        assert plan[20]["action"] == "discharge"
-        assert plan[5]["action"] == "blocked"
-        assert plan[10]["action"] == "idle"
+        # Plan now covers today (24h) + tomorrow (24h) = 48 entries
+        assert len(plan) == 48
+        # Find today's entries (first 24)
+        today_plan = [p for p in plan if p["date"] == "2026-05-02"]
+        assert today_plan[2]["action"] == "charge"
+        assert today_plan[2]["price"] == 5.0
+        assert today_plan[20]["action"] == "discharge"
+        assert today_plan[5]["action"] == "blocked"
+        assert today_plan[10]["action"] == "idle"
 
 
 class TestLastScheduleUpdateSensor:

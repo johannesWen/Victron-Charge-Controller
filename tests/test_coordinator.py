@@ -26,6 +26,7 @@ from custom_components.victron_charge_control.const import (
 )
 from custom_components.victron_charge_control.coordinator import (
     ChargeControlData,
+    ScheduleSlot,
     VictronChargeControlCoordinator,
 )
 
@@ -53,11 +54,11 @@ class TestChargeControlData:
         data = ChargeControlData(
             desired_action=ACTION_CHARGE,
             target_setpoint=3000.0,
-            charge_hours=[2, 3, 4],
+            charge_hours=[{"date": "2026-05-02", "hour": 2}, {"date": "2026-05-02", "hour": 3}],
         )
         assert data.desired_action == ACTION_CHARGE
         assert data.target_setpoint == 3000.0
-        assert data.charge_hours == [2, 3, 4]
+        assert data.charge_hours == [{"date": "2026-05-02", "hour": 2}, {"date": "2026-05-02", "hour": 3}]
 
 
 # ======================================================================
@@ -101,12 +102,13 @@ class TestScheduleManagement:
     """Tests for schedule management methods."""
 
     def test_set_charge_hours(self, coordinator):
-        coordinator.set_charge_hours([3, 1, 2, 2, 25, -1])
-        assert coordinator.charge_hours == [1, 2, 3]
+        coordinator.set_charge_hours([("2026-05-02", 3), ("2026-05-02", 1), ("2026-05-02", 2), ("2026-05-02", 2), ("2026-05-02", 25)])
+        # Invalid hour 25 filtered, deduped, sorted
+        assert coordinator.charge_hours == [("2026-05-02", 1), ("2026-05-02", 2), ("2026-05-02", 3)]
 
     def test_set_discharge_hours(self, coordinator):
-        coordinator.set_discharge_hours([20, 21, 22])
-        assert coordinator.discharge_hours == [20, 21, 22]
+        coordinator.set_discharge_hours([("2026-05-02", 20), ("2026-05-02", 21), ("2026-05-03", 22)])
+        assert coordinator.discharge_hours == [("2026-05-02", 20), ("2026-05-02", 21), ("2026-05-03", 22)]
 
     def test_set_blocked_charging_hours(self, coordinator):
         coordinator.set_blocked_charging_hours([18, 19, 20])
@@ -117,8 +119,8 @@ class TestScheduleManagement:
         assert coordinator.blocked_discharging_hours == [15, 16]
 
     def test_clear_schedule(self, coordinator):
-        coordinator._charge_hours = [1, 2, 3]
-        coordinator._discharge_hours = [20, 21]
+        coordinator._charge_hours = [("2026-05-02", 1), ("2026-05-02", 2)]
+        coordinator._discharge_hours = [("2026-05-02", 20)]
         coordinator._blocked_charging_hours = [18]
         coordinator._blocked_discharging_hours = [15]
         coordinator.clear_schedule()
@@ -132,34 +134,34 @@ class TestToggleHour:
     """Tests for the toggle_hour cycle: idle → charge → discharge → blocked → idle."""
 
     def test_idle_to_charge(self, coordinator):
-        coordinator.toggle_hour(5)
-        assert 5 in coordinator.charge_hours
-        assert 5 not in coordinator.discharge_hours
+        coordinator.toggle_hour(5, "2026-05-02")
+        assert ("2026-05-02", 5) in coordinator.charge_hours
+        assert ("2026-05-02", 5) not in coordinator.discharge_hours
 
     def test_charge_to_discharge(self, coordinator):
-        coordinator._charge_hours = [5]
-        coordinator.toggle_hour(5)
-        assert 5 not in coordinator.charge_hours
-        assert 5 in coordinator.discharge_hours
+        coordinator._charge_hours = [("2026-05-02", 5)]
+        coordinator.toggle_hour(5, "2026-05-02")
+        assert ("2026-05-02", 5) not in coordinator.charge_hours
+        assert ("2026-05-02", 5) in coordinator.discharge_hours
 
     def test_discharge_to_blocked(self, coordinator):
-        coordinator._discharge_hours = [5]
-        coordinator.toggle_hour(5)
-        assert 5 not in coordinator.discharge_hours
+        coordinator._discharge_hours = [("2026-05-02", 5)]
+        coordinator.toggle_hour(5, "2026-05-02")
+        assert ("2026-05-02", 5) not in coordinator.discharge_hours
         assert 5 in coordinator.blocked_charging_hours
         assert 5 in coordinator.blocked_discharging_hours
 
     def test_blocked_to_idle(self, coordinator):
         coordinator._blocked_charging_hours = [5]
         coordinator._blocked_discharging_hours = [5]
-        coordinator.toggle_hour(5)
+        coordinator.toggle_hour(5, "2026-05-02")
         assert 5 not in coordinator.blocked_charging_hours
         assert 5 not in coordinator.blocked_discharging_hours
-        assert 5 not in coordinator.charge_hours
+        assert ("2026-05-02", 5) not in coordinator.charge_hours
 
     def test_invalid_hour_ignored(self, coordinator):
-        coordinator.toggle_hour(-1)
-        coordinator.toggle_hour(24)
+        coordinator.toggle_hour(-1, "2026-05-02")
+        coordinator.toggle_hour(24, "2026-05-02")
         assert coordinator.charge_hours == []
 
 
@@ -167,33 +169,33 @@ class TestSetHourAction:
     """Tests for set_hour_action."""
 
     def test_set_charge(self, coordinator):
-        coordinator.set_hour_action(5, ACTION_CHARGE)
-        assert 5 in coordinator.charge_hours
-        assert 5 not in coordinator.discharge_hours
+        coordinator.set_hour_action(5, ACTION_CHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) in coordinator.charge_hours
+        assert ("2026-05-02", 5) not in coordinator.discharge_hours
 
     def test_set_discharge(self, coordinator):
-        coordinator.set_hour_action(5, ACTION_DISCHARGE)
-        assert 5 in coordinator.discharge_hours
-        assert 5 not in coordinator.charge_hours
+        coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) in coordinator.discharge_hours
+        assert ("2026-05-02", 5) not in coordinator.charge_hours
 
     def test_set_blocked(self, coordinator):
-        coordinator.set_hour_action(5, ACTION_BLOCKED)
+        coordinator.set_hour_action(5, ACTION_BLOCKED, "2026-05-02")
         assert 5 in coordinator.blocked_charging_hours
         assert 5 in coordinator.blocked_discharging_hours
 
     def test_set_idle(self, coordinator):
-        coordinator._charge_hours = [5]
-        coordinator.set_hour_action(5, ACTION_IDLE)
-        assert 5 not in coordinator.charge_hours
+        coordinator._charge_hours = [("2026-05-02", 5)]
+        coordinator.set_hour_action(5, ACTION_IDLE, "2026-05-02")
+        assert ("2026-05-02", 5) not in coordinator.charge_hours
 
     def test_replaces_previous_action(self, coordinator):
-        coordinator._charge_hours = [5]
-        coordinator.set_hour_action(5, ACTION_DISCHARGE)
-        assert 5 not in coordinator.charge_hours
-        assert 5 in coordinator.discharge_hours
+        coordinator._charge_hours = [("2026-05-02", 5)]
+        coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) not in coordinator.charge_hours
+        assert ("2026-05-02", 5) in coordinator.discharge_hours
 
     def test_invalid_hour(self, coordinator):
-        coordinator.set_hour_action(25, ACTION_CHARGE)
+        coordinator.set_hour_action(25, ACTION_CHARGE, "2026-05-02")
         assert coordinator.charge_hours == []
 
 
@@ -315,7 +317,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_AUTO
         coordinator.charge_allowed = True
         coordinator.max_soc = 95.0
-        coordinator._charge_hours = [3]
+        coordinator._charge_hours = [("2026-04-28", 3)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_CHARGE
@@ -325,7 +327,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_AUTO
         coordinator.discharge_allowed = True
         coordinator.min_soc = 10.0
-        coordinator._discharge_hours = [20]
+        coordinator._discharge_hours = [("2026-04-28", 20)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 20, 15, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_DISCHARGE
@@ -333,9 +335,20 @@ class TestDetermineAction:
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_auto_idle_when_no_schedule(self, mock_dt_util, coordinator):
         coordinator.control_mode = MODE_AUTO
-        coordinator._charge_hours = [3]
-        coordinator._discharge_hours = [20]
+        coordinator._charge_hours = [("2026-04-28", 3)]
+        coordinator._discharge_hours = [("2026-04-28", 20)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 10, 0, tzinfo=timezone.utc)
+        self._set_soc(coordinator, 50.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_auto_idle_when_wrong_day(self, mock_dt_util, coordinator):
+        """Schedule for a different day should not match."""
+        coordinator.control_mode = MODE_AUTO
+        coordinator.charge_allowed = True
+        coordinator.max_soc = 95.0
+        coordinator._charge_hours = [("2026-04-29", 3)]
+        mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_IDLE
 
@@ -343,7 +356,7 @@ class TestDetermineAction:
     def test_blocked_charging_hour_returns_idle(self, mock_dt_util, coordinator):
         coordinator.control_mode = MODE_AUTO
         coordinator.charge_allowed = True
-        coordinator._charge_hours = [3]
+        coordinator._charge_hours = [("2026-04-28", 3)]
         coordinator._blocked_charging_hours = [3]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
@@ -353,7 +366,7 @@ class TestDetermineAction:
     def test_blocked_discharging_hour_returns_idle(self, mock_dt_util, coordinator):
         coordinator.control_mode = MODE_AUTO
         coordinator.discharge_allowed = True
-        coordinator._discharge_hours = [20]
+        coordinator._discharge_hours = [("2026-04-28", 20)]
         coordinator._blocked_discharging_hours = [20]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 20, 15, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
@@ -364,7 +377,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_MANUAL
         coordinator.charge_allowed = True
         coordinator.max_soc = 95.0
-        coordinator._charge_hours = [3]
+        coordinator._charge_hours = [("2026-04-28", 3)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_CHARGE
@@ -449,17 +462,17 @@ class TestCalculateAutoSchedule:
 
         coordinator.calculate_auto_schedule()
 
-        assert 0 in coordinator.charge_hours
-        assert 1 in coordinator.charge_hours
-        assert 5 in coordinator.discharge_hours
-        assert 4 in coordinator.discharge_hours
+        assert ("2026-04-28", 0) in coordinator.charge_hours
+        assert ("2026-04-28", 1) in coordinator.charge_hours
+        assert ("2026-04-28", 5) in coordinator.discharge_hours
+        assert ("2026-04-28", 4) in coordinator.discharge_hours
 
     def test_not_auto_mode_does_nothing(self, coordinator):
         coordinator.control_mode = MODE_MANUAL
-        coordinator._charge_hours = [1]
+        coordinator._charge_hours = [("2026-05-02", 1)]
         coordinator.calculate_auto_schedule()
         # Should not change existing schedule
-        assert coordinator.charge_hours == [1]
+        assert coordinator.charge_hours == [("2026-05-02", 1)]
 
     def test_missing_epex_entity(self, coordinator):
         coordinator.control_mode = MODE_AUTO
@@ -487,8 +500,8 @@ class TestCalculateAutoSchedule:
         coordinator.calculate_auto_schedule()
 
         # Discharge wins, removed from charge
-        assert 3 in coordinator.discharge_hours
-        assert 3 not in coordinator.charge_hours
+        assert ("2026-04-28", 3) in coordinator.discharge_hours
+        assert ("2026-04-28", 3) not in coordinator.charge_hours
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_blocked_hours_excluded_from_auto(self, mock_dt_util, coordinator):
@@ -518,8 +531,8 @@ class TestCalculateAutoSchedule:
 
         coordinator.calculate_auto_schedule()
 
-        assert 0 not in coordinator.charge_hours
-        assert 5 not in coordinator.discharge_hours
+        assert ("2026-04-28", 0) not in coordinator.charge_hours
+        assert ("2026-04-28", 5) not in coordinator.discharge_hours
 
 
 # ======================================================================
