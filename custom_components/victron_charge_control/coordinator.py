@@ -832,16 +832,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             async_track_time_change(self.hass, _daily_recalc, hour=0, minute=5, second=0)
         )
 
-        # At 14:30 — recalculate for tomorrow prices
+        # At 20:00 — recalculate for tomorrow prices
         @callback
-        def _afternoon_recalc(_now: datetime) -> None:
+        def _evening_recalc(_now: datetime) -> None:
             if self.control_mode == MODE_AUTO:
                 self.calculate_auto_schedule()
                 self.hass.async_create_task(self.async_request_refresh())
 
         self._unsub_listeners.append(
             async_track_time_change(
-                self.hass, _afternoon_recalc, hour=14, minute=30, second=0
+                self.hass, _evening_recalc, hour=20, minute=0, second=0
             )
         )
 
