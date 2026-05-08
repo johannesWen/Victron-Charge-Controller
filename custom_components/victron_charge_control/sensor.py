@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
@@ -40,6 +41,8 @@ async def async_setup_entry(
             ChargePlanSensor(coordinator, entry),
             LastScheduleUpdateSensor(coordinator, entry),
             GridFeedInStatusSensor(coordinator, entry),
+            GridEnergyCostSensor(coordinator, entry, "grid_consumption"),
+            GridEnergyCostSensor(coordinator, entry, "grid_feed_in"),
         ]
     )
 
@@ -61,6 +64,155 @@ class VictronCCBaseSensor(CoordinatorEntity[VictronChargeControlCoordinator], Se
             manufacturer="Victron Energy",
             entry_type=DeviceEntryType.SERVICE,
         )
+
+
+class VictronCCBaseRestoreSensor(
+    CoordinatorEntity[VictronChargeControlCoordinator],
+    RestoreSensor,
+):
+    """Base class for Victron CC sensors that restore state."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Victron Charge Control",
+            manufacturer="Victron Energy",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+
+class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
+    """Sensor showing cumulative cost/revenue from optional kWh meters."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = "EUR"
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:currency-eur"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+        tracker: str,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._tracker = tracker
+        self._attr_translation_key = {
+            "grid_consumption": "grid_consumption_cost",
+            "grid_feed_in": "grid_feed_in_revenue",
+        }[tracker]
+        self._attr_unique_id = f"{entry.entry_id}_{self._attr_translation_key}"
+
+    @staticmethod
+    def _as_float(value: object) -> float | None:
+        try:
+            if value in (None, "unknown", "unavailable"):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _as_datetime(value: object) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return dt_util.parse_datetime(value)
+        return None
+
+    @property
+    def _source_entity(self) -> str | None:
+        if self._tracker == "grid_consumption":
+            return self.coordinator.grid_consumption_entity
+        return self.coordinator.grid_feed_in_energy_entity
+
+    @property
+    def _last_meter_reading(self) -> float | None:
+        if self._tracker == "grid_consumption":
+            return self.coordinator.last_grid_consumption_kwh
+        return self.coordinator.last_grid_feed_in_kwh
+
+    @property
+    def _coordinator_value(self) -> float | None:
+        if self._tracker == "grid_consumption":
+            return self.coordinator.grid_consumption_cost
+        return self.coordinator.grid_feed_in_revenue
+
+    @property
+    def available(self) -> bool:
+        return self._source_entity is not None and super().available
+
+    async def async_added_to_hass(self) -> None:
+        """Restore cumulative EUR value and last kWh baseline."""
+        await super().async_added_to_hass()
+        await self._restore_cost_state()
+
+    async def _restore_cost_state(self) -> None:
+        """Restore cumulative EUR value and meter baseline from HA storage."""
+        total = None
+        last_sensor_data = await self.async_get_last_sensor_data()
+        if last_sensor_data is not None:
+            total = self._as_float(last_sensor_data.native_value)
+
+        last_state = await self.async_get_last_state()
+        last_meter_reading = None
+        last_cost_update = None
+        if last_state is not None:
+            if total is None:
+                total = self._as_float(last_state.state)
+            last_meter_reading = self._as_float(
+                last_state.attributes.get("last_meter_reading_kwh")
+            )
+            last_cost_update = self._as_datetime(
+                last_state.attributes.get("last_cost_update")
+            )
+
+        self.coordinator.restore_cost_state(
+            self._tracker,
+            total,
+            last_meter_reading,
+            last_cost_update,
+        )
+        if self._source_entity is not None:
+            self.coordinator.hass.async_create_task(
+                self.coordinator.async_request_refresh()
+            )
+
+    def _build_attributes(self) -> dict[str, object]:
+        data: ChargeControlData | None = self.coordinator.data
+        last_cost_update = self.coordinator.last_cost_update
+        return {
+            "source_entity": self._source_entity,
+            "last_meter_reading_kwh": self._last_meter_reading,
+            "last_cost_update": (
+                last_cost_update.isoformat() if last_cost_update else None
+            ),
+            "current_price_eur_per_kwh": (
+                data.current_price_eur_per_kwh if data else None
+            ),
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._attr_native_value = self.native_value
+        self._attr_extra_state_attributes = self._build_attributes()
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float | None:
+        return self._coordinator_value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        return self._build_attributes()
 
 
 class DesiredActionSensor(VictronCCBaseSensor):

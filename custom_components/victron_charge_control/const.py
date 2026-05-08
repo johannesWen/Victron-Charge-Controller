@@ -9,6 +9,8 @@ CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_GRID_SETPOINT_ENTITY = "grid_setpoint_entity"
 CONF_EPEX_SPOT_ENTITY = "epex_spot_entity"
 CONF_MAX_GRID_FEED_IN_ENTITY = "max_grid_feed_in_entity"
+CONF_GRID_CONSUMPTION_ENTITY = "grid_consumption_entity"
+CONF_GRID_FEED_IN_ENERGY_ENTITY = "grid_feed_in_energy_entity"
 
 # --- Control modes ---
 MODE_OFF = "off"

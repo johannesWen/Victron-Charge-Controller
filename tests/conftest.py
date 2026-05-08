@@ -75,6 +75,8 @@ _patch_ha_compat()
 from custom_components.victron_charge_control.const import (  # noqa: E402
     CONF_BATTERY_SOC_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
+    CONF_GRID_CONSUMPTION_ENTITY,
+    CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     DOMAIN,
@@ -91,6 +93,12 @@ MOCK_CONFIG_DATA = {
     CONF_GRID_SETPOINT_ENTITY: "number.grid_setpoint",
     CONF_EPEX_SPOT_ENTITY: "sensor.epex_spot",
     CONF_MAX_GRID_FEED_IN_ENTITY: "number.max_grid_feed_in",
+}
+
+MOCK_CONFIG_DATA_WITH_COST = {
+    **MOCK_CONFIG_DATA,
+    CONF_GRID_CONSUMPTION_ENTITY: "sensor.grid_consumption_kwh",
+    CONF_GRID_FEED_IN_ENERGY_ENTITY: "sensor.grid_feed_in_kwh",
 }
 
 
