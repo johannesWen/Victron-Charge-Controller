@@ -65,6 +65,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+      - name: Delete existing pre-release draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DRAFT_TAG=$(gh release list --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select(.isDraft and .isPrerelease) | .tagName' | head -1)
+          if [ -n "$DRAFT_TAG" ]; then
+            gh release delete "$DRAFT_TAG" --yes --cleanup-tag
+          fi
       - id: release_drafter
         uses: release-drafter/release-drafter@139054aeaa9adc52ab36ddf67437541f039b88e2 # v7
         env:
