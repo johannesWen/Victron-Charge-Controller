@@ -68,13 +68,35 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+      - name: Compute pre-release version
+        id: pre_version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ needs.update_full_release_draft.outputs.resolved_version }}
+        run: |
+          # Find the latest rc tag for this base version (draft or published)
+          LATEST=$(gh release list --limit 50 --json tagName,isDraft \
+            --jq --arg prefix "v${BASE}-rc." \
+            '[.[] | select(.tagName | startswith($prefix))] | sort_by(.tagName) | last')
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "version=${BASE}-rc.0" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(echo "$LATEST" | jq -r '.tagName')
+            IS_DRAFT=$(echo "$LATEST" | jq -r '.isDraft')
+            RC_NUM=$(echo "$TAG" | sed 's/.*-rc\.//')
+            if [ "$IS_DRAFT" = "true" ]; then
+              echo "version=${BASE}-rc.${RC_NUM}" >> "$GITHUB_OUTPUT"
+            else
+              echo "version=${BASE}-rc.$((RC_NUM + 1))" >> "$GITHUB_OUTPUT"
+            fi
+          fi
       - id: release_drafter
         uses: release-drafter/release-drafter@139054aeaa9adc52ab36ddf67437541f039b88e2 # v7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           commitish: main
-          version: ${{ needs.update_full_release_draft.outputs.resolved_version }}
+          version: ${{ steps.pre_version.outputs.version }}
           prerelease: true
           prerelease-identifier: "rc"
 
