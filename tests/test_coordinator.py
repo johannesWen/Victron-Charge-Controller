@@ -30,7 +30,13 @@ from custom_components.victron_charge_control.coordinator import (
     VictronChargeControlCoordinator,
 )
 
-from .conftest import MOCK_CONFIG_DATA, MockConfigEntry, MockState, make_epex_data
+from .conftest import (
+    MOCK_CONFIG_DATA,
+    MOCK_CONFIG_DATA_WITH_COST,
+    MockConfigEntry,
+    MockState,
+    make_epex_data,
+)
 
 
 # ======================================================================
@@ -74,6 +80,8 @@ class TestCoordinatorInit:
         assert coordinator.grid_setpoint_entity == "number.grid_setpoint"
         assert coordinator.epex_spot_entity == "sensor.epex_spot"
         assert coordinator.max_grid_feed_in_entity == "number.max_grid_feed_in"
+        assert coordinator.grid_consumption_entity is None
+        assert coordinator.grid_feed_in_energy_entity is None
 
     def test_default_params(self, coordinator):
         assert coordinator.control_mode == MODE_OFF
@@ -91,6 +99,14 @@ class TestCoordinatorInit:
         }
         coordinator.update_entity_references(new_data)
         assert coordinator.battery_soc_entity == "sensor.new_soc"
+
+    def test_optional_cost_entity_references(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST)),
+        )
+        assert coord.grid_consumption_entity == "sensor.grid_consumption_kwh"
+        assert coord.grid_feed_in_energy_entity == "sensor.grid_feed_in_kwh"
 
 
 # ======================================================================
@@ -240,6 +256,139 @@ class TestEpexDataExtraction:
     def test_extract_price_ct_invalid(self):
         price = VictronChargeControlCoordinator._extract_price_ct({"price_ct_per_kwh": "abc"})
         assert price is None
+
+
+# ======================================================================
+# Cost tracking
+# ======================================================================
+
+
+class TestCostTracking:
+    """Tests for cumulative grid cost/revenue accounting."""
+
+    def _make_cost_coordinator(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST)),
+        )
+        coord.data = ChargeControlData()
+        return coord
+
+    def test_normalize_price_eur_unit(self):
+        result = VictronChargeControlCoordinator._normalize_price_eur_per_kwh(
+            "0.25",
+            {"unit_of_measurement": "€/kWh"},
+        )
+        assert result == pytest.approx(0.25)
+
+    def test_normalize_price_ct_unit(self):
+        result = VictronChargeControlCoordinator._normalize_price_eur_per_kwh(
+            "25",
+            {"unit_of_measurement": "ct/kWh"},
+        )
+        assert result == pytest.approx(0.25)
+
+    def test_normalize_price_invalid(self):
+        result = VictronChargeControlCoordinator._normalize_price_eur_per_kwh(
+            "not-a-number",
+            {"unit_of_measurement": "€/kWh"},
+        )
+        assert result is None
+
+    def test_initial_readings_establish_baselines(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("100"),
+            "sensor.grid_feed_in_kwh": MockState("20"),
+        }.get(eid)
+
+        coord._update_cost_tracking(0.25)
+
+        assert coord.last_grid_consumption_kwh == 100
+        assert coord.last_grid_feed_in_kwh == 20
+        assert coord.grid_consumption_cost == 0.0
+        assert coord.grid_feed_in_revenue == 0.0
+
+    def test_positive_deltas_add_cost_and_revenue(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord._last_grid_consumption_kwh = 100
+        coord._last_grid_feed_in_kwh = 20
+        coord._grid_consumption_cost = 1.0
+        coord._grid_feed_in_revenue = 2.0
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("102"),
+            "sensor.grid_feed_in_kwh": MockState("21.5"),
+        }.get(eid)
+
+        coord._update_cost_tracking(0.20)
+
+        assert coord.grid_consumption_cost == pytest.approx(1.4)
+        assert coord.grid_feed_in_revenue == pytest.approx(2.3)
+        assert coord.last_grid_consumption_kwh == 102
+        assert coord.last_grid_feed_in_kwh == 21.5
+
+    def test_negative_prices_are_applied_as_is(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord._last_grid_consumption_kwh = 100
+        coord._grid_consumption_cost = 1.0
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("101"),
+            "sensor.grid_feed_in_kwh": MockState("unknown"),
+        }.get(eid)
+
+        coord._update_cost_tracking(-0.10)
+
+        assert coord.grid_consumption_cost == pytest.approx(0.9)
+
+    def test_negative_delta_rebaselines_without_cost(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord._last_grid_consumption_kwh = 100
+        coord._grid_consumption_cost = 5.0
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("2"),
+            "sensor.grid_feed_in_kwh": MockState("unknown"),
+        }.get(eid)
+
+        coord._update_cost_tracking(0.30)
+
+        assert coord.grid_consumption_cost == 5.0
+        assert coord.last_grid_consumption_kwh == 2
+
+    def test_missing_price_skips_cost_tracking(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord._last_grid_consumption_kwh = 100
+        coord.hass.states.get.return_value = MockState("101")
+
+        coord._update_cost_tracking(None)
+
+        assert coord.grid_consumption_cost == 0.0
+        assert coord.last_grid_consumption_kwh == 100
+
+    def test_invalid_meter_state_skips_cost_tracking(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord._last_grid_consumption_kwh = 100
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("abc"),
+            "sensor.grid_feed_in_kwh": MockState("unknown"),
+        }.get(eid)
+
+        coord._update_cost_tracking(0.30)
+
+        assert coord.grid_consumption_cost == 0.0
+        assert coord.last_grid_consumption_kwh == 100
+
+    def test_restore_cost_state(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        restored_at = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+
+        coord.restore_cost_state("grid_consumption", 12.5, 200.0, restored_at)
+        coord.restore_cost_state("grid_feed_in", 3.75, 50.0, restored_at)
+
+        assert coord.grid_consumption_cost == 12.5
+        assert coord.grid_feed_in_revenue == 3.75
+        assert coord.last_grid_consumption_kwh == 200.0
+        assert coord.last_grid_feed_in_kwh == 50.0
+        assert coord.last_cost_update == restored_at
 
 
 # ======================================================================

@@ -3,12 +3,14 @@
     "step": {
       "user": {
         "title": "Victron Charge Control",
-        "description": "Select your Victron and EPEX Spot entities.",
+        "description": "Select your Victron and EPEX Spot entities. Grid consumption/feed-in energy meters are optional for cost tracking.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor",
           "grid_setpoint_entity": "Grid setpoint entity (writable)",
           "epex_spot_entity": "EPEX Spot price sensor",
-          "max_grid_feed_in_entity": "Max grid feed-in entity (writable)"
+          "max_grid_feed_in_entity": "Max grid feed-in entity (writable)",
+          "grid_consumption_entity": "Grid consumption energy sensor (optional)",
+          "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)"
         }
       }
     },
@@ -23,12 +25,14 @@
     "step": {
       "init": {
         "title": "Victron Charge Control — Settings",
-        "description": "Update your Victron and EPEX Spot entities.",
+        "description": "Update your Victron and EPEX Spot entities. Grid consumption/feed-in energy meters are optional for cost tracking.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor",
           "grid_setpoint_entity": "Grid setpoint entity (writable)",
           "epex_spot_entity": "EPEX Spot price sensor",
-          "max_grid_feed_in_entity": "Max grid feed-in entity (writable)"
+          "max_grid_feed_in_entity": "Max grid feed-in entity (writable)",
+          "grid_consumption_entity": "Grid consumption energy sensor (optional)",
+          "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)"
         }
       }
     },
@@ -67,6 +71,12 @@
       },
       "grid_feed_in_status": {
         "name": "Grid Feed-in Status"
+      },
+      "grid_consumption_cost": {
+        "name": "Grid Consumption Cost"
+      },
+      "grid_feed_in_revenue": {
+        "name": "Grid Feed-in Revenue"
       }
     },
     "button": {

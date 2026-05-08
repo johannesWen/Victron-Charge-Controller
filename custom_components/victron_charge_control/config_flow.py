@@ -18,9 +18,23 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_BATTERY_SOC_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
+    CONF_GRID_CONSUMPTION_ENTITY,
+    CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     DOMAIN,
+)
+
+REQUIRED_ENTITY_KEYS = (
+    CONF_BATTERY_SOC_ENTITY,
+    CONF_GRID_SETPOINT_ENTITY,
+    CONF_EPEX_SPOT_ENTITY,
+    CONF_MAX_GRID_FEED_IN_ENTITY,
+)
+
+OPTIONAL_ENTITY_KEYS = (
+    CONF_GRID_CONSUMPTION_ENTITY,
+    CONF_GRID_FEED_IN_ENERGY_ENTITY,
 )
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -37,8 +51,43 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_MAX_GRID_FEED_IN_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="number"),
         ),
+        vol.Optional(CONF_GRID_CONSUMPTION_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor"),
+        ),
+        vol.Optional(CONF_GRID_FEED_IN_ENERGY_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor"),
+        ),
     }
 )
+
+
+def _clean_entity_data(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Drop blank optional entity selectors before storing config entry data."""
+    return {
+        key: value
+        for key, value in user_input.items()
+        if key not in OPTIONAL_ENTITY_KEYS or value not in (None, "")
+    }
+
+
+def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
+    """Validate required entities and optional entities when configured."""
+    errors: dict[str, str] = {}
+    for key in REQUIRED_ENTITY_KEYS:
+        entity_id = user_input[key]
+        state = hass.states.get(entity_id)
+        if state is None:
+            errors[key] = "entity_not_found"
+
+    for key in OPTIONAL_ENTITY_KEYS:
+        entity_id = user_input.get(key)
+        if not entity_id:
+            continue
+        state = hass.states.get(entity_id)
+        if state is None:
+            errors[key] = "entity_not_found"
+
+    return errors
 
 
 class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -66,22 +115,12 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
 
-            # Validate that all entities exist
-            for key in (
-                CONF_BATTERY_SOC_ENTITY,
-                CONF_GRID_SETPOINT_ENTITY,
-                CONF_EPEX_SPOT_ENTITY,
-                CONF_MAX_GRID_FEED_IN_ENTITY,
-            ):
-                entity_id = user_input[key]
-                state = self.hass.states.get(entity_id)
-                if state is None:
-                    errors[key] = "entity_not_found"
+            errors = _validate_entities(self.hass, user_input)
 
             if not errors:
                 return self.async_create_entry(
                     title="Victron Charge Control",
-                    data=user_input,
+                    data=_clean_entity_data(user_input),
                 )
 
         return self.async_show_form(
@@ -105,23 +144,13 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Validate that all entities exist
-            for key in (
-                CONF_BATTERY_SOC_ENTITY,
-                CONF_GRID_SETPOINT_ENTITY,
-                CONF_EPEX_SPOT_ENTITY,
-                CONF_MAX_GRID_FEED_IN_ENTITY,
-            ):
-                entity_id = user_input[key]
-                state = self.hass.states.get(entity_id)
-                if state is None:
-                    errors[key] = "entity_not_found"
+            errors = _validate_entities(self.hass, user_input)
 
             if not errors:
                 # Update the config entry data with new values
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
-                    data={**self._config_entry.data, **user_input},
+                    data=_clean_entity_data({**self._config_entry.data, **user_input}),
                 )
                 return self.async_create_entry(title="", data={})
 
@@ -152,6 +181,18 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     default=current.get(CONF_MAX_GRID_FEED_IN_ENTITY, ""),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="number"),
+                ),
+                vol.Optional(
+                    CONF_GRID_CONSUMPTION_ENTITY,
+                    default=current.get(CONF_GRID_CONSUMPTION_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Optional(
+                    CONF_GRID_FEED_IN_ENERGY_ENTITY,
+                    default=current.get(CONF_GRID_FEED_IN_ENERGY_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor"),
                 ),
             }
         )

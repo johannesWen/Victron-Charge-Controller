@@ -40,6 +40,24 @@ input_number:
     unit_of_measurement: "%"
     icon: mdi:battery
 
+  grid_consumption_kwh_value:
+    name: "Grid Consumption kWh Control"
+    min: 0
+    max: 100000
+    step: 0.1
+    initial: 1200
+    unit_of_measurement: "kWh"
+    icon: mdi:transmission-tower-import
+
+  grid_feed_in_kwh_value:
+    name: "Grid Feed-in kWh Control"
+    min: 0
+    max: 100000
+    step: 0.1
+    initial: 300
+    unit_of_measurement: "kWh"
+    icon: mdi:transmission-tower-export
+
 # ---------------------------------------------------------------
 # Template entities
 # ---------------------------------------------------------------
@@ -86,6 +104,22 @@ template:
         state: "{{ states('input_number.battery_soc_value') | int(50) }}"
         icon: mdi:battery
 
+      - name: "Grid Consumption Energy"
+        unique_id: dummy_grid_consumption_energy
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        state: "{{ states('input_number.grid_consumption_kwh_value') | float(1200) }}"
+        icon: mdi:transmission-tower-import
+
+      - name: "Grid Feed-in Energy"
+        unique_id: dummy_grid_feed_in_energy
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        state: "{{ states('input_number.grid_feed_in_kwh_value') | float(300) }}"
+        icon: mdi:transmission-tower-export
+
       # EPEX Spot price sensor with 24h of simulated prices.
       # Prices are realistic: cheap at night (0.01-0.05 €), moderate midday
       # (0.08-0.15 €), expensive in the evening peak (0.18-0.32 €).
@@ -107,7 +141,7 @@ template:
             {% for h in range(24) %}
               {% set start = today + timedelta(hours=h) %}
               {% set end = today + timedelta(hours=h+1) %}
-              {% set ns.entries = ns.entries + [{"start_time": start.isoformat(), "end_time": end.isoformat(), "price_eur_per_kwh": prices[h]}] %}
+              {% set ns.entries = ns.entries + [{"start_time": start.isoformat(), "end_time": end.isoformat(), "price_per_kwh": prices[h]}] %}
             {% endfor %}
             {{ ns.entries }}
 

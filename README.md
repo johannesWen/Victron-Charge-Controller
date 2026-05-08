@@ -53,11 +53,14 @@ After installation, add the integration via the UI:
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **Victron Charge Control**
-3. Select your 6 entities:
+3. Select your required entities:
    - **Battery SOC sensor** — battery state of charge (0–100%)
    - **Grid setpoint entity** — writable ESS grid setpoint (Watts)
    - **EPEX Spot price sensor** — hourly electricity prices
    - **Max grid feed-in entity** — writable max grid feed-in limit (Watts)
+4. Optionally select cumulative energy meters for cost tracking:
+   - **Grid consumption energy sensor** — total grid import in kWh
+   - **Grid feed-in energy sensor** — total grid export/feed-in in kWh
 
 The integration creates a device with all configuration entities:
 
@@ -94,6 +97,10 @@ The integration creates a device with all configuration entities:
 | Blocked Discharging Hours | Sensor | Currently blocked discharging hours |
 | Charge Plan | Sensor | Full hour-by-hour charge/discharge plan |
 | Last Schedule Update | Sensor | Timestamp of last schedule recalculation |
+| Grid Consumption Cost | Sensor | Cumulative grid import cost in EUR from kWh deltas x current price |
+| Grid Feed-in Revenue | Sensor | Cumulative grid feed-in revenue in EUR from kWh deltas x current price |
+
+Cost tracking uses the current EPEX price as-is. Taxes, fixed fees, grid fees, and provider markups are not included.
 
 ### Services
 
