@@ -76,7 +76,7 @@ jobs:
         run: |
           # Find the latest rc tag for this base version (draft or published)
           LATEST=$(gh release list --limit 50 --json tagName,isDraft \
-            --jq --arg prefix "v${BASE}-rc." \
+            | jq --arg prefix "v${BASE}-rc." \
             '[.[] | select(.tagName | startswith($prefix))] | sort_by(.tagName) | last')
           if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
             echo "version=${BASE}-rc.0" >> "$GITHUB_OUTPUT"
