@@ -72,11 +72,11 @@
       "grid_feed_in_status": {
         "name": "Grid Feed-in Status"
       },
-      "grid_consumption_cost": {
-        "name": "Grid Consumption Cost"
+      "grid_energy_cost": {
+        "name": "Grid Energy Cost"
       },
-      "grid_feed_in_revenue": {
-        "name": "Grid Feed-in Revenue"
+      "grid_energy_revenue": {
+        "name": "Grid Energy Revenue"
       }
     },
     "button": {
