@@ -77,12 +77,6 @@
       },
       "grid_energy_revenue": {
         "name": "Grid Energy Revenue"
-      },
-      "grid_consumption_cost": {
-        "name": "Grid Consumption Cost"
-      },
-      "grid_feed_in_revenue": {
-        "name": "Grid Feed-in Revenue"
       }
     },
     "button": {

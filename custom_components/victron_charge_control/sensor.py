@@ -109,11 +109,7 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
             "grid_cost": "grid_energy_cost",
             "grid_revenue": "grid_energy_revenue",
         }[tracker]
-        self._attr_unique_id = {
-            # Preserve the old unique IDs so entity registry/history can continue.
-            "grid_cost": f"{entry.entry_id}_grid_consumption_cost",
-            "grid_revenue": f"{entry.entry_id}_grid_feed_in_revenue",
-        }[tracker]
+        self._attr_unique_id = f"{entry.entry_id}_{self._attr_translation_key}"
 
     @staticmethod
     def _as_float(value: object) -> float | None:
@@ -144,12 +140,6 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
         ]
 
     @property
-    def _legacy_last_meter_reading(self) -> float | None:
-        if self._tracker == "grid_cost":
-            return self.coordinator.last_grid_consumption_kwh
-        return self.coordinator.last_grid_feed_in_kwh
-
-    @property
     def _coordinator_value(self) -> float | None:
         if self._tracker == "grid_cost":
             return self.coordinator.grid_energy_cost
@@ -172,16 +162,12 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
             total = self._as_float(last_sensor_data.native_value)
 
         last_state = await self.async_get_last_state()
-        legacy_last_meter_reading = None
         last_grid_consumption_kwh = None
         last_grid_feed_in_kwh = None
         last_cost_update = None
         if last_state is not None:
             if total is None:
                 total = self._as_float(last_state.state)
-            legacy_last_meter_reading = self._as_float(
-                last_state.attributes.get("last_meter_reading_kwh")
-            )
             last_grid_consumption_kwh = self._as_float(
                 last_state.attributes.get("last_grid_consumption_kwh")
             )
@@ -195,7 +181,6 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
         self.coordinator.restore_cost_state(
             self._tracker,
             total,
-            legacy_last_meter_reading,
             last_cost_update,
             last_grid_consumption_kwh,
             last_grid_feed_in_kwh,
@@ -210,7 +195,6 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
         last_cost_update = self.coordinator.last_cost_update
         return {
             "source_entities": self._source_entities,
-            "last_meter_reading_kwh": self._legacy_last_meter_reading,
             "last_grid_consumption_kwh": self.coordinator.last_grid_consumption_kwh,
             "last_grid_feed_in_kwh": self.coordinator.last_grid_feed_in_kwh,
             "last_cost_update": (

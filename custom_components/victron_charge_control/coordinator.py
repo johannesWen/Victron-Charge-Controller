@@ -208,16 +208,6 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return self._grid_energy_revenue
 
     @property
-    def grid_consumption_cost(self) -> float | None:
-        """Backward-compatible alias for the cumulative grid energy cost."""
-        return self.grid_energy_cost
-
-    @property
-    def grid_feed_in_revenue(self) -> float | None:
-        """Backward-compatible alias for the cumulative grid energy revenue."""
-        return self.grid_energy_revenue
-
-    @property
     def last_grid_consumption_kwh(self) -> float | None:
         return self._last_grid_consumption_kwh
 
@@ -244,34 +234,23 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self,
         tracker: str,
         total: float | None,
-        last_meter_reading: float | None,
         last_update: datetime | None = None,
         last_grid_consumption_kwh: float | None = None,
         last_grid_feed_in_kwh: float | None = None,
     ) -> None:
         """Restore persisted cumulative cost tracker state."""
-        if tracker in ("grid_cost", "grid_consumption"):
+        if tracker == "grid_cost":
             if total is not None:
                 self._grid_energy_cost = total
-        elif tracker in ("grid_revenue", "grid_feed_in"):
+        elif tracker == "grid_revenue":
             if total is not None:
                 self._grid_energy_revenue = total
 
         if last_grid_consumption_kwh is not None:
             self._last_grid_consumption_kwh = last_grid_consumption_kwh
-        elif (
-            tracker in ("grid_cost", "grid_consumption")
-            and last_meter_reading is not None
-        ):
-            self._last_grid_consumption_kwh = last_meter_reading
 
         if last_grid_feed_in_kwh is not None:
             self._last_grid_feed_in_kwh = last_grid_feed_in_kwh
-        elif (
-            tracker in ("grid_revenue", "grid_feed_in")
-            and last_meter_reading is not None
-        ):
-            self._last_grid_feed_in_kwh = last_meter_reading
 
         if last_update is not None and (
             self._last_cost_update is None or last_update > self._last_cost_update

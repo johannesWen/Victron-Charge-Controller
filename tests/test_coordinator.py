@@ -409,14 +409,12 @@ class TestCostTracking:
         coord.restore_cost_state(
             "grid_cost",
             12.5,
-            None,
             restored_at,
             last_grid_consumption_kwh=200.0,
         )
         coord.restore_cost_state(
             "grid_revenue",
             3.75,
-            None,
             restored_at,
             last_grid_feed_in_kwh=50.0,
         )

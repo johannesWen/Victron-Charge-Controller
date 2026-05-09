@@ -219,8 +219,8 @@ class TestGridEnergyCostSensor:
         entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
         cost = GridEnergyCostSensor(coordinator, entry, "grid_cost")
         revenue = GridEnergyCostSensor(coordinator, entry, "grid_revenue")
-        assert cost.unique_id == f"{entry.entry_id}_grid_consumption_cost"
-        assert revenue.unique_id == f"{entry.entry_id}_grid_feed_in_revenue"
+        assert cost.unique_id == f"{entry.entry_id}_grid_energy_cost"
+        assert revenue.unique_id == f"{entry.entry_id}_grid_energy_revenue"
 
     @pytest.mark.asyncio
     async def test_restore_state_updates_coordinator(self, coordinator):
