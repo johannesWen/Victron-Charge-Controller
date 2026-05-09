@@ -306,15 +306,15 @@ class TestCostTracking:
 
         assert coord.last_grid_consumption_kwh == 100
         assert coord.last_grid_feed_in_kwh == 20
-        assert coord.grid_consumption_cost == 0.0
-        assert coord.grid_feed_in_revenue == 0.0
+        assert coord.grid_energy_cost == 0.0
+        assert coord.grid_energy_revenue == 0.0
 
     def test_positive_deltas_add_cost_and_revenue(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         coord._last_grid_consumption_kwh = 100
         coord._last_grid_feed_in_kwh = 20
-        coord._grid_consumption_cost = 1.0
-        coord._grid_feed_in_revenue = 2.0
+        coord._grid_energy_cost = 1.0
+        coord._grid_energy_revenue = 2.0
         coord.hass.states.get.side_effect = lambda eid: {
             "sensor.grid_consumption_kwh": MockState("102"),
             "sensor.grid_feed_in_kwh": MockState("21.5"),
@@ -322,15 +322,15 @@ class TestCostTracking:
 
         coord._update_cost_tracking(0.20)
 
-        assert coord.grid_consumption_cost == pytest.approx(1.4)
-        assert coord.grid_feed_in_revenue == pytest.approx(2.3)
+        assert coord.grid_energy_cost == pytest.approx(1.4)
+        assert coord.grid_energy_revenue == pytest.approx(2.3)
         assert coord.last_grid_consumption_kwh == 102
         assert coord.last_grid_feed_in_kwh == 21.5
 
-    def test_negative_prices_are_applied_as_is(self, mock_hass):
+    def test_negative_consumption_delta_adds_revenue(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         coord._last_grid_consumption_kwh = 100
-        coord._grid_consumption_cost = 1.0
+        coord._grid_energy_revenue = 1.0
         coord.hass.states.get.side_effect = lambda eid: {
             "sensor.grid_consumption_kwh": MockState("101"),
             "sensor.grid_feed_in_kwh": MockState("unknown"),
@@ -338,7 +338,8 @@ class TestCostTracking:
 
         coord._update_cost_tracking(-0.10)
 
-        assert coord.grid_consumption_cost == pytest.approx(0.9)
+        assert coord.grid_energy_cost == pytest.approx(0.0)
+        assert coord.grid_energy_revenue == pytest.approx(1.1)
 
     def test_signed_prices_apply_to_consumption_and_feed_in(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
@@ -351,8 +352,8 @@ class TestCostTracking:
 
         coord._update_cost_tracking(0.20)
 
-        assert coord.grid_consumption_cost == pytest.approx(0.20)
-        assert coord.grid_feed_in_revenue == pytest.approx(0.20)
+        assert coord.grid_energy_cost == pytest.approx(0.20)
+        assert coord.grid_energy_revenue == pytest.approx(0.20)
 
         coord.hass.states.get.side_effect = lambda eid: {
             "sensor.grid_consumption_kwh": MockState("102"),
@@ -361,13 +362,13 @@ class TestCostTracking:
 
         coord._update_cost_tracking(-0.10)
 
-        assert coord.grid_consumption_cost == pytest.approx(0.10)
-        assert coord.grid_feed_in_revenue == pytest.approx(0.10)
+        assert coord.grid_energy_cost == pytest.approx(0.30)
+        assert coord.grid_energy_revenue == pytest.approx(0.30)
 
     def test_negative_delta_rebaselines_without_cost(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         coord._last_grid_consumption_kwh = 100
-        coord._grid_consumption_cost = 5.0
+        coord._grid_energy_cost = 5.0
         coord.hass.states.get.side_effect = lambda eid: {
             "sensor.grid_consumption_kwh": MockState("2"),
             "sensor.grid_feed_in_kwh": MockState("unknown"),
@@ -375,7 +376,7 @@ class TestCostTracking:
 
         coord._update_cost_tracking(0.30)
 
-        assert coord.grid_consumption_cost == 5.0
+        assert coord.grid_energy_cost == 5.0
         assert coord.last_grid_consumption_kwh == 2
 
     def test_missing_price_skips_cost_tracking(self, mock_hass):
@@ -385,7 +386,7 @@ class TestCostTracking:
 
         coord._update_cost_tracking(None)
 
-        assert coord.grid_consumption_cost == 0.0
+        assert coord.grid_energy_cost == 0.0
         assert coord.last_grid_consumption_kwh == 100
 
     def test_invalid_meter_state_skips_cost_tracking(self, mock_hass):
@@ -398,18 +399,30 @@ class TestCostTracking:
 
         coord._update_cost_tracking(0.30)
 
-        assert coord.grid_consumption_cost == 0.0
+        assert coord.grid_energy_cost == 0.0
         assert coord.last_grid_consumption_kwh == 100
 
     def test_restore_cost_state(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         restored_at = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
 
-        coord.restore_cost_state("grid_consumption", 12.5, 200.0, restored_at)
-        coord.restore_cost_state("grid_feed_in", 3.75, 50.0, restored_at)
+        coord.restore_cost_state(
+            "grid_cost",
+            12.5,
+            None,
+            restored_at,
+            last_grid_consumption_kwh=200.0,
+        )
+        coord.restore_cost_state(
+            "grid_revenue",
+            3.75,
+            None,
+            restored_at,
+            last_grid_feed_in_kwh=50.0,
+        )
 
-        assert coord.grid_consumption_cost == 12.5
-        assert coord.grid_feed_in_revenue == 3.75
+        assert coord.grid_energy_cost == 12.5
+        assert coord.grid_energy_revenue == 3.75
         assert coord.last_grid_consumption_kwh == 200.0
         assert coord.last_grid_feed_in_kwh == 50.0
         assert coord.last_cost_update == restored_at

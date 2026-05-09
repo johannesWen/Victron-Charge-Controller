@@ -193,40 +193,40 @@ class TestLastScheduleUpdateSensor:
 
 
 class TestGridEnergyCostSensor:
-    """Tests for grid consumption cost and feed-in revenue sensors."""
+    """Tests for grid energy cost and revenue sensors."""
 
-    def test_consumption_cost_native_value(self, coordinator):
+    def test_grid_cost_native_value(self, coordinator):
         coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
-        coordinator._grid_consumption_cost = 12.34
+        coordinator._grid_energy_cost = 12.34
         entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
-        sensor = GridEnergyCostSensor(coordinator, entry, "grid_consumption")
+        sensor = GridEnergyCostSensor(coordinator, entry, "grid_cost")
         assert sensor.native_value == 12.34
 
-    def test_feed_in_revenue_native_value(self, coordinator):
+    def test_grid_revenue_native_value(self, coordinator):
         coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
-        coordinator._grid_feed_in_revenue = 4.56
+        coordinator._grid_energy_revenue = 4.56
         entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
-        sensor = GridEnergyCostSensor(coordinator, entry, "grid_feed_in")
+        sensor = GridEnergyCostSensor(coordinator, entry, "grid_revenue")
         assert sensor.native_value == 4.56
 
     def test_no_configured_entity_is_unavailable(self, coordinator):
         entry = MockConfigEntry()
-        sensor = GridEnergyCostSensor(coordinator, entry, "grid_consumption")
+        sensor = GridEnergyCostSensor(coordinator, entry, "grid_cost")
         assert sensor.native_value is None
         assert sensor.available is False
 
     def test_unique_ids(self, coordinator):
         entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
-        consumption = GridEnergyCostSensor(coordinator, entry, "grid_consumption")
-        feed_in = GridEnergyCostSensor(coordinator, entry, "grid_feed_in")
-        assert consumption.unique_id == f"{entry.entry_id}_grid_consumption_cost"
-        assert feed_in.unique_id == f"{entry.entry_id}_grid_feed_in_revenue"
+        cost = GridEnergyCostSensor(coordinator, entry, "grid_cost")
+        revenue = GridEnergyCostSensor(coordinator, entry, "grid_revenue")
+        assert cost.unique_id == f"{entry.entry_id}_grid_consumption_cost"
+        assert revenue.unique_id == f"{entry.entry_id}_grid_feed_in_revenue"
 
     @pytest.mark.asyncio
     async def test_restore_state_updates_coordinator(self, coordinator):
         coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
         entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
-        sensor = GridEnergyCostSensor(coordinator, entry, "grid_consumption")
+        sensor = GridEnergyCostSensor(coordinator, entry, "grid_cost")
         sensor.async_get_last_sensor_data = AsyncMock(
             return_value=SimpleNamespace(native_value=7.5)
         )
@@ -234,7 +234,8 @@ class TestGridEnergyCostSensor:
             return_value=SimpleNamespace(
                 state="7.5",
                 attributes={
-                    "last_meter_reading_kwh": 123.4,
+                    "last_grid_consumption_kwh": 123.4,
+                    "last_grid_feed_in_kwh": 45.6,
                     "last_cost_update": "2026-05-08T12:00:00+00:00",
                 },
             )
@@ -242,8 +243,9 @@ class TestGridEnergyCostSensor:
 
         await sensor._restore_cost_state()
 
-        assert coordinator.grid_consumption_cost == 7.5
+        assert coordinator.grid_energy_cost == 7.5
         assert coordinator.last_grid_consumption_kwh == 123.4
+        assert coordinator.last_grid_feed_in_kwh == 45.6
         coordinator.hass.async_create_task.assert_called_once()
 
 

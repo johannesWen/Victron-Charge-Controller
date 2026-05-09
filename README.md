@@ -97,10 +97,10 @@ The integration creates a device with all configuration entities:
 | Blocked Discharging Hours | Sensor | Currently blocked discharging hours |
 | Charge Plan | Sensor | Full hour-by-hour charge/discharge plan |
 | Last Schedule Update | Sensor | Timestamp of last schedule recalculation |
-| Grid Consumption Cost | Sensor | Cumulative grid import cost in EUR from kWh deltas x current price |
-| Grid Feed-in Revenue | Sensor | Cumulative grid feed-in revenue in EUR from kWh deltas x current price |
+| Grid Energy Cost | Sensor | Cumulative gross grid energy costs in EUR |
+| Grid Energy Revenue | Sensor | Cumulative gross grid energy revenue in EUR |
 
-Cost tracking uses the current EPEX price as-is. Taxes, fixed fees, grid fees, and provider markups are not included.
+Cost tracking separates gross costs from gross revenue and both totals only increase. Positive prices add grid consumption to costs and grid feed-in to revenue. Negative prices add grid consumption to revenue and grid feed-in to costs. Taxes, fixed fees, grid fees, and provider markups are not included.
 
 ### Services
 

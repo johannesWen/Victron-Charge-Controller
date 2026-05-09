@@ -41,8 +41,8 @@ async def async_setup_entry(
             ChargePlanSensor(coordinator, entry),
             LastScheduleUpdateSensor(coordinator, entry),
             GridFeedInStatusSensor(coordinator, entry),
-            GridEnergyCostSensor(coordinator, entry, "grid_consumption"),
-            GridEnergyCostSensor(coordinator, entry, "grid_feed_in"),
+            GridEnergyCostSensor(coordinator, entry, "grid_cost"),
+            GridEnergyCostSensor(coordinator, entry, "grid_revenue"),
         ]
     )
 
@@ -89,7 +89,7 @@ class VictronCCBaseRestoreSensor(
 
 
 class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
-    """Sensor showing cumulative cost/revenue from optional kWh meters."""
+    """Sensor showing cumulative gross cost/revenue from optional kWh meters."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_state_class = SensorStateClass.TOTAL
@@ -106,10 +106,14 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
         super().__init__(coordinator, entry)
         self._tracker = tracker
         self._attr_translation_key = {
-            "grid_consumption": "grid_consumption_cost",
-            "grid_feed_in": "grid_feed_in_revenue",
+            "grid_cost": "grid_energy_cost",
+            "grid_revenue": "grid_energy_revenue",
         }[tracker]
-        self._attr_unique_id = f"{entry.entry_id}_{self._attr_translation_key}"
+        self._attr_unique_id = {
+            # Preserve the old unique IDs so entity registry/history can continue.
+            "grid_cost": f"{entry.entry_id}_grid_consumption_cost",
+            "grid_revenue": f"{entry.entry_id}_grid_feed_in_revenue",
+        }[tracker]
 
     @staticmethod
     def _as_float(value: object) -> float | None:
@@ -129,26 +133,31 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
         return None
 
     @property
-    def _source_entity(self) -> str | None:
-        if self._tracker == "grid_consumption":
-            return self.coordinator.grid_consumption_entity
-        return self.coordinator.grid_feed_in_energy_entity
+    def _source_entities(self) -> list[str]:
+        return [
+            entity_id
+            for entity_id in (
+                self.coordinator.grid_consumption_entity,
+                self.coordinator.grid_feed_in_energy_entity,
+            )
+            if entity_id is not None
+        ]
 
     @property
-    def _last_meter_reading(self) -> float | None:
-        if self._tracker == "grid_consumption":
+    def _legacy_last_meter_reading(self) -> float | None:
+        if self._tracker == "grid_cost":
             return self.coordinator.last_grid_consumption_kwh
         return self.coordinator.last_grid_feed_in_kwh
 
     @property
     def _coordinator_value(self) -> float | None:
-        if self._tracker == "grid_consumption":
-            return self.coordinator.grid_consumption_cost
-        return self.coordinator.grid_feed_in_revenue
+        if self._tracker == "grid_cost":
+            return self.coordinator.grid_energy_cost
+        return self.coordinator.grid_energy_revenue
 
     @property
     def available(self) -> bool:
-        return self._source_entity is not None and super().available
+        return bool(self._source_entities) and super().available
 
     async def async_added_to_hass(self) -> None:
         """Restore cumulative EUR value and last kWh baseline."""
@@ -163,13 +172,21 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
             total = self._as_float(last_sensor_data.native_value)
 
         last_state = await self.async_get_last_state()
-        last_meter_reading = None
+        legacy_last_meter_reading = None
+        last_grid_consumption_kwh = None
+        last_grid_feed_in_kwh = None
         last_cost_update = None
         if last_state is not None:
             if total is None:
                 total = self._as_float(last_state.state)
-            last_meter_reading = self._as_float(
+            legacy_last_meter_reading = self._as_float(
                 last_state.attributes.get("last_meter_reading_kwh")
+            )
+            last_grid_consumption_kwh = self._as_float(
+                last_state.attributes.get("last_grid_consumption_kwh")
+            )
+            last_grid_feed_in_kwh = self._as_float(
+                last_state.attributes.get("last_grid_feed_in_kwh")
             )
             last_cost_update = self._as_datetime(
                 last_state.attributes.get("last_cost_update")
@@ -178,10 +195,12 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
         self.coordinator.restore_cost_state(
             self._tracker,
             total,
-            last_meter_reading,
+            legacy_last_meter_reading,
             last_cost_update,
+            last_grid_consumption_kwh,
+            last_grid_feed_in_kwh,
         )
-        if self._source_entity is not None:
+        if self._source_entities:
             self.coordinator.hass.async_create_task(
                 self.coordinator.async_request_refresh()
             )
@@ -190,8 +209,10 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
         data: ChargeControlData | None = self.coordinator.data
         last_cost_update = self.coordinator.last_cost_update
         return {
-            "source_entity": self._source_entity,
-            "last_meter_reading_kwh": self._last_meter_reading,
+            "source_entities": self._source_entities,
+            "last_meter_reading_kwh": self._legacy_last_meter_reading,
+            "last_grid_consumption_kwh": self.coordinator.last_grid_consumption_kwh,
+            "last_grid_feed_in_kwh": self.coordinator.last_grid_feed_in_kwh,
             "last_cost_update": (
                 last_cost_update.isoformat() if last_cost_update else None
             ),

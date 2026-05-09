@@ -81,8 +81,8 @@ class ChargeControlData:
     prices_tomorrow: list[dict[str, Any]] = field(default_factory=list)
     grid_feed_in_active: bool = False
     applied_max_grid_feed_in: float | None = None
-    grid_consumption_cost: float | None = None
-    grid_feed_in_revenue: float | None = None
+    grid_energy_cost: float | None = None
+    grid_energy_revenue: float | None = None
     current_price_eur_per_kwh: float | None = None
     last_schedule_update: datetime | None = None
     last_cost_update: datetime | None = None
@@ -140,8 +140,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # --- Cost tracking from cumulative kWh meters ---
         self._last_grid_consumption_kwh: float | None = None
         self._last_grid_feed_in_kwh: float | None = None
-        self._grid_consumption_cost: float = 0.0
-        self._grid_feed_in_revenue: float = 0.0
+        self._grid_energy_cost: float = 0.0
+        self._grid_energy_revenue: float = 0.0
         self._last_cost_update: datetime | None = None
 
         # --- Schedule state ---
@@ -190,16 +190,32 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return self._grid_feed_in_energy_entity
 
     @property
-    def grid_consumption_cost(self) -> float | None:
-        if self._grid_consumption_entity is None:
+    def grid_energy_cost(self) -> float | None:
+        if (
+            self._grid_consumption_entity is None
+            and self._grid_feed_in_energy_entity is None
+        ):
             return None
-        return self._grid_consumption_cost
+        return self._grid_energy_cost
+
+    @property
+    def grid_energy_revenue(self) -> float | None:
+        if (
+            self._grid_consumption_entity is None
+            and self._grid_feed_in_energy_entity is None
+        ):
+            return None
+        return self._grid_energy_revenue
+
+    @property
+    def grid_consumption_cost(self) -> float | None:
+        """Backward-compatible alias for the cumulative grid energy cost."""
+        return self.grid_energy_cost
 
     @property
     def grid_feed_in_revenue(self) -> float | None:
-        if self._grid_feed_in_energy_entity is None:
-            return None
-        return self._grid_feed_in_revenue
+        """Backward-compatible alias for the cumulative grid energy revenue."""
+        return self.grid_energy_revenue
 
     @property
     def last_grid_consumption_kwh(self) -> float | None:
@@ -230,15 +246,31 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         total: float | None,
         last_meter_reading: float | None,
         last_update: datetime | None = None,
+        last_grid_consumption_kwh: float | None = None,
+        last_grid_feed_in_kwh: float | None = None,
     ) -> None:
         """Restore persisted cumulative cost tracker state."""
-        if tracker == "grid_consumption":
+        if tracker in ("grid_cost", "grid_consumption"):
             if total is not None:
-                self._grid_consumption_cost = total
+                self._grid_energy_cost = total
+        elif tracker in ("grid_revenue", "grid_feed_in"):
+            if total is not None:
+                self._grid_energy_revenue = total
+
+        if last_grid_consumption_kwh is not None:
+            self._last_grid_consumption_kwh = last_grid_consumption_kwh
+        elif (
+            tracker in ("grid_cost", "grid_consumption")
+            and last_meter_reading is not None
+        ):
             self._last_grid_consumption_kwh = last_meter_reading
-        elif tracker == "grid_feed_in":
-            if total is not None:
-                self._grid_feed_in_revenue = total
+
+        if last_grid_feed_in_kwh is not None:
+            self._last_grid_feed_in_kwh = last_grid_feed_in_kwh
+        elif (
+            tracker in ("grid_revenue", "grid_feed_in")
+            and last_meter_reading is not None
+        ):
             self._last_grid_feed_in_kwh = last_meter_reading
 
         if last_update is not None and (
@@ -599,54 +631,65 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         except (ValueError, TypeError):
             return None
 
-    def _update_cost_tracker(
+    def _read_meter_delta(
         self,
         *,
         entity_id: str | None,
         last_attr: str,
-        total_attr: str,
-        current_price_eur_per_kwh: float | None,
-    ) -> bool:
-        """Update one cumulative kWh to EUR tracker from a meter delta."""
-        if entity_id is None or current_price_eur_per_kwh is None:
-            return False
+    ) -> tuple[bool, float | None]:
+        """Return a positive meter delta and update the stored baseline."""
+        if entity_id is None:
+            return False, None
 
         current_kwh = self._get_entity_float(entity_id)
         if current_kwh is None:
-            return False
+            return False, None
 
         last_kwh = getattr(self, last_attr)
         if last_kwh is None:
             setattr(self, last_attr, current_kwh)
-            return True
+            return True, None
 
         delta_kwh = current_kwh - last_kwh
         if delta_kwh < 0:
             # The selected energy sensor reset or was replaced. Re-baseline only.
             setattr(self, last_attr, current_kwh)
-            return True
+            return True, None
         if delta_kwh == 0:
-            return False
+            return False, None
 
-        total = getattr(self, total_attr) + delta_kwh * current_price_eur_per_kwh
-        setattr(self, total_attr, total)
         setattr(self, last_attr, current_kwh)
-        return True
+        return True, delta_kwh
 
     def _update_cost_tracking(self, current_price_eur_per_kwh: float | None) -> None:
-        """Update cumulative consumption cost and feed-in revenue."""
-        updated_consumption = self._update_cost_tracker(
+        """Update cumulative grid energy costs and revenue as gross totals."""
+        if current_price_eur_per_kwh is None:
+            return
+
+        updated_consumption, consumption_delta_kwh = self._read_meter_delta(
             entity_id=self._grid_consumption_entity,
             last_attr="_last_grid_consumption_kwh",
-            total_attr="_grid_consumption_cost",
-            current_price_eur_per_kwh=current_price_eur_per_kwh,
         )
-        updated_feed_in = self._update_cost_tracker(
+        updated_feed_in, feed_in_delta_kwh = self._read_meter_delta(
             entity_id=self._grid_feed_in_energy_entity,
             last_attr="_last_grid_feed_in_kwh",
-            total_attr="_grid_feed_in_revenue",
-            current_price_eur_per_kwh=current_price_eur_per_kwh,
         )
+
+        price_abs = abs(current_price_eur_per_kwh)
+        if consumption_delta_kwh is not None:
+            amount = consumption_delta_kwh * price_abs
+            if current_price_eur_per_kwh >= 0:
+                self._grid_energy_cost += amount
+            else:
+                self._grid_energy_revenue += amount
+
+        if feed_in_delta_kwh is not None:
+            amount = feed_in_delta_kwh * price_abs
+            if current_price_eur_per_kwh >= 0:
+                self._grid_energy_revenue += amount
+            else:
+                self._grid_energy_cost += amount
+
         if updated_consumption or updated_feed_in:
             self._last_cost_update = dt_util.now()
 
@@ -946,8 +989,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             prices_tomorrow=prices_tomorrow,
             grid_feed_in_active=feed_in_active,
             applied_max_grid_feed_in=applied_feed_in,
-            grid_consumption_cost=self.grid_consumption_cost,
-            grid_feed_in_revenue=self.grid_feed_in_revenue,
+            grid_energy_cost=self.grid_energy_cost,
+            grid_energy_revenue=self.grid_energy_revenue,
             current_price_eur_per_kwh=current_price_eur_per_kwh,
             last_schedule_update=self._last_schedule_update,
             last_cost_update=self._last_cost_update,
