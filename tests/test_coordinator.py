@@ -340,6 +340,30 @@ class TestCostTracking:
 
         assert coord.grid_consumption_cost == pytest.approx(0.9)
 
+    def test_signed_prices_apply_to_consumption_and_feed_in(self, mock_hass):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord._last_grid_consumption_kwh = 100
+        coord._last_grid_feed_in_kwh = 20
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("101"),
+            "sensor.grid_feed_in_kwh": MockState("21"),
+        }.get(eid)
+
+        coord._update_cost_tracking(0.20)
+
+        assert coord.grid_consumption_cost == pytest.approx(0.20)
+        assert coord.grid_feed_in_revenue == pytest.approx(0.20)
+
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("102"),
+            "sensor.grid_feed_in_kwh": MockState("22"),
+        }.get(eid)
+
+        coord._update_cost_tracking(-0.10)
+
+        assert coord.grid_consumption_cost == pytest.approx(0.10)
+        assert coord.grid_feed_in_revenue == pytest.approx(0.10)
+
     def test_negative_delta_rebaselines_without_cost(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         coord._last_grid_consumption_kwh = 100
