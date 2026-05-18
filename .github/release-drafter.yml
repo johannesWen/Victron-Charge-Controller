@@ -26,6 +26,7 @@ version-resolver:
   patch:
     labels:
       - 'version-patch'
+      - 'dependencies'
   default: patch
 template: |
   ## Changes
