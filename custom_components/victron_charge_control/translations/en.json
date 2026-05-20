@@ -77,6 +77,12 @@
       },
       "grid_energy_revenue": {
         "name": "Grid Energy Revenue"
+      },
+      "grid_energy_import": {
+        "name": "Grid Energy Import"
+      },
+      "grid_energy_export": {
+        "name": "Grid Energy Export"
       }
     },
     "button": {
