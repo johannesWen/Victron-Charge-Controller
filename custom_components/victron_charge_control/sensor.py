@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfPower
+from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -43,6 +43,8 @@ async def async_setup_entry(
             GridFeedInStatusSensor(coordinator, entry),
             GridEnergyCostSensor(coordinator, entry, "grid_cost"),
             GridEnergyCostSensor(coordinator, entry, "grid_revenue"),
+            GridEnergySensor(coordinator, entry, "grid_import"),
+            GridEnergySensor(coordinator, entry, "grid_export"),
         ]
     )
 
@@ -202,6 +204,118 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
             ),
             "current_price_eur_per_kwh": (
                 data.current_price_eur_per_kwh if data else None
+            ),
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._attr_native_value = self.native_value
+        self._attr_extra_state_attributes = self._build_attributes()
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float | None:
+        return self._coordinator_value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        return self._build_attributes()
+
+
+class GridEnergySensor(VictronCCBaseRestoreSensor):
+    """Sensor showing cumulative energy import/export in kWh."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:transmission-tower"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+        tracker: str,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._tracker = tracker
+        self._attr_translation_key = {
+            "grid_import": "grid_energy_import",
+            "grid_export": "grid_energy_export",
+        }[tracker]
+        self._attr_unique_id = f"{entry.entry_id}_{self._attr_translation_key}"
+
+    @property
+    def _coordinator_value(self) -> float | None:
+        if self._tracker == "grid_import":
+            return self.coordinator.grid_energy_import
+        return self.coordinator.grid_energy_export
+
+    @property
+    def available(self) -> bool:
+        return bool(self._source_entities) and super().available
+
+    @property
+    def _source_entities(self) -> list[str]:
+        return [
+            entity_id
+            for entity_id in (
+                self.coordinator.grid_consumption_entity,
+                self.coordinator.grid_feed_in_energy_entity,
+            )
+            if entity_id is not None
+        ]
+
+    async def async_added_to_hass(self) -> None:
+        """Restore cumulative kWh value and baseline."""
+        await super().async_added_to_hass()
+        await self._restore_energy_state()
+
+    async def _restore_energy_state(self) -> None:
+        """Restore cumulative kWh value and meter baseline from HA storage."""
+        total = None
+        last_sensor_data = await self.async_get_last_sensor_data()
+        if last_sensor_data is not None:
+            total = self._as_float(last_sensor_data.native_value)
+
+        last_state = await self.async_get_last_state()
+        last_grid_consumption_kwh = None
+        last_grid_feed_in_kwh = None
+        last_energy_update = None
+        if last_state is not None:
+            if total is None:
+                total = self._as_float(last_state.state)
+            last_grid_consumption_kwh = self._as_float(
+                last_state.attributes.get("last_grid_consumption_kwh")
+            )
+            last_grid_feed_in_kwh = self._as_float(
+                last_state.attributes.get("last_grid_feed_in_kwh")
+            )
+            last_energy_update = self._as_datetime(
+                last_state.attributes.get("last_energy_update")
+            )
+
+        self.coordinator.restore_energy_state(
+            self._tracker,
+            total,
+            last_energy_update,
+            last_grid_consumption_kwh,
+            last_grid_feed_in_kwh,
+        )
+        if self._source_entities:
+            self.coordinator.hass.async_create_task(
+                self.coordinator.async_request_refresh()
+            )
+
+    def _build_attributes(self) -> dict[str, object]:
+        data: ChargeControlData | None = self.coordinator.data
+        last_energy_update = self.coordinator.last_energy_update
+        return {
+            "source_entities": self._source_entities,
+            "last_grid_consumption_kwh": self.coordinator.last_grid_consumption_kwh,
+            "last_grid_feed_in_kwh": self.coordinator.last_grid_feed_in_kwh,
+            "last_energy_update": (
+                last_energy_update.isoformat() if last_energy_update else None
             ),
         }
 
