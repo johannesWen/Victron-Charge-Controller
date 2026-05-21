@@ -89,6 +89,23 @@ class VictronCCBaseRestoreSensor(
             entry_type=DeviceEntryType.SERVICE,
         )
 
+    @staticmethod
+    def _as_float(value: object) -> float | None:
+        try:
+            if value in (None, "unknown", "unavailable"):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _as_datetime(value: object) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return dt_util.parse_datetime(value)
+        return None
+
 
 class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
     """Sensor showing cumulative gross cost/revenue from optional kWh meters."""
@@ -112,23 +129,6 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
             "grid_revenue": "grid_energy_revenue",
         }[tracker]
         self._attr_unique_id = f"{entry.entry_id}_{self._attr_translation_key}"
-
-    @staticmethod
-    def _as_float(value: object) -> float | None:
-        try:
-            if value in (None, "unknown", "unavailable"):
-                return None
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _as_datetime(value: object) -> datetime | None:
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, str):
-            return dt_util.parse_datetime(value)
-        return None
 
     @property
     def _source_entities(self) -> list[str]:
@@ -226,7 +226,7 @@ class GridEnergySensor(VictronCCBaseRestoreSensor):
     """Sensor showing cumulative energy import/export in kWh."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
     _attr_icon = "mdi:transmission-tower"

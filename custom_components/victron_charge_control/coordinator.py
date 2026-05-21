@@ -695,9 +695,6 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def _update_cost_tracking(self, current_price_eur_per_kwh: float | None) -> None:
         """Update cumulative grid energy costs, revenue, and kWh import/export."""
-        if current_price_eur_per_kwh is None:
-            return
-
         updated_consumption, consumption_delta_kwh = self._read_meter_delta(
             entity_id=self._grid_consumption_entity,
             last_attr="_last_grid_consumption_kwh",
@@ -714,20 +711,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if feed_in_delta_kwh is not None:
             self._grid_energy_export += feed_in_delta_kwh
 
-        price_abs = abs(current_price_eur_per_kwh)
-        if consumption_delta_kwh is not None:
-            amount = consumption_delta_kwh * price_abs
-            if current_price_eur_per_kwh >= 0:
-                self._grid_energy_cost += amount
-            else:
-                self._grid_energy_revenue += amount
+        if current_price_eur_per_kwh is not None:
+            price_abs = abs(current_price_eur_per_kwh)
+            if consumption_delta_kwh is not None:
+                amount = consumption_delta_kwh * price_abs
+                if current_price_eur_per_kwh >= 0:
+                    self._grid_energy_cost += amount
+                else:
+                    self._grid_energy_revenue += amount
 
-        if feed_in_delta_kwh is not None:
-            amount = feed_in_delta_kwh * price_abs
-            if current_price_eur_per_kwh >= 0:
-                self._grid_energy_revenue += amount
-            else:
-                self._grid_energy_cost += amount
+            if feed_in_delta_kwh is not None:
+                amount = feed_in_delta_kwh * price_abs
+                if current_price_eur_per_kwh >= 0:
+                    self._grid_energy_revenue += amount
+                else:
+                    self._grid_energy_cost += amount
 
         if updated_consumption or updated_feed_in:
             self._last_cost_update = dt_util.now()

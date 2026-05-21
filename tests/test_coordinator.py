@@ -379,15 +379,19 @@ class TestCostTracking:
         assert coord.grid_energy_cost == 5.0
         assert coord.last_grid_consumption_kwh == 2
 
-    def test_missing_price_skips_cost_tracking(self, mock_hass):
+    def test_missing_price_still_tracks_energy(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         coord._last_grid_consumption_kwh = 100
-        coord.hass.states.get.return_value = MockState("101")
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.grid_consumption_kwh": MockState("101"),
+            "sensor.grid_feed_in_kwh": MockState("unknown"),
+        }.get(eid)
 
         coord._update_cost_tracking(None)
 
         assert coord.grid_energy_cost == 0.0
-        assert coord.last_grid_consumption_kwh == 100
+        assert coord.grid_energy_import == pytest.approx(1.0)
+        assert coord.last_grid_consumption_kwh == 101
 
     def test_invalid_meter_state_skips_cost_tracking(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)

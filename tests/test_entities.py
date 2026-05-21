@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.const import UnitOfEnergy
+
 from custom_components.victron_charge_control.const import (
     ACTION_CHARGE,
     ACTION_IDLE,
@@ -29,6 +32,7 @@ from custom_components.victron_charge_control.sensor import (
     ChargePlanSensor,
     DesiredActionSensor,
     GridEnergyCostSensor,
+    GridEnergySensor,
     LastScheduleUpdateSensor,
     ScheduleSensor,
     TargetSetpointSensor,
@@ -244,6 +248,70 @@ class TestGridEnergyCostSensor:
         await sensor._restore_cost_state()
 
         assert coordinator.grid_energy_cost == 7.5
+        assert coordinator.last_grid_consumption_kwh == 123.4
+        assert coordinator.last_grid_feed_in_kwh == 45.6
+        coordinator.hass.async_create_task.assert_called_once()
+
+
+class TestGridEnergySensor:
+    """Tests for grid energy import and export sensors."""
+
+    def test_grid_import_native_value(self, coordinator):
+        coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
+        coordinator._grid_energy_import = 12.34
+        entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
+        sensor = GridEnergySensor(coordinator, entry, "grid_import")
+        assert sensor.native_value == 12.34
+
+    def test_grid_export_native_value(self, coordinator):
+        coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
+        coordinator._grid_energy_export = 4.56
+        entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
+        sensor = GridEnergySensor(coordinator, entry, "grid_export")
+        assert sensor.native_value == 4.56
+
+    def test_metadata_supports_long_term_energy_statistics(self, coordinator):
+        entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
+        sensor = GridEnergySensor(coordinator, entry, "grid_import")
+        assert sensor.device_class == SensorDeviceClass.ENERGY
+        assert sensor.state_class == SensorStateClass.TOTAL_INCREASING
+        assert sensor.native_unit_of_measurement == UnitOfEnergy.KILO_WATT_HOUR
+
+    def test_no_configured_entity_is_unavailable(self, coordinator):
+        entry = MockConfigEntry()
+        sensor = GridEnergySensor(coordinator, entry, "grid_import")
+        assert sensor.native_value is None
+        assert sensor.available is False
+
+    def test_unique_ids(self, coordinator):
+        entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
+        imported = GridEnergySensor(coordinator, entry, "grid_import")
+        exported = GridEnergySensor(coordinator, entry, "grid_export")
+        assert imported.unique_id == f"{entry.entry_id}_grid_energy_import"
+        assert exported.unique_id == f"{entry.entry_id}_grid_energy_export"
+
+    @pytest.mark.asyncio
+    async def test_restore_state_updates_coordinator(self, coordinator):
+        coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
+        entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
+        sensor = GridEnergySensor(coordinator, entry, "grid_import")
+        sensor.async_get_last_sensor_data = AsyncMock(
+            return_value=SimpleNamespace(native_value=7.5)
+        )
+        sensor.async_get_last_state = AsyncMock(
+            return_value=SimpleNamespace(
+                state="7.5",
+                attributes={
+                    "last_grid_consumption_kwh": 123.4,
+                    "last_grid_feed_in_kwh": 45.6,
+                    "last_energy_update": "2026-05-08T12:00:00+00:00",
+                },
+            )
+        )
+
+        await sensor._restore_energy_state()
+
+        assert coordinator.grid_energy_import == 7.5
         assert coordinator.last_grid_consumption_kwh == 123.4
         assert coordinator.last_grid_feed_in_kwh == 45.6
         coordinator.hass.async_create_task.assert_called_once()
