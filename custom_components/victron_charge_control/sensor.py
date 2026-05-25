@@ -187,10 +187,6 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
             last_grid_consumption_kwh,
             last_grid_feed_in_kwh,
         )
-        if self._source_entities:
-            self.coordinator.hass.async_create_task(
-                self.coordinator.async_request_refresh()
-            )
 
     def _build_attributes(self) -> dict[str, object]:
         data: ChargeControlData | None = self.coordinator.data
@@ -302,10 +298,6 @@ class GridEnergySensor(VictronCCBaseRestoreSensor):
             last_grid_consumption_kwh,
             last_grid_feed_in_kwh,
         )
-        if self._source_entities:
-            self.coordinator.hass.async_create_task(
-                self.coordinator.async_request_refresh()
-            )
 
     def _build_attributes(self) -> dict[str, object]:
         data: ChargeControlData | None = self.coordinator.data
