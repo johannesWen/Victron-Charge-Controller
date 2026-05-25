@@ -250,7 +250,7 @@ class TestGridEnergyCostSensor:
         assert coordinator.grid_energy_cost == 7.5
         assert coordinator.last_grid_consumption_kwh == 123.4
         assert coordinator.last_grid_feed_in_kwh == 45.6
-        coordinator.hass.async_create_task.assert_called_once()
+        coordinator.hass.async_create_task.assert_not_called()
 
 
 class TestGridEnergySensor:
@@ -314,7 +314,7 @@ class TestGridEnergySensor:
         assert coordinator.grid_energy_import == 7.5
         assert coordinator.last_grid_consumption_kwh == 123.4
         assert coordinator.last_grid_feed_in_kwh == 45.6
-        coordinator.hass.async_create_task.assert_called_once()
+        coordinator.hass.async_create_task.assert_not_called()
 
 
 # ======================================================================

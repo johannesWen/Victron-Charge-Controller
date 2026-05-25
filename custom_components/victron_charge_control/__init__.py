@@ -17,7 +17,14 @@ from .services import async_setup_services, async_unload_services
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR, Platform.NUMBER, Platform.SELECT, Platform.SWITCH, Platform.BUTTON, Platform.TEXT]
+PLATFORMS = [
+    Platform.SENSOR,
+    Platform.NUMBER,
+    Platform.SELECT,
+    Platform.SWITCH,
+    Platform.BUTTON,
+    Platform.TEXT,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -27,8 +34,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
-    await coordinator.async_setup()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await coordinator.async_setup()
 
     # Register services (only once)
     if len(hass.data[DOMAIN]) == 1:
@@ -51,7 +58,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        coordinator: VictronChargeControlCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        coordinator: VictronChargeControlCoordinator = hass.data[DOMAIN].pop(
+            entry.entry_id
+        )
         await coordinator.async_shutdown()
 
         # Unregister services if no entries left

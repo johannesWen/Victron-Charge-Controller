@@ -35,9 +35,16 @@ class TestAsyncSetupEntry:
         "custom_components.victron_charge_control.VictronChargeControlCoordinator"
     )
     @patch("custom_components.victron_charge_control.async_setup_services")
-    async def test_setup_entry(self, mock_setup_services, mock_coord_cls, mock_hass, mock_entry):
+    async def test_setup_entry(
+        self, mock_setup_services, mock_coord_cls, mock_hass, mock_entry
+    ):
+        calls = []
         mock_coordinator = MagicMock()
         mock_coordinator.async_setup = AsyncMock()
+        mock_coordinator.async_setup.side_effect = lambda: calls.append("setup")
+        mock_hass.config_entries.async_forward_entry_setups.side_effect = (
+            lambda *_args: calls.append("platforms")
+        )
         mock_coord_cls.return_value = mock_coordinator
 
         result = await async_setup_entry(mock_hass, mock_entry)
@@ -49,6 +56,7 @@ class TestAsyncSetupEntry:
         mock_hass.config_entries.async_forward_entry_setups.assert_called_once_with(
             mock_entry, PLATFORMS
         )
+        assert calls == ["platforms", "setup"]
 
     @pytest.mark.asyncio
     @patch(
