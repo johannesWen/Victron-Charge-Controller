@@ -26,6 +26,10 @@ A Lovelace dashboard card for this integration is available in the [Victron Char
 |:---:|:---:| 
 |<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/settings_card.png" height="500" alt="Victron Charge Controller logo">|<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/refs/heads/main/assets/screenshots/plan_card.png" height="500" alt="Victron Charge Controller logo">|
 
+| History Card |  |
+|:---:|:---:| 
+|<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/refs/heads/main/assets/screenshots/costs_card.png" height="500" alt="Victron Charge Controller logo">||
+
 ## Prerequisites
 
 | Component | Purpose |
