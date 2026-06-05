@@ -326,7 +326,7 @@ class TestVictronCCNumber:
     """Tests for the configurable number entities."""
 
     def test_number_descriptions_count(self):
-        assert len(NUMBERS) == 14
+        assert len(NUMBERS) == 15
 
     def test_native_value_reads_coordinator(self, coordinator):
         entry = MockConfigEntry()

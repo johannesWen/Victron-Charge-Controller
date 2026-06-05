@@ -46,6 +46,7 @@ from .const import (
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_MIN_SOC,
     DEFAULT_REDUCED_GRID_FEED_IN,
+    DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
     EPEX_ATTR_DATA,
     EPEX_KEY_PRICE,
@@ -122,6 +123,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.discharge_allowed: bool = True
         self.min_soc: float = DEFAULT_MIN_SOC
         self.max_soc: float = DEFAULT_MAX_SOC
+        self.soc_hysteresis: float = DEFAULT_SOC_HYSTERESIS
+        self._charge_blocked_by_soc: bool = False
+        self._discharge_blocked_by_soc: bool = False
         self.charge_power: float = DEFAULT_CHARGE_POWER
         self.discharge_power: float = DEFAULT_DISCHARGE_POWER
         self.idle_setpoint: float = DEFAULT_IDLE_SETPOINT
@@ -730,6 +734,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if updated_consumption or updated_feed_in:
             self._last_cost_update = dt_util.now()
 
+    def _update_soc_hysteresis(self, soc: float) -> None:
+        """Update SOC hysteresis blocked flags."""
+        if soc >= self.max_soc:
+            self._charge_blocked_by_soc = True
+        elif soc < self.max_soc - self.soc_hysteresis:
+            self._charge_blocked_by_soc = False
+
+        if soc <= self.min_soc:
+            self._discharge_blocked_by_soc = True
+        elif soc > self.min_soc + self.soc_hysteresis:
+            self._discharge_blocked_by_soc = False
+
     def _determine_action(self) -> str:
         """Deterministic priority stack — returns charge/discharge/idle."""
         # Priority 1: System off
@@ -742,14 +758,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             _LOGGER.debug("Battery SOC unavailable — falling back to idle")
             return ACTION_IDLE
 
+        self._update_soc_hysteresis(soc)
+
         # Priority 3: Force modes
         if self.control_mode == MODE_FORCE_CHARGE:
-            if self.charge_allowed and soc < self.max_soc:
+            if self.charge_allowed and not self._charge_blocked_by_soc:
                 return ACTION_CHARGE
             return ACTION_IDLE
 
         if self.control_mode == MODE_FORCE_DISCHARGE:
-            if self.discharge_allowed and soc > self.min_soc:
+            if self.discharge_allowed and not self._discharge_blocked_by_soc:
                 return ACTION_DISCHARGE
             return ACTION_IDLE
 
@@ -761,10 +779,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             current_slot: ScheduleSlot = (current_date, hour)
 
             # Priority 5: Auto or Manual — look up schedule (date-aware)
-            if current_slot in self._charge_hours and self.charge_allowed and soc < self.max_soc:
+            if current_slot in self._charge_hours and self.charge_allowed and not self._charge_blocked_by_soc:
                 if hour not in self._blocked_charging_hours:
                     return ACTION_CHARGE
-            if current_slot in self._discharge_hours and self.discharge_allowed and soc > self.min_soc:
+            if current_slot in self._discharge_hours and self.discharge_allowed and not self._discharge_blocked_by_soc:
                 if hour not in self._blocked_discharging_hours:
                     return ACTION_DISCHARGE
             return ACTION_IDLE

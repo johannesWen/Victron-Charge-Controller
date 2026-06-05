@@ -97,6 +97,9 @@
       "max_soc": {
         "name": "Max SOC"
       },
+      "soc_hysteresis": {
+        "name": "SOC Hysteresis"
+      },
       "charge_power": {
         "name": "Charge Power"
       },

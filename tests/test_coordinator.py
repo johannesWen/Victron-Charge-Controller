@@ -89,6 +89,7 @@ class TestCoordinatorInit:
         assert coordinator.discharge_allowed is True
         assert coordinator.min_soc == 10.0
         assert coordinator.max_soc == 95.0
+        assert coordinator.soc_hysteresis == 2.0
         assert coordinator.charge_power == 3000.0
         assert coordinator.discharge_power == 3000.0
 
@@ -569,6 +570,86 @@ class TestDetermineAction:
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_CHARGE
+
+
+# ======================================================================
+# SOC Hysteresis
+# ======================================================================
+
+
+class TestSOCHysteresis:
+    """Tests for SOC hysteresis behavior."""
+
+    def _set_soc(self, coordinator, soc):
+        state = MockState(str(soc))
+        coordinator.hass.states.get.return_value = state
+
+    def test_charge_blocked_after_hitting_max_soc(self, coordinator):
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.max_soc = 95.0
+        coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 95.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+        assert coordinator._charge_blocked_by_soc is True
+
+    def test_charge_resumes_after_soc_drops_below_hysteresis(self, coordinator):
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.max_soc = 95.0
+        coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 95.0)
+        coordinator._determine_action()
+        assert coordinator._charge_blocked_by_soc is True
+        self._set_soc(coordinator, 93.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+        assert coordinator._charge_blocked_by_soc is True
+        self._set_soc(coordinator, 92.9)
+        assert coordinator._determine_action() == ACTION_CHARGE
+        assert coordinator._charge_blocked_by_soc is False
+
+    def test_discharge_blocked_after_hitting_min_soc(self, coordinator):
+        coordinator.control_mode = MODE_FORCE_DISCHARGE
+        coordinator.discharge_allowed = True
+        coordinator.min_soc = 10.0
+        coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 10.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+        assert coordinator._discharge_blocked_by_soc is True
+
+    def test_discharge_resumes_after_soc_rises_above_hysteresis(self, coordinator):
+        coordinator.control_mode = MODE_FORCE_DISCHARGE
+        coordinator.discharge_allowed = True
+        coordinator.min_soc = 10.0
+        coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 10.0)
+        coordinator._determine_action()
+        assert coordinator._discharge_blocked_by_soc is True
+        self._set_soc(coordinator, 12.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+        assert coordinator._discharge_blocked_by_soc is True
+        self._set_soc(coordinator, 12.1)
+        assert coordinator._determine_action() == ACTION_DISCHARGE
+        assert coordinator._discharge_blocked_by_soc is False
+
+    def test_hysteresis_zero_behaves_like_before(self, coordinator):
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.max_soc = 95.0
+        coordinator.soc_hysteresis = 0.0
+        self._set_soc(coordinator, 95.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+        self._set_soc(coordinator, 94.9)
+        assert coordinator._determine_action() == ACTION_CHARGE
+
+    def test_no_hysteresis_when_soc_never_hits_limit(self, coordinator):
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.max_soc = 95.0
+        coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 50.0)
+        assert coordinator._determine_action() == ACTION_CHARGE
+        assert coordinator._charge_blocked_by_soc is False
 
 
 # ======================================================================
