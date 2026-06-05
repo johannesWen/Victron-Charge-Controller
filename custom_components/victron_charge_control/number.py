@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_MIN_SOC,
     DEFAULT_REDUCED_GRID_FEED_IN,
+    DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
 )
 from .coordinator import VictronChargeControlCoordinator
@@ -67,6 +68,17 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         native_step=1,
         coordinator_attr="max_soc",
         default_value=DEFAULT_MAX_SOC,
+    ),
+    VictronCCNumberDescription(
+        key="soc_hysteresis",
+        translation_key="soc_hysteresis",
+        icon="mdi:battery-sync",
+        native_unit_of_measurement=PERCENTAGE,
+        native_min_value=0,
+        native_max_value=20,
+        native_step=1,
+        coordinator_attr="soc_hysteresis",
+        default_value=DEFAULT_SOC_HYSTERESIS,
     ),
     VictronCCNumberDescription(
         key="charge_power",
