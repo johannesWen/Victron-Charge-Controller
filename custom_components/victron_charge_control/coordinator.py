@@ -1004,7 +1004,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._clean_expired_slots()
 
         # Grid feed-in control
-        feed_in_active, applied_feed_in = await self._apply_grid_feed_in(current_price)
+        current_price_ct = current_price_eur_per_kwh * 100 if current_price_eur_per_kwh is not None else None
+        feed_in_active, applied_feed_in = await self._apply_grid_feed_in(current_price_ct)
 
         # Cost tracking from optional cumulative kWh meters
         self._update_cost_tracking(current_price_eur_per_kwh)
