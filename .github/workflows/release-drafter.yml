@@ -33,7 +33,7 @@ jobs:
       resolved_version: ${{ steps.release_drafter.outputs.resolved_version }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - id: release_drafter
         uses: release-drafter/release-drafter@693d20e7c1ce1a81d3a41962f85914253b518449 # v7
         env:
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Compute pre-release version
         id: pre_version
         env:
