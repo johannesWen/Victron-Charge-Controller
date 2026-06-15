@@ -1,153 +1,201 @@
-<p align="left">
-    <img src="https://github.com/johannesWen/Victron-Charge-Controller/blob/main/custom_components/victron_charge_control/brand/icon.png" height="100" alt="Victron Charge Controller logo">
+<p align="center">
+  <img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller/main/custom_components/victron_charge_control/brand/icon.png" height="104" alt="Victron Charge Controller logo">
 </p>
 
-# Victron Charge Controller for Home Assistant
+<h1 align="center">Victron Charge Controller for Home Assistant</h1>
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml/badge.svg)](https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml)
-<!-- [![codecov](https://codecov.io/gh/johannesWen/Victron-Charge-Controller/graph/badge.svg?token=MU30OBSTG3)](https://codecov.io/gh/johannesWen/Victron-Charge-Controller) -->
+<p align="center">
+  <strong>Automated Victron ESS charge and discharge control using EPEX Spot day-ahead prices.</strong>
+</p>
 
-Automated battery charge/discharge control for Victron ESS systems using EPEX Spot hourly electricity prices, with a Home Assistant custom integration installable via HACS.
+<p align="center">
+  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square" alt="HACS custom repository"></a>
+  <a href="https://github.com/johannesWen/Victron-Charge-Controller/releases"><img src="https://img.shields.io/github/v/release/johannesWen/Victron-Charge-Controller?style=flat-square" alt="Latest release"></a>
+  <a href="https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johannesWen/Victron-Charge-Controller/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
+  <a href="https://github.com/johannesWen/Victron-Charge-Controller/blob/main/LICENSE"><img src="https://img.shields.io/github/license/johannesWen/Victron-Charge-Controller?style=flat-square" alt="License"></a>
+  <img src="https://img.shields.io/badge/Home%20Assistant-Custom%20Integration-18BCF2?style=flat-square" alt="Home Assistant custom integration">
+</p>
 
-## What It Does
+Victron Charge Controller is a Home Assistant custom integration for scheduling
+Victron ESS battery charging and discharging around hourly energy prices. It reads
+your battery SOC, EPEX Spot prices, and writable Victron grid setpoint entities,
+then publishes Home Assistant controls, sensors, buttons, and services for operating
+the system from dashboards or automations.
 
-- **Auto mode:** Charges the battery during the cheapest hours and discharges during the most expensive hours, based on EPEX Spot day-ahead prices.
-- **Manual mode:** Lets you pick specific hours to charge or discharge via a dashboard with clickable hour buttons.
-- **Force modes:** Immediately charge or discharge at the configured power level.
-- **Safety:** Enforces SOC limits, setpoint limits, and automatically shuts down if Victron entities become unavailable.
+## Contents
 
-## Lovelace Dashboard Card
+- [Capabilities](#capabilities)
+- [Dashboard Card](#dashboard-card)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Setup](#setup)
+- [Entity Reference](#entity-reference)
+- [Services](#services)
+- [Defaults](#defaults)
+- [Setpoint Convention](#setpoint-convention)
+- [Cost And Energy Tracking](#cost-and-energy-tracking)
+- [Home Assistant Entities](#home-assistant-entities)
 
-A Lovelace dashboard card for this integration is available in the [Victron Charge Controller Dashboard](https://github.com/johannesWen/Victron-Charge-Controller-Dashboard) repository.
+## Capabilities
 
-| Settings Card | Plan Card |
-|:---:|:---:| 
-|<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/settings_card.png" height="500" alt="Victron Charge Controller logo">|<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/refs/heads/main/assets/screenshots/plan_card.png" height="500" alt="Victron Charge Controller logo">|
+- **Automatic scheduling** selects the cheapest hours for charging and the most expensive hours for discharging.
+- **Manual scheduling** allows individual hourly actions for today and tomorrow.
+- **Force modes** immediately apply the configured charge or discharge power.
+- **SOC protection** respects minimum and maximum battery limits, including hysteresis.
+- **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
+- **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
+- **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts.
+- **Service API** exposes schedule manipulation for dashboards, scripts, and automations.
 
-| History Card |  |
-|:---:|:---:| 
-|<img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/refs/heads/main/assets/screenshots/costs_card.png" height="500" alt="Victron Charge Controller logo">||
+## Dashboard Card
 
-## Prerequisites
+The companion Lovelace card is available in the
+[Victron Charge Controller Dashboard](https://github.com/johannesWen/Victron-Charge-Controller-Dashboard)
+repository.
+
+| Settings | Plan |
+| :---: | :---: |
+| <img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/settings_card.png" width="420" alt="Settings card screenshot"> | <img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/plan_card.png" width="420" alt="Plan card screenshot"> |
+
+| History |
+| :---: |
+| <img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/costs_card.png" width="420" alt="History card screenshot"> |
+
+## Requirements
 
 | Component | Purpose |
-|-----------|---------|
-| Home Assistant 2026.2+ | Core platform |
-| [Victron GX modbusTCP](https://github.com/sfstar/hass-victron) | Provides writable grid setpoint entity |
-| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC, power readings |
-| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly electricity prices |
+| --- | --- |
+| Home Assistant | Runs the custom integration and exposes entities/services. |
+| [Victron GX modbusTCP](https://github.com/sfstar/hass-victron) | Provides a writable ESS grid setpoint entity. |
+| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC and Victron telemetry. |
+| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly day-ahead electricity prices. |
+
+The config flow requires a battery SOC sensor, writable grid setpoint number, EPEX Spot price sensor, and writable max grid feed-in number. Grid import/export energy sensors are optional and enable cost and energy tracking.
 
 ## Installation
 
-### HACS Custom Integration
+### HACS
 
-1. Open HACS in your Home Assistant instance
-2. Click the three dots menu → **Custom repositories**
-3. Add `https://github.com/johannesWen/Victron-Charge-Controller` with category **Integration**
-4. Click **Install**
-5. Restart Home Assistant
-6. Go to **Settings → Devices & Services → Add Integration → Victron Charge Control**
-7. Select your Victron and EPEX Spot entities in the config flow
+1. Open **HACS** in Home Assistant.
+2. Open the three-dot menu and select **Custom repositories**.
+3. Add this repository URL:
+
+   ```text
+   https://github.com/johannesWen/Victron-Charge-Controller
+   ```
+
+4. Select category **Integration**.
+5. Install **Victron Charge Control**.
+6. Restart Home Assistant.
+7. Go to **Settings** > **Devices & Services** > **Add Integration**.
+8. Search for **Victron Charge Control** and complete the setup flow.
 
 ## Setup
 
-After installation, add the integration via the UI:
+During setup, select the entities that connect this integration to your Victron and price data:
 
-1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for **Victron Charge Control**
-3. Select your required entities:
-   - **Battery SOC sensor** — battery state of charge (0–100%)
-   - **Grid setpoint entity** — writable ESS grid setpoint (Watts)
-   - **EPEX Spot price sensor** — hourly electricity prices
-   - **Max grid feed-in entity** — writable max grid feed-in limit (Watts)
-4. Optionally select cumulative energy meters for cost tracking:
-   - **Grid consumption energy sensor** — total grid import in kWh
-   - **Grid feed-in energy sensor** — total grid export/feed-in in kWh
+| Field | Required | Description |
+| --- | --- | --- |
+| Battery SOC sensor | Yes | Battery state of charge in percent. |
+| Grid setpoint entity | Yes | Writable ESS grid setpoint in watts. |
+| EPEX Spot price sensor | Yes | Hourly electricity price data. |
+| Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. |
+| Grid consumption energy sensor | No | Cumulative grid import meter in kWh. |
+| Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. |
 
-The integration creates a device with all configuration entities:
+You can change these entities later from the integration options flow.
 
-### Entities Created
+## Entity Reference
 
-| Entity | Type | Description |
-|--------|------|-------------|
-| Control Mode | Select | off / auto / manual / force_charge / force_discharge |
-| Charge Allowed | Switch | Master enable for charging |
-| Discharge Allowed | Switch | Master enable for discharging |
-| Grid Feed-in Control Enabled | Switch | Enable grid feed-in limiting based on price |
-| Min SOC | Number | Floor SOC — never discharge below this |
-| Max SOC | Number | Ceiling SOC — never charge above this |
-| Charge Power | Number | Grid import power when charging (W) |
-| Discharge Power | Number | Grid export power when discharging (W) |
-| Idle Setpoint | Number | Grid setpoint during idle (W) |
-| Min Grid Setpoint | Number | Hard floor for setpoint (W) |
-| Max Grid Setpoint | Number | Hard ceiling for setpoint (W) |
-| Cheapest Hours | Number | # cheapest hours to auto-charge |
-| Expensive Hours | Number | # most expensive hours to auto-discharge |
-| Charge Price Threshold | Number | Max price for auto-charge (ct/kWh) |
-| Discharge Price Threshold | Number | Min price for auto-discharge (ct/kWh) |
-| Grid Feed-in Price Threshold | Number | Price threshold for reducing grid feed-in (ct/kWh) |
-| Default Max Grid Feed-in | Number | Normal max grid feed-in power (W) |
-| Reduced Max Grid Feed-in | Number | Reduced max grid feed-in power when price is low (W) |
-| Blocked Charging Hours | Text | Comma-separated hours blocked for charging |
-| Blocked Discharging Hours | Text | Comma-separated hours blocked for discharging |
-| Recalculate Schedule | Button | Recalculate schedule from EPEX prices |
-| Desired Action | Sensor | Current computed action (charge/discharge/idle) |
-| Target Setpoint | Sensor | Computed grid setpoint (W) |
-| Charge Hours | Sensor | Currently scheduled charge hours |
-| Discharge Hours | Sensor | Currently scheduled discharge hours |
-| Blocked Charging Hours | Sensor | Currently blocked charging hours |
-| Blocked Discharging Hours | Sensor | Currently blocked discharging hours |
-| Charge Plan | Sensor | Full hour-by-hour charge/discharge plan |
-| Last Schedule Update | Sensor | Timestamp of last schedule recalculation |
-| Grid Energy Cost | Sensor | Cumulative gross grid energy costs in EUR |
-| Grid Energy Revenue | Sensor | Cumulative gross grid energy revenue in EUR |
+| Entity | Platform | Description |
+| --- | --- | --- |
+| Control Mode | Select | `off`, `auto`, `manual`, `force_charge`, or `force_discharge`. |
+| Charge Allowed | Switch | Master enable for charging. |
+| Discharge Allowed | Switch | Master enable for discharging. |
+| Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
+| Min SOC | Number | Lower battery SOC boundary. |
+| Max SOC | Number | Upper battery SOC boundary. |
+| SOC Hysteresis | Number | SOC buffer before resuming after a boundary is reached. |
+| Charge Power | Number | Target import power while charging. |
+| Discharge Power | Number | Target export power while discharging. |
+| Idle Setpoint | Number | Grid setpoint used while idle. |
+| Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
+| Max Grid Setpoint | Number | Highest allowed grid setpoint. |
+| Cheapest Hours | Number | Number of low-price hours selected for auto charge. |
+| Expensive Hours | Number | Number of high-price hours selected for auto discharge. |
+| Charge Price Threshold | Number | Maximum price for automatic charging. |
+| Discharge Price Threshold | Number | Minimum price for automatic discharging. |
+| Grid Feed-in Price Threshold | Number | Price at or below which feed-in is reduced. |
+| Default Max Grid Feed-in | Number | Normal feed-in limit. |
+| Reduced Max Grid Feed-in | Number | Feed-in limit used when prices are low. |
+| Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
+| Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
+| Recalculate Schedule | Button | Rebuilds the schedule from current price data. |
+| Desired Action | Sensor | Current computed action: charge, discharge, or idle. |
+| Target Setpoint | Sensor | Current computed grid setpoint in watts. |
+| Current Price | Sensor | Current EPEX Spot price. |
+| Charge Hours | Sensor | Date-aware scheduled charging slots. |
+| Discharge Hours | Sensor | Date-aware scheduled discharging slots. |
+| Blocked Charging Hours | Sensor | Active charging block list. |
+| Blocked Discharging Hours | Sensor | Active discharging block list. |
+| Charge Plan | Sensor | Full hour-by-hour plan for today and tomorrow. |
+| Last Schedule Update | Sensor | Timestamp of the last schedule calculation. |
+| Grid Feed-in Status | Sensor | Current feed-in mode: default or reduced. |
+| Grid Energy Cost | Sensor | Cumulative gross grid energy cost in EUR. |
+| Grid Energy Revenue | Sensor | Cumulative gross grid energy revenue in EUR. |
+| Grid Energy Import | Sensor | Cumulative tracked grid import in kWh. |
+| Grid Energy Export | Sensor | Cumulative tracked grid export in kWh. |
 
-Cost tracking separates gross costs from gross revenue and both totals only increase. Positive prices add grid consumption to costs and grid feed-in to revenue. Negative prices add grid consumption to revenue and grid feed-in to costs. Taxes, fixed fees, grid fees, and provider markups are not included.
-
-### Services
+## Services
 
 | Service | Description |
-|---------|-------------|
-| `victron_charge_control.toggle_hour` | Cycle an hour: idle → charge → discharge → blocked → idle |
-| `victron_charge_control.set_hour_action` | Set a specific hour to charge/discharge/blocked/idle |
-| `victron_charge_control.set_blocked_charging_hours` | Set which hours are blocked for charging |
-| `victron_charge_control.set_blocked_discharging_hours` | Set which hours are blocked for discharging |
-| `victron_charge_control.calculate_schedule` | Recalculate auto schedule from EPEX prices |
-| `victron_charge_control.clear_schedule` | Clear all scheduled hours |
+| --- | --- |
+| `victron_charge_control.toggle_hour` | Cycle an hour through `idle`, `charge`, `discharge`, `blocked`, and back to `idle`. |
+| `victron_charge_control.set_hour_action` | Set a specific hour to `idle`, `charge`, `discharge`, or `blocked`. |
+| `victron_charge_control.set_blocked_charging_hours` | Replace the list of charging-blocked hours. |
+| `victron_charge_control.set_blocked_discharging_hours` | Replace the list of discharging-blocked hours. |
+| `victron_charge_control.calculate_schedule` | Recalculate the automatic schedule from EPEX Spot prices. |
+| `victron_charge_control.clear_schedule` | Clear all scheduled charge and discharge hours. |
 
-
-## Configuration Defaults
+## Defaults
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
-| Min SOC | 10% | Battery won't discharge below this |
-| Max SOC | 95% | Battery won't charge above this |
-| Charge Power | 3000 W | Grid import power when charging |
-| Discharge Power | 3000 W | Grid export power when discharging |
-| Idle Setpoint | 0 W | Grid setpoint during idle |
-| Min Grid Setpoint | -5000 W | Hard floor for setpoint |
-| Max Grid Setpoint | 5000 W | Hard ceiling for setpoint |
-| Cheapest Hours | 4 | Number of cheapest hours to auto-charge |
-| Expensive Hours | 4 | Number of most expensive hours to auto-discharge |
-| Charge Price Threshold | 10 ct/kWh | Only auto-charge when price ≤ this |
-| Discharge Price Threshold | 20 ct/kWh | Only auto-discharge when price ≥ this |
-| Grid Feed-in Price Threshold | 0 ct/kWh | Reduce feed-in when price ≤ this |
-| Default Max Grid Feed-in | 5000 W | Normal max grid feed-in limit |
-| Reduced Max Grid Feed-in | 0 W | Feed-in limit when price is low |
-| Blocked Charging Hours | 18–23 | Hours blocked for charging |
-| Blocked Discharging Hours | 15–17 | Hours blocked for discharging |
+| --- | --- | --- |
+| Min SOC | 10% | Battery is not intentionally discharged below this level. |
+| Max SOC | 95% | Battery is not intentionally charged above this level. |
+| SOC Hysteresis | 2% | Buffer used before leaving SOC boundary protection. |
+| Charge Power | 3000 W | Grid import power while charging. |
+| Discharge Power | 3000 W | Grid export power while discharging. |
+| Idle Setpoint | 0 W | Grid setpoint while idle. |
+| Min Grid Setpoint | -5000 W | Lower setpoint clamp. |
+| Max Grid Setpoint | 5000 W | Upper setpoint clamp. |
+| Cheapest Hours | 4 | Low-price hours selected for auto charging. |
+| Expensive Hours | 4 | High-price hours selected for auto discharging. |
+| Charge Price Threshold | 10 ct/kWh | Auto-charge only at or below this price. |
+| Discharge Price Threshold | 20 ct/kWh | Auto-discharge only at or above this price. |
+| Grid Feed-in Price Threshold | 0 ct/kWh | Reduce feed-in at or below this price. |
+| Default Max Grid Feed-in | 5000 W | Normal max feed-in limit. |
+| Reduced Max Grid Feed-in | 0 W | Reduced feed-in limit. |
+| Blocked Charging Hours | 18-23 | Default hours excluded from charging. |
+| Blocked Discharging Hours | 15-17 | Default hours excluded from discharging. |
 
-All parameters are adjustable at runtime via the UI — no YAML editing needed.
+All controller parameters are adjustable at runtime through Home Assistant entities.
 
-## Sign Convention
+## Setpoint Convention
 
-| Setpoint Value | Meaning |
-|----------------|---------|
-| Positive (e.g., +3000 W) | Import from grid → charge battery |
-| Negative (e.g., -3000 W) | Export to grid → discharge battery |
-| Zero | Idle / self-consumption |
+| Setpoint | Meaning |
+| --- | --- |
+| Positive, for example `3000 W` | Import from grid and charge the battery. |
+| Negative, for example `-3000 W` | Export to grid and discharge the battery. |
+| `0 W` | Idle or self-consumption. |
+
+## Cost And Energy Tracking
+
+Cost tracking is optional and requires cumulative grid import and grid export energy sensors. The integration keeps separate gross cost and gross revenue counters:
+
+- Positive prices add grid consumption to cost and grid feed-in to revenue.
+- Negative prices add grid consumption to revenue and grid feed-in to cost.
+- Taxes, fixed fees, grid fees, and provider markups are not included.
 
 ## Home Assistant Entities
 
