@@ -12,6 +12,7 @@ from custom_components.victron_charge_control.const import (
     ACTION_CHARGE,
     ACTION_DISCHARGE,
     ACTION_IDLE,
+    CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_CHARGE_POWER,
     DEFAULT_DEADBAND,
     DEFAULT_DISCHARGE_POWER,
@@ -33,6 +34,7 @@ from custom_components.victron_charge_control.coordinator import (
 from .conftest import (
     MOCK_CONFIG_DATA,
     MOCK_CONFIG_DATA_WITH_COST,
+    MOCK_CONFIG_DATA_WITH_SOLAR,
     MockConfigEntry,
     MockState,
     make_epex_data,
@@ -694,6 +696,169 @@ class TestComputeSetpoint:
 
 
 # ======================================================================
+# Solar surplus (optional) — sampling, mean, and discharge setpoint
+# ======================================================================
+
+
+class TestSolarSurplus:
+    """Tests for the optional solar surplus sensor and 15-min mean."""
+
+    def test_entity_absent_skips_sampling(self, coordinator):
+        """No solar entity configured → no samples, no mean."""
+        assert coordinator.solar_surplus_entity is None
+        coordinator._sample_solar_surplus()
+        assert coordinator._solar_surplus_mean is None
+        assert len(coordinator._solar_samples) == 0
+
+    def test_solar_surplus_entity_round_trip(self, mock_hass):
+        """Entity from config is exposed and updated via update_entity_references."""
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        assert coord.solar_surplus_entity == "sensor.solar_surplus"
+        coord.update_entity_references({**MOCK_CONFIG_DATA, CONF_SOLAR_SURPLUS_ENTITY: ""})
+        assert coord.solar_surplus_entity is None
+
+    def test_sample_appends_and_computes_mean(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.hass.states.get.return_value = MockState("2000")
+
+        for _ in range(5):
+            coord._sample_solar_surplus()
+
+        assert len(coord._solar_samples) == 5
+        assert coord._solar_surplus_mean == 2000.0
+
+    def test_unavailable_state_skipped(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.hass.states.get.return_value = MockState("unavailable")
+        coord._sample_solar_surplus()
+        assert coord._solar_surplus_mean is None
+
+    def test_invalid_state_skipped(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.hass.states.get.return_value = MockState("not-a-number")
+        coord._sample_solar_surplus()
+        assert coord._solar_surplus_mean is None
+
+    def test_negative_solar_clamped_to_zero(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.hass.states.get.return_value = MockState("-500")
+        coord._sample_solar_surplus()
+        assert coord._solar_surplus_mean == 0.0
+
+    def test_old_samples_trimmed(self, mock_hass):
+        from datetime import datetime, timedelta, timezone
+
+        from custom_components.victron_charge_control.coordinator import dt_util
+
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.hass.states.get.return_value = MockState("1000")
+
+        # 5 old samples (>15 min ago) plus 3 fresh
+        now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+        for offset_min in (20, 19, 18, 17, 16):
+            coord._solar_samples.append((now - timedelta(minutes=offset_min), 100.0))
+        with patch.object(dt_util, "now", return_value=now):
+            coord._sample_solar_surplus()
+            coord._sample_solar_surplus()
+            coord._sample_solar_surplus()
+
+        # Only the 3 fresh samples should remain
+        assert len(coord._solar_samples) == 3
+        # Mean of three 1000W samples
+        assert coord._solar_surplus_mean == 1000.0
+
+    def test_discharge_setpoint_with_solar_surplus(self, mock_hass):
+        """Discharge = -(discharge_power + solar_surplus_mean)."""
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.discharge_power = 3000.0
+        coord.min_grid_setpoint = -10000.0
+        coord._discharge_solar_only = False
+        coord._solar_surplus_mean = 2000.0
+        sp = coord._compute_setpoint(ACTION_DISCHARGE)
+        assert sp == -5000.0
+
+    def test_discharge_setpoint_without_solar_surplus(self, coordinator):
+        """Solar mean None → discharge setpoint ignores solar (legacy behavior)."""
+        coordinator.discharge_power = 3000.0
+        coordinator._solar_surplus_mean = None
+        coordinator._discharge_solar_only = False
+        sp = coordinator._compute_setpoint(ACTION_DISCHARGE)
+        assert sp == -3000.0
+
+    def test_discharge_setpoint_clamped_by_min(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.discharge_power = 3000.0
+        coord.min_grid_setpoint = -5000.0
+        coord._discharge_solar_only = False
+        coord._solar_surplus_mean = 5000.0  # would push raw to -8000
+        sp = coord._compute_setpoint(ACTION_DISCHARGE)
+        assert sp == -5000.0
+
+    def test_discharge_solar_only_uses_only_solar(self, mock_hass):
+        """When SOC is near min_soc, discharge setpoint uses only solar surplus."""
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.discharge_power = 3000.0
+        coord.min_grid_setpoint = -10000.0
+        coord._discharge_solar_only = True
+        coord._solar_surplus_mean = 1500.0
+        sp = coord._compute_setpoint(ACTION_DISCHARGE)
+        assert sp == -1500.0
+
+    def test_discharge_solar_only_with_no_samples(self, coordinator):
+        coordinator.discharge_power = 3000.0
+        coordinator._discharge_solar_only = True
+        coordinator._solar_surplus_mean = None
+        sp = coordinator._compute_setpoint(ACTION_DISCHARGE)
+        assert sp == 0.0  # idle via surplus-only mode
+
+    def test_soc_hysteresis_sets_solar_only(self, coordinator):
+        """soc <= min_soc + hysteresis triggers solar-only mode."""
+        coordinator.min_soc = 10.0
+        coordinator.soc_hysteresis = 2.0
+        coordinator._update_soc_hysteresis(12.0)  # exactly at threshold
+        assert coordinator._discharge_solar_only is True
+
+        coordinator._update_soc_hysteresis(12.1)
+        assert coordinator._discharge_solar_only is False
+
+        coordinator._update_soc_hysteresis(11.5)
+        assert coordinator._discharge_solar_only is True
+
+    def test_soc_hysteresis_clears_solar_only_above_threshold(self, coordinator):
+        coordinator.min_soc = 10.0
+        coordinator.soc_hysteresis = 2.0
+        coordinator._update_soc_hysteresis(50.0)
+        assert coordinator._discharge_solar_only is False
+
+
+# ======================================================================
 # Auto schedule calculation
 # ======================================================================
 
@@ -873,10 +1038,26 @@ class TestApplySetpoint:
         coordinator.hass.states.get.return_value = MockState("3000")
         coordinator._last_applied_setpoint = 3000.0
 
-        # Difference is 20W, within 50W deadband
+        # Difference is 20W, within the 150W deadband
         await coordinator._apply_setpoint(3020.0)
 
         coordinator.hass.services.async_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_apply_setpoint_skips_within_150w_deadband(self, coordinator):
+        """100W diff is still skipped (below the new 150W default)."""
+        coordinator.hass.states.get.return_value = MockState("3000")
+        coordinator._last_applied_setpoint = 3000.0
+        await coordinator._apply_setpoint(3100.0)
+        coordinator.hass.services.async_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_apply_setpoint_applies_above_150w_deadband(self, coordinator):
+        """200W diff exceeds the 150W deadband and triggers a service call."""
+        coordinator.hass.states.get.return_value = MockState("3000")
+        coordinator._last_applied_setpoint = 3000.0
+        await coordinator._apply_setpoint(3200.0)
+        coordinator.hass.services.async_call.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_apply_setpoint_skips_unavailable(self, coordinator):

@@ -43,6 +43,7 @@ the system from dashboards or automations.
 - **Force modes** immediately apply the configured charge or discharge power.
 - **SOC protection** respects minimum and maximum battery limits, including hysteresis.
 - **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
+- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint, with a soft SOC fallback to solar-only export when the battery is near its lower boundary.
 - **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
 - **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts.
 - **Service API** exposes schedule manipulation for dashboards, scripts, and automations.
@@ -102,6 +103,7 @@ During setup, select the entities that connect this integration to your Victron 
 | Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. |
 | Grid consumption energy sensor | No | Cumulative grid import meter in kWh. |
 | Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. |
+| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. |
 
 You can change these entities later from the integration options flow.
 
@@ -145,6 +147,8 @@ You can change these entities later from the integration options flow.
 | Grid Energy Revenue | Sensor | Cumulative gross grid energy revenue in EUR. |
 | Grid Energy Import | Sensor | Cumulative tracked grid import in kWh. |
 | Grid Energy Export | Sensor | Cumulative tracked grid export in kWh. |
+| Solar Surplus Mean (15 min) | Sensor | Sliding 15-minute mean of the configured solar surplus sensor in watts. Unavailable when no sensor is configured. |
+| Solar Surplus Mode | Sensor | `normal` while the discharge setpoint combines battery and solar, `solar_only` when the SOC is near the lower boundary and only solar surplus is exported. |
 
 ## Services
 
