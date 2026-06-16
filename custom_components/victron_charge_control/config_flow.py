@@ -22,6 +22,7 @@ from .const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SOLAR_SURPLUS_ENTITY,
     DOMAIN,
 )
 
@@ -35,6 +36,7 @@ REQUIRED_ENTITY_KEYS = (
 OPTIONAL_ENTITY_KEYS = (
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
+    CONF_SOLAR_SURPLUS_ENTITY,
 )
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -56,6 +58,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_GRID_FEED_IN_ENERGY_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor"),
+        ),
+        vol.Optional(CONF_SOLAR_SURPLUS_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="power"),
         ),
     }
 )
@@ -193,6 +198,12 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     default=current.get(CONF_GRID_FEED_IN_ENERGY_ENTITY, ""),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Optional(
+                    CONF_SOLAR_SURPLUS_ENTITY,
+                    default=current.get(CONF_SOLAR_SURPLUS_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power"),
                 ),
             }
         )

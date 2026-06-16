@@ -10,7 +10,8 @@
           "epex_spot_entity": "EPEX Spot price sensor",
           "max_grid_feed_in_entity": "Max grid feed-in entity (writable)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional)",
-          "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)"
+          "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)",
+          "solar_surplus_entity": "Solar surplus sensor (optional, watts)"
         }
       }
     },
@@ -32,7 +33,8 @@
           "epex_spot_entity": "EPEX Spot price sensor",
           "max_grid_feed_in_entity": "Max grid feed-in entity (writable)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional)",
-          "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)"
+          "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)",
+          "solar_surplus_entity": "Solar surplus sensor (optional, watts)"
         }
       }
     },
@@ -83,6 +85,17 @@
       },
       "grid_energy_export": {
         "name": "Grid Energy Export"
+      },
+      "solar_surplus_mean": {
+        "name": "Solar Surplus Mean (15 min)"
+      },
+      "solar_surplus_status": {
+        "name": "Solar Surplus Mode",
+        "state": {
+          "normal": "Normal Discharge",
+          "solar_only": "Solar Only",
+          "off": "Off"
+        }
       }
     },
     "button": {

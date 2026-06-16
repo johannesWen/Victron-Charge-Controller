@@ -45,6 +45,8 @@ async def async_setup_entry(
             GridEnergyCostSensor(coordinator, entry, "grid_revenue"),
             GridEnergySensor(coordinator, entry, "grid_import"),
             GridEnergySensor(coordinator, entry, "grid_export"),
+            SolarSurplusMeanSensor(coordinator, entry),
+            SolarSurplusStatusSensor(coordinator, entry),
         ]
     )
 
@@ -650,3 +652,90 @@ class GridFeedInStatusSensor(VictronCCBaseSensor):
         if data is None:
             return "default"
         return "reduced" if data.grid_feed_in_active else "default"
+
+
+class SolarSurplusMeanSensor(VictronCCBaseSensor):
+    """Sensor showing the 15-minute sliding mean of the configured solar surplus sensor (W)."""
+
+    _attr_translation_key = "solar_surplus_mean"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_icon = "mdi:solar-power"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_solar_surplus_mean"
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.solar_surplus_entity is not None and super().available
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data: ChargeControlData | None = self.coordinator.data
+        if data is None or data.solar_surplus_mean is None:
+            self._attr_native_value = None
+        else:
+            self._attr_native_value = round(data.solar_surplus_mean, 1)
+        self._attr_extra_state_attributes = {
+            "source_entity": self.coordinator.solar_surplus_entity,
+            "window_minutes": 15,
+            "window_samples": data.solar_surplus_window_samples if data else 0,
+        }
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data
+        if data is None or data.solar_surplus_mean is None:
+            return None
+        return round(data.solar_surplus_mean, 1)
+
+
+class SolarSurplusStatusSensor(VictronCCBaseSensor):
+    """Sensor showing whether the discharge setpoint is currently using the solar-only mode."""
+
+    _attr_translation_key = "solar_surplus_status"
+    _attr_icon = "mdi:solar-power-variant"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_solar_surplus_status"
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.solar_surplus_entity is not None and super().available
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data: ChargeControlData | None = self.coordinator.data
+        if data is None:
+            self._attr_native_value = "off"
+        else:
+            self._attr_native_value = (
+                "solar_only" if data.discharge_solar_only else "normal"
+            )
+        self._attr_extra_state_attributes = {
+            "source_entity": self.coordinator.solar_surplus_entity,
+            "solar_surplus_mean": (
+                round(data.solar_surplus_mean, 1) if data and data.solar_surplus_mean is not None else None
+            ),
+            "window_samples": data.solar_surplus_window_samples if data else 0,
+        }
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> str:
+        data = self.coordinator.data
+        if data is None:
+            return "off"
+        return "solar_only" if data.discharge_solar_only else "normal"

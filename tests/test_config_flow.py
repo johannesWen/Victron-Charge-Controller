@@ -17,10 +17,16 @@ from custom_components.victron_charge_control.const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SOLAR_SURPLUS_ENTITY,
     DOMAIN,
 )
 
-from .conftest import MOCK_CONFIG_DATA, MOCK_CONFIG_DATA_WITH_COST, MockState
+from .conftest import (
+    MOCK_CONFIG_DATA,
+    MOCK_CONFIG_DATA_WITH_COST,
+    MOCK_CONFIG_DATA_WITH_SOLAR,
+    MockState,
+)
 
 
 class TestConfigFlow:
@@ -61,11 +67,20 @@ class TestConfigFlow:
         )
 
     @pytest.mark.asyncio
+    async def test_create_entry_with_solar_entity(self, flow):
+        await flow.async_step_user(user_input=dict(MOCK_CONFIG_DATA_WITH_SOLAR))
+        flow.async_create_entry.assert_called_once_with(
+            title="Victron Charge Control",
+            data=MOCK_CONFIG_DATA_WITH_SOLAR,
+        )
+
+    @pytest.mark.asyncio
     async def test_blank_optional_entities_are_not_stored(self, flow):
         user_input = {
             **MOCK_CONFIG_DATA,
             CONF_GRID_CONSUMPTION_ENTITY: "",
             CONF_GRID_FEED_IN_ENERGY_ENTITY: "",
+            CONF_SOLAR_SURPLUS_ENTITY: "",
         }
 
         await flow.async_step_user(user_input=user_input)
@@ -148,6 +163,12 @@ class TestOptionsFlow:
         _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
         assert kwargs["data"][CONF_GRID_CONSUMPTION_ENTITY] == "sensor.grid_consumption_kwh"
         assert kwargs["data"][CONF_GRID_FEED_IN_ENERGY_ENTITY] == "sensor.grid_feed_in_kwh"
+
+    @pytest.mark.asyncio
+    async def test_update_entry_with_solar_entity(self, options_flow):
+        await options_flow.async_step_init(user_input=dict(MOCK_CONFIG_DATA_WITH_SOLAR))
+        _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
+        assert kwargs["data"][CONF_SOLAR_SURPLUS_ENTITY] == "sensor.solar_surplus"
 
     @pytest.mark.asyncio
     async def test_clears_optional_cost_entities(self, options_flow):

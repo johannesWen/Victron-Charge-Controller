@@ -79,6 +79,7 @@ from custom_components.victron_charge_control.const import (  # noqa: E402
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SOLAR_SURPLUS_ENTITY,
     DOMAIN,
 )
 from custom_components.victron_charge_control.coordinator import (  # noqa: E402
@@ -99,6 +100,11 @@ MOCK_CONFIG_DATA_WITH_COST = {
     **MOCK_CONFIG_DATA,
     CONF_GRID_CONSUMPTION_ENTITY: "sensor.grid_consumption_kwh",
     CONF_GRID_FEED_IN_ENERGY_ENTITY: "sensor.grid_feed_in_kwh",
+}
+
+MOCK_CONFIG_DATA_WITH_SOLAR = {
+    **MOCK_CONFIG_DATA,
+    CONF_SOLAR_SURPLUS_ENTITY: "sensor.solar_surplus",
 }
 
 

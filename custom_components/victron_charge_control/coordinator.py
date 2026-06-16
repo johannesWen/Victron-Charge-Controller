@@ -7,6 +7,7 @@ Manages the schedule (charge/discharge hours) and computes the target setpoint.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -31,6 +32,7 @@ from .const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_CHARGE_POWER,
     DEFAULT_CHARGE_PRICE_THRESHOLD,
     DEFAULT_CHEAPEST_HOURS,
@@ -90,6 +92,9 @@ class ChargeControlData:
     current_price_eur_per_kwh: float | None = None
     last_schedule_update: datetime | None = None
     last_cost_update: datetime | None = None
+    solar_surplus_mean: float | None = None
+    solar_surplus_window_samples: int = 0
+    discharge_solar_only: bool = False
 
 
 class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
@@ -117,6 +122,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_feed_in_energy_entity: str | None = entry.data.get(
             CONF_GRID_FEED_IN_ENERGY_ENTITY
         ) or None
+        self._solar_surplus_entity: str | None = (
+            entry.data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
+        )
 
         # --- Configurable parameters (modified by number/select/switch entities) ---
         self.control_mode: str = MODE_OFF
@@ -152,6 +160,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_energy_import: float = 0.0
         self._grid_energy_export: float = 0.0
         self._last_cost_update: datetime | None = None
+
+        # --- Solar surplus tracking (optional) ---
+        self._solar_samples: deque[tuple[datetime, float]] = deque(maxlen=64)
+        self._solar_surplus_mean: float | None = None
+        self._discharge_solar_only: bool = False
 
         # --- Schedule state ---
         # Charge/discharge are date-aware: list of (date_iso, hour) tuples
@@ -200,6 +213,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     @property
     def grid_feed_in_energy_entity(self) -> str | None:
         return self._grid_feed_in_energy_entity
+
+    @property
+    def solar_surplus_entity(self) -> str | None:
+        return self._solar_surplus_entity
 
     @property
     def grid_energy_cost(self) -> float | None:
@@ -263,6 +280,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_feed_in_energy_entity = (
             data.get(CONF_GRID_FEED_IN_ENERGY_ENTITY) or None
         )
+        self._solar_surplus_entity = data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
 
     def restore_cost_state(
         self,
@@ -796,6 +814,42 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if updated_consumption or updated_feed_in:
             self._last_cost_update = dt_util.now()
 
+    def _sample_solar_surplus(self) -> None:
+        """Append a solar surplus sample and recompute the 15-min sliding mean.
+
+        Skips silently when the optional entity is not configured, unavailable,
+        or has an invalid/non-numeric state. Negative values are treated as zero.
+        The deque is trimmed to the last 15 minutes on every call.
+        """
+        if self._solar_surplus_entity is None:
+            return
+
+        state = self.hass.states.get(self._solar_surplus_entity)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return
+
+        try:
+            value = float(state.state)
+        except (ValueError, TypeError):
+            return
+
+        if value < 0.0:
+            value = 0.0
+
+        now = dt_util.now()
+        self._solar_samples.append((now, value))
+
+        cutoff = now - timedelta(minutes=15)
+        while self._solar_samples and self._solar_samples[0][0] < cutoff:
+            self._solar_samples.popleft()
+
+        if self._solar_samples:
+            self._solar_surplus_mean = sum(
+                v for _, v in self._solar_samples
+            ) / len(self._solar_samples)
+        else:
+            self._solar_surplus_mean = None
+
     def _update_soc_hysteresis(self, soc: float) -> None:
         """Update SOC hysteresis blocked flags."""
         if soc >= self.max_soc:
@@ -807,6 +861,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._discharge_blocked_by_soc = True
         elif soc > self.min_soc + self.soc_hysteresis:
             self._discharge_blocked_by_soc = False
+
+        # Soft protection: when SOC is near the lower boundary, switch
+        # discharge setpoint math to solar-only (no battery discharge term).
+        self._discharge_solar_only = soc <= self.min_soc + self.soc_hysteresis
 
     def _determine_action(self) -> str:
         """Deterministic priority stack — returns charge/discharge/idle."""
@@ -857,7 +915,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if action == ACTION_CHARGE:
             raw = self.charge_power  # positive = import
         elif action == ACTION_DISCHARGE:
-            raw = -self.discharge_power  # negative = export
+            surplus = self._solar_surplus_mean or 0.0
+            if self._discharge_solar_only:
+                # Soft SOC protection: only export what solar is producing
+                raw = -surplus
+            else:
+                # Normal discharge: discharge power + solar surplus
+                raw = -(self.discharge_power + surplus)
         else:
             raw = self.idle_setpoint
 
@@ -1000,6 +1064,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     async def _async_update_data(self) -> ChargeControlData:
         """Run the decision engine and apply the setpoint."""
+        # Sample solar surplus (no-op when entity not configured)
+        self._sample_solar_surplus()
+
         # Safety check
         if self.control_mode != MODE_OFF and not self._check_safety():
             _LOGGER.warning(
@@ -1114,6 +1181,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             current_price_eur_per_kwh=current_price_eur_per_kwh,
             last_schedule_update=self._last_schedule_update,
             last_cost_update=self._last_cost_update,
+            solar_surplus_mean=self._solar_surplus_mean,
+            solar_surplus_window_samples=len(self._solar_samples),
+            discharge_solar_only=self._discharge_solar_only,
         )
 
     # ------------------------------------------------------------------
@@ -1132,6 +1202,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             entities_to_watch.append(self._grid_consumption_entity)
         if self._grid_feed_in_energy_entity is not None:
             entities_to_watch.append(self._grid_feed_in_energy_entity)
+        if self._solar_surplus_entity is not None:
+            entities_to_watch.append(self._solar_surplus_entity)
 
         @callback
         def _state_changed(event: Any) -> None:
