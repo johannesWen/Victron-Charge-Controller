@@ -135,6 +135,11 @@ class TestScheduleManagement:
         coordinator.set_blocked_discharging_hours([15, 16])
         assert coordinator.blocked_discharging_hours == [15, 16]
 
+    def test_replan_hours_default(self, coordinator):
+        from custom_components.victron_charge_control.const import DEFAULT_REPLAN_HOURS
+        assert coordinator.replan_hours == list(DEFAULT_REPLAN_HOURS)
+        assert coordinator.replan_hours == [18]
+
     def test_clear_schedule(self, coordinator):
         coordinator._charge_hours = [("2026-05-02", 1), ("2026-05-02", 2)]
         coordinator._discharge_hours = [("2026-05-02", 20)]
@@ -938,3 +943,121 @@ class TestGridFeedInControl:
 
         assert is_reduced is False
         assert applied == 5000.0
+
+
+# ======================================================================
+# Replan hours
+# ======================================================================
+
+
+class TestReplanHours:
+    """Tests for the user-configurable replan hours."""
+
+    def test_set_replan_hours_normalizes(self, coordinator):
+        """set_replan_hours sorts, dedupes, and clamps to 0..23."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ) as track:
+            track.side_effect = lambda *a, **kw: MagicMock()
+            coordinator.set_replan_hours([20, 3, 3, 25, -1, 18])
+        assert coordinator.replan_hours == [3, 18, 20]
+
+    def test_set_replan_hours_empty_disables_listener(self, coordinator):
+        """Setting an empty list clears any installed listener."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ) as track:
+            track.side_effect = lambda *a, **kw: MagicMock()
+            coordinator.set_replan_hours([3, 20])
+            assert coordinator._replan_unsub is not None
+            unsub = coordinator._replan_unsub
+            coordinator.set_replan_hours([])
+        assert coordinator.replan_hours == []
+        unsub.assert_called_once()
+        assert coordinator._replan_unsub is None
+
+    def test_set_replan_hours_resubscribes(self, coordinator):
+        """Changing the hours re-installs the listener."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ) as track:
+            track.side_effect = lambda *a, **kw: MagicMock()
+            coordinator.set_replan_hours([3])
+            first = coordinator._replan_unsub
+            coordinator.set_replan_hours([3, 20])
+            second = coordinator._replan_unsub
+        assert first is not second
+        first.assert_called_once()
+        assert coordinator.replan_hours == [3, 20]
+
+    def test_set_replan_hours_noop_on_same_value(self, coordinator):
+        """Setting the same hours does not re-subscribe."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ) as track:
+            track.side_effect = lambda *a, **kw: MagicMock()
+            coordinator.set_replan_hours([3])
+            unsub = coordinator._replan_unsub
+            coordinator.set_replan_hours([3])
+        assert coordinator._replan_unsub is unsub
+        unsub.assert_not_called()
+
+    def test_set_replan_hours_passes_top_of_hour(self, coordinator):
+        """The installed listener fires at HH:00:00 for each hour."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ) as track:
+            track.side_effect = lambda *a, **kw: MagicMock()
+            coordinator.set_replan_hours([3, 18, 20])
+            kwargs = track.call_args.kwargs
+        assert kwargs["hour"] == (3, 18, 20)
+        assert kwargs["minute"] == 0
+        assert kwargs["second"] == 0
+
+    def test_replan_callback_auto_mode_recalculates(self, coordinator):
+        """The replan callback runs calculate_auto_schedule in auto mode."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            coordinator.set_replan_hours([3])
+        coordinator.control_mode = MODE_AUTO
+        coordinator._clean_expired_slots = MagicMock()
+        coordinator.calculate_auto_schedule = MagicMock()
+        coordinator.async_request_refresh = MagicMock()
+
+        coordinator._run_replan()
+
+        coordinator._clean_expired_slots.assert_called_once()
+        coordinator.calculate_auto_schedule.assert_called_once()
+        coordinator.async_request_refresh.assert_called_once()
+
+    def test_replan_callback_manual_mode_resets(self, coordinator):
+        """The replan callback clears manual hours in manual mode."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            coordinator.set_replan_hours([3])
+        coordinator.control_mode = MODE_MANUAL
+        coordinator._clean_expired_slots = MagicMock()
+        coordinator._charge_hours = [("2026-05-02", 1)]
+        coordinator._discharge_hours = [("2026-05-02", 20)]
+        coordinator.async_request_refresh = MagicMock()
+
+        coordinator._run_replan()
+
+        assert coordinator._charge_hours == []
+        assert coordinator._discharge_hours == []
+        coordinator.async_request_refresh.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_shutdown_unsubs_replan(self, coordinator):
+        """async_shutdown unsubs the replan listener."""
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ) as track:
+            track.side_effect = lambda *a, **kw: MagicMock()
+            coordinator.set_replan_hours([3])
+            unsub = coordinator._replan_unsub
+        await coordinator.async_shutdown()
+        unsub.assert_called_once()
+        assert coordinator._replan_unsub is None

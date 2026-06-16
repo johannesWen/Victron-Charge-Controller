@@ -46,6 +46,7 @@ from .const import (
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_MIN_SOC,
     DEFAULT_REDUCED_GRID_FEED_IN,
+    DEFAULT_REPLAN_HOURS,
     DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
     EPEX_ATTR_DATA,
@@ -159,6 +160,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Blocked hours are recurring (hour-of-day only)
         self._blocked_charging_hours: list[int] = []
         self._blocked_discharging_hours: list[int] = []
+        # Replan hours are recurring (hour-of-day only)
+        self._replan_hours: list[int] = list(DEFAULT_REPLAN_HOURS)
+        self._replan_unsub: Any = None
 
         # --- Listener removal callbacks ---
         self._unsub_listeners: list[Any] = []
@@ -330,6 +334,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def blocked_discharging_hours(self) -> list[int]:
         return list(self._blocked_discharging_hours)
 
+    @property
+    def replan_hours(self) -> list[int]:
+        return list(self._replan_hours)
+
     # ------------------------------------------------------------------
     # Schedule management
     # ------------------------------------------------------------------
@@ -397,6 +405,60 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Set blocked discharging hours (recurring daily) and trigger update."""
         self._blocked_discharging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self._last_schedule_update = dt_util.now()
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def set_replan_hours(self, hours: list[int]) -> None:
+        """Set replan hours (recurring daily) and (re)install the time listener.
+
+        Empty list disables automatic replanning. Triggers a refresh so the
+        text entity state stays in sync.
+        """
+        normalized = sorted(set(h for h in hours if 0 <= h <= 23))
+        if normalized == self._replan_hours:
+            return
+        self._replan_hours = normalized
+        self._install_replan_listener()
+        if not normalized:
+            _LOGGER.warning(
+                "Replan hours set to empty — automatic replanning disabled. "
+                "Use the 'calculate_schedule' service or the Recalculate button."
+            )
+        else:
+            _LOGGER.info("Replan hours updated to %s", normalized)
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def _install_replan_listener(self) -> None:
+        """(Re)install the time-change listener for replan hours.
+
+        Unsubscribes any previously installed listener and, if at least one
+        replan hour is configured, registers a new one that fires at the
+        top of each configured hour.
+        """
+        if self._replan_unsub is not None:
+            self._replan_unsub()
+            self._replan_unsub = None
+        if not self._replan_hours:
+            return
+
+        self._replan_unsub = async_track_time_change(
+            self.hass, self._run_replan,
+            hour=tuple(self._replan_hours), minute=0, second=0,
+        )
+
+    def _run_replan(self, _now: datetime | None = None) -> None:
+        """Run the daily replan: clean expired slots + recalc/reset.
+
+        Mirrors the original 00:05 behavior — in auto mode the schedule is
+        recomputed from EPEX prices, in manual mode the user-picked hours are
+        cleared so the next day starts fresh.
+        """
+        self._clean_expired_slots()
+        if self.control_mode == MODE_AUTO:
+            self.calculate_auto_schedule()
+        elif self.control_mode == MODE_MANUAL:
+            self._charge_hours = []
+            self._discharge_hours = []
+            _LOGGER.info("Daily schedule reset (manual mode)")
         self.hass.async_create_task(self.async_request_refresh())
 
     def toggle_hour(self, hour: int, date_str: str | None = None) -> None:
@@ -1091,34 +1153,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             async_track_time_change(self.hass, _minute_tick, second=0)
         )
 
-        # At 00:05 — daily schedule recalculation for auto mode
-        @callback
-        def _daily_recalc(_now: datetime) -> None:
-            self._clean_expired_slots()
-            if self.control_mode == MODE_AUTO:
-                self.calculate_auto_schedule()
-            elif self.control_mode == MODE_MANUAL:
-                self._charge_hours = []
-                self._discharge_hours = []
-                _LOGGER.info("Daily schedule reset (manual mode)")
-            self.hass.async_create_task(self.async_request_refresh())
-
-        self._unsub_listeners.append(
-            async_track_time_change(self.hass, _daily_recalc, hour=0, minute=5, second=0)
-        )
-
-        # At 20:00 — recalculate for tomorrow prices
-        @callback
-        def _evening_recalc(_now: datetime) -> None:
-            if self.control_mode == MODE_AUTO:
-                self.calculate_auto_schedule()
-                self.hass.async_create_task(self.async_request_refresh())
-
-        self._unsub_listeners.append(
-            async_track_time_change(
-                self.hass, _evening_recalc, hour=20, minute=0, second=0
-            )
-        )
+        # At each configured replan hour (default 18:00) — clean expired
+        # slots, recalculate auto schedule (if auto mode), or reset manual
+        # hours (if manual mode). The listener is (re)installed via
+        # set_replan_hours(); here we just do the first install.
+        self._install_replan_listener()
 
         # Initial data
         self.data = ChargeControlData()
@@ -1131,6 +1170,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     async def async_shutdown(self) -> None:
         """Remove all listeners."""
+        if self._replan_unsub is not None:
+            self._replan_unsub()
+            self._replan_unsub = None
         for unsub in self._unsub_listeners:
             unsub()
         self._unsub_listeners.clear()

@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEFAULT_BLOCKED_CHARGING_HOURS, DEFAULT_BLOCKED_DISCHARGING_HOURS, DOMAIN
+from .const import DEFAULT_BLOCKED_CHARGING_HOURS, DEFAULT_BLOCKED_DISCHARGING_HOURS, DEFAULT_REPLAN_HOURS, DOMAIN
 from .coordinator import VictronChargeControlCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ async def async_setup_entry(
     async_add_entities([
         BlockedChargingHoursText(coordinator, entry),
         BlockedDischargingHoursText(coordinator, entry),
+        ReplanHoursText(coordinator, entry),
     ])
 
 
@@ -147,3 +148,52 @@ class BlockedDischargingHoursText(
             self.coordinator.set_blocked_discharging_hours(hours)
         else:
             self.coordinator.set_blocked_discharging_hours(list(DEFAULT_BLOCKED_DISCHARGING_HOURS))
+
+
+class ReplanHoursText(
+    CoordinatorEntity[VictronChargeControlCoordinator], TextEntity, RestoreEntity
+):
+    """Text entity to set the hours (comma-separated) at which the auto/manual
+    schedule is recalculated.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "replan_hours"
+    _attr_icon = "mdi:calendar-refresh"
+    _attr_native_max = 100
+    _attr_pattern = r"^(\d{1,2}(,\s*\d{1,2})*)?$"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_replan_hours_text"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Victron Charge Control",
+            manufacturer="Victron Energy",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return current replan hours as comma-separated string."""
+        return _format_hours(self.coordinator.replan_hours)
+
+    async def async_set_value(self, value: str) -> None:
+        """Parse the input and update replan hours."""
+        hours = _parse_hours(value)
+        self.coordinator.set_replan_hours(hours)
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last known value on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state:
+            hours = _parse_hours(last_state.state)
+            self.coordinator.set_replan_hours(hours)
+        else:
+            self.coordinator.set_replan_hours(list(DEFAULT_REPLAN_HOURS))
