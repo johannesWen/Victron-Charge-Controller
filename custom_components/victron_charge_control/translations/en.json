@@ -166,6 +166,9 @@
       },
       "blocked_discharging_hours": {
         "name": "Blocked Discharging Hours"
+      },
+      "replan_hours": {
+        "name": "Replan Hours"
       }
     }
   }
