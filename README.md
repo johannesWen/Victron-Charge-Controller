@@ -123,6 +123,7 @@ You can change these entities later from the integration options flow.
 | Idle Setpoint | Number | Grid setpoint used while idle. |
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
 | Max Grid Setpoint | Number | Highest allowed grid setpoint. |
+| Setpoint Deadband | Number | Minimum change (in watts) before a new grid setpoint is written. Smaller changes are skipped to avoid flapping. Set to `0` to disable. |
 | Cheapest Hours | Number | Number of low-price hours selected for auto charge. |
 | Expensive Hours | Number | Number of high-price hours selected for auto discharge. |
 | Charge Price Threshold | Number | Maximum price for automatic charging. |
@@ -173,6 +174,7 @@ You can change these entities later from the integration options flow.
 | Idle Setpoint | 0 W | Grid setpoint while idle. |
 | Min Grid Setpoint | -5000 W | Lower setpoint clamp. |
 | Max Grid Setpoint | 5000 W | Upper setpoint clamp. |
+| Setpoint Deadband | 200 W | Minimum delta required to push a new grid setpoint. |
 | Cheapest Hours | 4 | Low-price hours selected for auto charging. |
 | Expensive Hours | 4 | High-price hours selected for auto discharging. |
 | Charge Price Threshold | 10 ct/kWh | Auto-charge only at or below this price. |

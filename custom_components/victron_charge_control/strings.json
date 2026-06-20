@@ -113,6 +113,9 @@
       "soc_hysteresis": {
         "name": "SOC Hysteresis"
       },
+      "setpoint_deadband": {
+        "name": "Setpoint Deadband"
+      },
       "charge_power": {
         "name": "Charge Power"
       },
