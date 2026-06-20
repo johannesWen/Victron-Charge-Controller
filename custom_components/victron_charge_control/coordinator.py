@@ -26,6 +26,7 @@ from .const import (
     ACTION_CHARGE,
     ACTION_DISCHARGE,
     ACTION_IDLE,
+    ACTION_PV_CHARGE,
     CONF_BATTERY_SOC_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
@@ -47,6 +48,7 @@ from .const import (
     DEFAULT_MAX_SOC,
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_MIN_SOC,
+    DEFAULT_PV_CHARGE_SHARE,
     DEFAULT_REDUCED_GRID_FEED_IN,
     DEFAULT_REPLAN_HOURS,
     DEFAULT_SOC_HYSTERESIS,
@@ -77,6 +79,7 @@ class ChargeControlData:
     target_setpoint: float = 0.0
     charge_hours: list[dict[str, Any]] = field(default_factory=list)
     discharge_hours: list[dict[str, Any]] = field(default_factory=list)
+    pv_charge_hours: list[dict[str, Any]] = field(default_factory=list)
     blocked_charging_hours: list[int] = field(default_factory=list)
     blocked_discharging_hours: list[int] = field(default_factory=list)
     current_price: float | None = None
@@ -145,6 +148,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.charge_price_threshold: float = DEFAULT_CHARGE_PRICE_THRESHOLD
         self.discharge_price_threshold: float = DEFAULT_DISCHARGE_PRICE_THRESHOLD
         self.setpoint_deadband: float = DEFAULT_DEADBAND
+        self.pv_charge_share: float = DEFAULT_PV_CHARGE_SHARE
 
         # --- Grid feed-in control ---
         self.grid_feed_in_control_enabled: bool = False
@@ -171,6 +175,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Charge/discharge are date-aware: list of (date_iso, hour) tuples
         self._charge_hours: list[ScheduleSlot] = []
         self._discharge_hours: list[ScheduleSlot] = []
+        self._pv_charge_hours: list[ScheduleSlot] = []
         # Blocked hours are recurring (hour-of-day only)
         self._blocked_charging_hours: list[int] = []
         self._blocked_discharging_hours: list[int] = []
@@ -346,6 +351,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return list(self._discharge_hours)
 
     @property
+    def pv_charge_hours(self) -> list[ScheduleSlot]:
+        return list(self._pv_charge_hours)
+
+    @property
     def blocked_charging_hours(self) -> list[int]:
         return list(self._blocked_charging_hours)
 
@@ -397,6 +406,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         self._charge_hours = [s for s in self._charge_hours if is_future(s)]
         self._discharge_hours = [s for s in self._discharge_hours if is_future(s)]
+        self._pv_charge_hours = [s for s in self._pv_charge_hours if is_future(s)]
 
     def set_charge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set charge hours (date-aware) and trigger update."""
@@ -481,7 +491,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.hass.async_create_task(self.async_request_refresh())
 
     def toggle_hour(self, hour: int, date_str: str | None = None) -> None:
-        """Cycle an hour: idle → charge → discharge → blocked → idle.
+        """Cycle an hour: idle → charge → pv_charge → discharge → blocked → idle.
 
         'blocked' in this cycle means blocked for both charging and discharging
         (recurring, hour-of-day only).
@@ -500,8 +510,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         slot: ScheduleSlot = (date_str, hour)
 
         if slot in self._charge_hours:
-            # charge → discharge
+            # charge → pv_charge
             self._charge_hours = [s for s in self._charge_hours if s != slot]
+            if slot not in self._pv_charge_hours:
+                self._pv_charge_hours = self._sort_slots(self._pv_charge_hours + [slot])
+        elif slot in self._pv_charge_hours:
+            # pv_charge → discharge
+            self._pv_charge_hours = [s for s in self._pv_charge_hours if s != slot]
             if slot not in self._discharge_hours:
                 self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
         elif slot in self._discharge_hours:
@@ -538,9 +553,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         slot: ScheduleSlot = (date_str, hour)
 
-        # Remove from charge/discharge lists (date-specific)
+        # Remove from charge/discharge/pv_charge lists (date-specific)
         self._charge_hours = [s for s in self._charge_hours if s != slot]
         self._discharge_hours = [s for s in self._discharge_hours if s != slot]
+        self._pv_charge_hours = [s for s in self._pv_charge_hours if s != slot]
         # Remove from blocked lists (recurring)
         self._blocked_charging_hours = [h for h in self._blocked_charging_hours if h != hour]
         self._blocked_discharging_hours = [h for h in self._blocked_discharging_hours if h != hour]
@@ -548,6 +564,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Add to correct list
         if action == ACTION_CHARGE:
             self._charge_hours = self._sort_slots(self._charge_hours + [slot])
+        elif action == ACTION_PV_CHARGE:
+            self._pv_charge_hours = self._sort_slots(self._pv_charge_hours + [slot])
         elif action == ACTION_DISCHARGE:
             self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
         elif action == ACTION_BLOCKED:
@@ -560,6 +578,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Clear all scheduled hours."""
         self._charge_hours = []
         self._discharge_hours = []
+        self._pv_charge_hours = []
         self._blocked_charging_hours = []
         self._blocked_discharging_hours = []
         self._last_schedule_update = dt_util.now()
@@ -674,20 +693,28 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         prices.sort(key=lambda x: x["price"])
 
         # Pick cheapest N hours below charge threshold (skip blocked charging hours)
+        # and never override manually-set PV charging slots.
+        pv_charge_set = set(self._pv_charge_hours)
         charge_slots: list[ScheduleSlot] = []
         for item in prices:
             if len(charge_slots) >= self.cheapest_hours:
                 break
+            slot = (item["date"], item["hour"])
+            if slot in pv_charge_set:
+                continue
             if item["hour"] not in self._blocked_charging_hours and item["price"] <= self.charge_price_threshold:
-                charge_slots.append((item["date"], item["hour"]))
+                charge_slots.append(slot)
 
         # Pick most expensive N hours above discharge threshold (skip blocked discharging hours)
         discharge_slots: list[ScheduleSlot] = []
         for item in reversed(prices):
             if len(discharge_slots) >= self.expensive_hours:
                 break
+            slot = (item["date"], item["hour"])
+            if slot in pv_charge_set:
+                continue
             if item["hour"] not in self._blocked_discharging_hours and item["price"] >= self.discharge_price_threshold:
-                discharge_slots.append((item["date"], item["hour"]))
+                discharge_slots.append(slot)
 
         # Resolve conflicts: discharge wins (remove from charge)
         discharge_set = set(discharge_slots)
@@ -900,6 +927,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             current_slot: ScheduleSlot = (current_date, hour)
 
             # Priority 5: Auto or Manual — look up schedule (date-aware)
+            # PV Charging takes precedence over plain charge/discharge so a
+            # manually-set PV slot is honored even when the auto scheduler
+            # also marked the hour. Requires the optional solar surplus
+            # sensor; otherwise the slot falls back to idle.
+            if (
+                current_slot in self._pv_charge_hours
+                and self.charge_allowed
+                and not self._charge_blocked_by_soc
+                and self._solar_surplus_entity is not None
+            ):
+                if hour not in self._blocked_charging_hours:
+                    return ACTION_PV_CHARGE
             if current_slot in self._charge_hours and self.charge_allowed and not self._charge_blocked_by_soc:
                 if hour not in self._blocked_charging_hours:
                     return ACTION_CHARGE
@@ -915,6 +954,17 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Compute the clamped grid setpoint for the given action."""
         if action == ACTION_CHARGE:
             raw = self.charge_power  # positive = import
+        elif action == ACTION_PV_CHARGE:
+            if self._charge_blocked_by_soc:
+                # Battery full — can't absorb surplus; fall back to idle.
+                raw = self.idle_setpoint
+            else:
+                # Split the solar surplus between battery and grid.
+                # f=0 -> export all surplus (G=-surplus); f=1 -> self-consume
+                # so surplus charges the battery (G=idle_setpoint).
+                surplus = self._solar_surplus_mean or 0.0
+                f = max(0.0, min(1.0, self.pv_charge_share / 100.0))
+                raw = (1.0 - f) * (-surplus) + f * self.idle_setpoint
         elif action == ACTION_DISCHARGE:
             surplus = self._solar_surplus_mean or 0.0
             if self._discharge_solar_only:
@@ -1161,12 +1211,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Serialize schedule slots to dicts for sensor consumption
         charge_hours_data = [{"date": d, "hour": h} for d, h in self._charge_hours]
         discharge_hours_data = [{"date": d, "hour": h} for d, h in self._discharge_hours]
+        pv_charge_hours_data = [{"date": d, "hour": h} for d, h in self._pv_charge_hours]
 
         return ChargeControlData(
             desired_action=action,
             target_setpoint=setpoint,
             charge_hours=charge_hours_data,
             discharge_hours=discharge_hours_data,
+            pv_charge_hours=pv_charge_hours_data,
             blocked_charging_hours=list(self._blocked_charging_hours),
             blocked_discharging_hours=list(self._blocked_discharging_hours),
             current_price=current_price,

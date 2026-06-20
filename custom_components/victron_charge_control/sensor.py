@@ -36,6 +36,7 @@ async def async_setup_entry(
             CurrentPriceSensor(coordinator, entry),
             ScheduleSensor(coordinator, entry, "charge"),
             ScheduleSensor(coordinator, entry, "discharge"),
+            ScheduleSensor(coordinator, entry, "pv_charge"),
             ScheduleSensor(coordinator, entry, "blocked_charging"),
             ScheduleSensor(coordinator, entry, "blocked_discharging"),
             ChargePlanSensor(coordinator, entry),
@@ -351,12 +352,14 @@ class DesiredActionSensor(VictronCCBaseSensor):
             self._attr_native_value = data.desired_action
             self._attr_icon = {
                 "charge": "mdi:battery-charging",
+                "pv_charge": "mdi:solar-power-variant",
                 "discharge": "mdi:battery-arrow-down",
             }.get(data.desired_action, "mdi:battery-outline")
         self._attr_extra_state_attributes = {
             "mode": self.coordinator.control_mode,
             "charge_hours": self.coordinator.data.charge_hours if self.coordinator.data else [],
             "discharge_hours": self.coordinator.data.discharge_hours if self.coordinator.data else [],
+            "pv_charge_hours": self.coordinator.data.pv_charge_hours if self.coordinator.data else [],
             "blocked_charging_hours": self.coordinator.blocked_charging_hours,
             "blocked_discharging_hours": self.coordinator.blocked_discharging_hours,
         }
@@ -451,6 +454,7 @@ class ScheduleSensor(VictronCCBaseSensor):
         self._attr_translation_key = f"{schedule_type}_hours"
         self._attr_icon = {
             "charge": "mdi:battery-charging",
+            "pv_charge": "mdi:solar-power-variant",
             "discharge": "mdi:battery-arrow-down",
             "blocked_charging": "mdi:cancel",
             "blocked_discharging": "mdi:cancel",
@@ -480,10 +484,11 @@ class ScheduleSensor(VictronCCBaseSensor):
         if data is None:
             self._attr_native_value = ""
         else:
-            if self._schedule_type in ("charge", "discharge"):
+            if self._schedule_type in ("charge", "discharge", "pv_charge"):
                 slots = {
                     "charge": data.charge_hours,
                     "discharge": data.discharge_hours,
+                    "pv_charge": data.pv_charge_hours,
                 }.get(self._schedule_type, [])
                 self._attr_native_value = self._format_slots(slots)
             else:
@@ -499,10 +504,11 @@ class ScheduleSensor(VictronCCBaseSensor):
         data = self.coordinator.data
         if data is None:
             return ""
-        if self._schedule_type in ("charge", "discharge"):
+        if self._schedule_type in ("charge", "discharge", "pv_charge"):
             slots = {
                 "charge": data.charge_hours,
                 "discharge": data.discharge_hours,
+                "pv_charge": data.pv_charge_hours,
             }.get(self._schedule_type, [])
             return self._format_slots(slots)
         hours = {
@@ -532,9 +538,10 @@ class ChargePlanSensor(VictronCCBaseSensor):
         today_str = now.strftime("%Y-%m-%d")
         tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Build lookup sets for charge/discharge slots
+        # Build lookup sets for charge/discharge/pv_charge slots
         charge_set = {(s["date"], s["hour"]) for s in data.charge_hours}
         discharge_set = {(s["date"], s["hour"]) for s in data.discharge_hours}
+        pv_charge_set = {(s["date"], s["hour"]) for s in data.pv_charge_hours}
 
         # Price maps per day
         price_map_today = {p["hour"]: p["price"] for p in data.prices_today}
@@ -549,6 +556,8 @@ class ChargePlanSensor(VictronCCBaseSensor):
                     action = "blocked_charging"
                 elif hour in data.blocked_discharging_hours:
                     action = "blocked_discharging"
+                elif (day_str, hour) in pv_charge_set:
+                    action = "pv_charge"
                 elif (day_str, hour) in charge_set:
                     action = "charge"
                 elif (day_str, hour) in discharge_set:
@@ -568,26 +577,30 @@ class ChargePlanSensor(VictronCCBaseSensor):
             self._attr_native_value = "unknown"
             self._attr_extra_state_attributes = {"plan": []}
         else:
-            charge_count = len(data.charge_hours)
-            discharge_count = len(data.discharge_hours)
-            self._attr_native_value = (
-                f"{charge_count} charge, {discharge_count} discharge"
-            )
+            self._attr_native_value = self._plan_summary(data)
             self._attr_extra_state_attributes = {
                 "plan": self._build_plan(data),
                 "charge_hours": data.charge_hours,
                 "discharge_hours": data.discharge_hours,
+                "pv_charge_hours": data.pv_charge_hours,
                 "blocked_charging_hours": data.blocked_charging_hours,
                 "blocked_discharging_hours": data.blocked_discharging_hours,
             }
         self.async_write_ha_state()
+
+    @staticmethod
+    def _plan_summary(data: ChargeControlData) -> str:
+        parts = [f"{len(data.charge_hours)} charge", f"{len(data.discharge_hours)} discharge"]
+        if data.pv_charge_hours:
+            parts.append(f"{len(data.pv_charge_hours)} pv_charge")
+        return ", ".join(parts)
 
     @property
     def native_value(self) -> str:
         data = self.coordinator.data
         if data is None:
             return "unknown"
-        return f"{len(data.charge_hours)} charge, {len(data.discharge_hours)} discharge"
+        return self._plan_summary(data)
 
 
 class LastScheduleUpdateSensor(VictronCCBaseSensor):

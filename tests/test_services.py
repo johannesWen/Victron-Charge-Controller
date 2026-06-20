@@ -10,6 +10,7 @@ from custom_components.victron_charge_control.const import (
     ACTION_CHARGE,
     ACTION_DISCHARGE,
     ACTION_IDLE,
+    ACTION_PV_CHARGE,
     DOMAIN,
 )
 from custom_components.victron_charge_control.coordinator import VictronChargeControlCoordinator
@@ -131,6 +132,24 @@ class TestServiceHandlers:
         await handler(service_call)
 
         assert ("2026-05-02", 10) in coordinator.discharge_hours
+
+    @pytest.mark.asyncio
+    async def test_set_hour_action_pv_charge_handler(self, mock_hass, coordinator):
+        mock_hass.data[DOMAIN] = {"entry1": coordinator}
+        await async_setup_services(mock_hass)
+
+        handler = None
+        for call in mock_hass.services.async_register.call_args_list:
+            if call.args[1] == SERVICE_SET_HOUR_ACTION:
+                handler = call.args[2]
+                break
+
+        service_call = MagicMock()
+        service_call.data = {"hour": 12, "action": ACTION_PV_CHARGE, "date": "2026-05-02"}
+
+        await handler(service_call)
+
+        assert ("2026-05-02", 12) in coordinator.pv_charge_hours
 
     @pytest.mark.asyncio
     async def test_clear_schedule_handler(self, mock_hass, coordinator):

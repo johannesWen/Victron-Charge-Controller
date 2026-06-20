@@ -59,6 +59,9 @@
       "discharge_hours": {
         "name": "Discharge Hours"
       },
+      "pv_charge_hours": {
+        "name": "PV Charge Hours"
+      },
       "blocked_charging_hours": {
         "name": "Blocked Charging Hours"
       },
@@ -151,6 +154,9 @@
       },
       "reduced_max_grid_feed_in": {
         "name": "Reduced Max Grid Feed-in"
+      },
+      "pv_charge_share": {
+        "name": "PV Charging Battery Share"
       }
     },
     "select": {
