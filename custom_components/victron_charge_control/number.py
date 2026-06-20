@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_MAX_SOC,
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_MIN_SOC,
+    DEFAULT_PV_CHARGE_SHARE,
     DEFAULT_REDUCED_GRID_FEED_IN,
     DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
@@ -221,6 +222,17 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         native_step=100,
         coordinator_attr="reduced_max_grid_feed_in",
         default_value=DEFAULT_REDUCED_GRID_FEED_IN,
+    ),
+    VictronCCNumberDescription(
+        key="pv_charge_share",
+        translation_key="pv_charge_share",
+        icon="mdi:solar-power-variant",
+        native_unit_of_measurement=PERCENTAGE,
+        native_min_value=0,
+        native_max_value=100,
+        native_step=1,
+        coordinator_attr="pv_charge_share",
+        default_value=DEFAULT_PV_CHARGE_SHARE,
     ),
 )
 

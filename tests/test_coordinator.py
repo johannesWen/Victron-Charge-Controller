@@ -12,6 +12,7 @@ from custom_components.victron_charge_control.const import (
     ACTION_CHARGE,
     ACTION_DISCHARGE,
     ACTION_IDLE,
+    ACTION_PV_CHARGE,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_CHARGE_POWER,
     DEFAULT_DEADBAND,
@@ -19,6 +20,7 @@ from custom_components.victron_charge_control.const import (
     DEFAULT_IDLE_SETPOINT,
     DEFAULT_MAX_GRID_SETPOINT,
     DEFAULT_MIN_GRID_SETPOINT,
+    DEFAULT_PV_CHARGE_SHARE,
     MODE_AUTO,
     MODE_FORCE_CHARGE,
     MODE_FORCE_DISCHARGE,
@@ -145,27 +147,37 @@ class TestScheduleManagement:
     def test_clear_schedule(self, coordinator):
         coordinator._charge_hours = [("2026-05-02", 1), ("2026-05-02", 2)]
         coordinator._discharge_hours = [("2026-05-02", 20)]
+        coordinator._pv_charge_hours = [("2026-05-02", 12)]
         coordinator._blocked_charging_hours = [18]
         coordinator._blocked_discharging_hours = [15]
         coordinator.clear_schedule()
         assert coordinator.charge_hours == []
         assert coordinator.discharge_hours == []
+        assert coordinator.pv_charge_hours == []
         assert coordinator.blocked_charging_hours == []
         assert coordinator.blocked_discharging_hours == []
 
 
 class TestToggleHour:
-    """Tests for the toggle_hour cycle: idle → charge → discharge → blocked → idle."""
+    """Tests for the toggle_hour cycle: idle → charge → pv_charge → discharge → blocked → idle."""
 
     def test_idle_to_charge(self, coordinator):
         coordinator.toggle_hour(5, "2026-05-02")
         assert ("2026-05-02", 5) in coordinator.charge_hours
         assert ("2026-05-02", 5) not in coordinator.discharge_hours
+        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
 
-    def test_charge_to_discharge(self, coordinator):
+    def test_charge_to_pv_charge(self, coordinator):
         coordinator._charge_hours = [("2026-05-02", 5)]
         coordinator.toggle_hour(5, "2026-05-02")
         assert ("2026-05-02", 5) not in coordinator.charge_hours
+        assert ("2026-05-02", 5) in coordinator.pv_charge_hours
+        assert ("2026-05-02", 5) not in coordinator.discharge_hours
+
+    def test_pv_charge_to_discharge(self, coordinator):
+        coordinator._pv_charge_hours = [("2026-05-02", 5)]
+        coordinator.toggle_hour(5, "2026-05-02")
+        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
         assert ("2026-05-02", 5) in coordinator.discharge_hours
 
     def test_discharge_to_blocked(self, coordinator):
@@ -182,11 +194,13 @@ class TestToggleHour:
         assert 5 not in coordinator.blocked_charging_hours
         assert 5 not in coordinator.blocked_discharging_hours
         assert ("2026-05-02", 5) not in coordinator.charge_hours
+        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
 
     def test_invalid_hour_ignored(self, coordinator):
         coordinator.toggle_hour(-1, "2026-05-02")
         coordinator.toggle_hour(24, "2026-05-02")
         assert coordinator.charge_hours == []
+        assert coordinator.pv_charge_hours == []
 
 
 class TestSetHourAction:
@@ -201,6 +215,12 @@ class TestSetHourAction:
         coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
         assert ("2026-05-02", 5) in coordinator.discharge_hours
         assert ("2026-05-02", 5) not in coordinator.charge_hours
+
+    def test_set_pv_charge(self, coordinator):
+        coordinator.set_hour_action(5, ACTION_PV_CHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) in coordinator.pv_charge_hours
+        assert ("2026-05-02", 5) not in coordinator.charge_hours
+        assert ("2026-05-02", 5) not in coordinator.discharge_hours
 
     def test_set_blocked(self, coordinator):
         coordinator.set_hour_action(5, ACTION_BLOCKED, "2026-05-02")
@@ -217,6 +237,12 @@ class TestSetHourAction:
         coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
         assert ("2026-05-02", 5) not in coordinator.charge_hours
         assert ("2026-05-02", 5) in coordinator.discharge_hours
+
+    def test_replaces_pv_charge_with_charge(self, coordinator):
+        coordinator._pv_charge_hours = [("2026-05-02", 5)]
+        coordinator.set_hour_action(5, ACTION_CHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
+        assert ("2026-05-02", 5) in coordinator.charge_hours
 
     def test_invalid_hour(self, coordinator):
         coordinator.set_hour_action(25, ACTION_CHARGE, "2026-05-02")
@@ -859,6 +885,191 @@ class TestSolarSurplus:
 
 
 # ======================================================================
+# PV Charging (solar-surplus split between battery and grid)
+# ======================================================================
+
+
+class TestPVCharging:
+    """Tests for the PV Charging plan state and setpoint math."""
+
+    def _make_solar_coordinator(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.data = ChargeControlData()
+        coord.async_request_refresh = MagicMock()
+        return coord
+
+    def _set_soc_and_time(self, coord, soc_value, mock_dt_util, when):
+        coord.hass.states.get.side_effect = lambda eid: {
+            "sensor.battery_soc": MockState(str(soc_value)),
+            "number.grid_setpoint": MockState("0"),
+            "sensor.epex_spot": MockState("10"),
+            "sensor.solar_surplus": MockState("2000"),
+        }.get(eid)
+        mock_dt_util.now.return_value = when
+        mock_dt_util.as_local.side_effect = lambda x: x
+
+    def test_default_share(self, coordinator):
+        assert coordinator.pv_charge_share == DEFAULT_PV_CHARGE_SHARE
+
+    def test_pv_charge_hours_property(self, coordinator):
+        coordinator._pv_charge_hours = [("2026-05-02", 12), ("2026-05-02", 13)]
+        assert coordinator.pv_charge_hours == [("2026-05-02", 12), ("2026-05-02", 13)]
+
+    def test_setpoint_0_percent_exports_all_surplus(self, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE)
+        assert sp == -2000.0
+
+    def test_setpoint_100_percent_uses_idle_setpoint(self, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 100.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE)
+        assert sp == 0.0
+
+    def test_setpoint_50_percent_splits(self, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 50.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE)
+        assert sp == -1000.0
+
+    def test_setpoint_with_nonzero_idle_setpoint(self, mock_hass):
+        """f=1 -> idle_setpoint; f=0 -> -surplus; linear in between."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 100.0
+        coord.pv_charge_share = 50.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        # (1-0.5)*(-2000) + 0.5*100 = -1000 + 50 = -950
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE)
+        assert sp == pytest.approx(-950.0)
+
+    def test_setpoint_clamped_to_min(self, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord.min_grid_setpoint = -5000.0
+        coord._solar_surplus_mean = 8000.0  # would push raw to -8000
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE)
+        assert sp == -5000.0
+
+    def test_setpoint_no_surplus(self, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord._solar_surplus_mean = None
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE)
+        assert sp == 0.0
+
+    def test_setpoint_battery_full_falls_back_to_idle(self, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = True
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE)
+        assert sp == 0.0  # idle_setpoint, not -surplus
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_determine_action_pv_charge_active(self, mock_dt_util, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.control_mode = MODE_AUTO
+        coord.charge_allowed = True
+        coord.max_soc = 95.0
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
+        assert coord._determine_action() == ACTION_PV_CHARGE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_determine_action_pv_charge_charge_not_allowed(self, mock_dt_util, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.control_mode = MODE_AUTO
+        coord.charge_allowed = False
+        coord.max_soc = 95.0
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
+        assert coord._determine_action() == ACTION_IDLE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_determine_action_pv_charge_soc_full(self, mock_dt_util, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.control_mode = MODE_AUTO
+        coord.charge_allowed = True
+        coord.max_soc = 95.0
+        coord.soc_hysteresis = 2.0
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        self._set_soc_and_time(coord, 96.0, mock_dt_util, when)
+        assert coord._determine_action() == ACTION_IDLE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_determine_action_pv_charge_no_solar_entity(self, mock_dt_util, coordinator):
+        """Without a solar surplus sensor configured, pv_charge falls back to idle."""
+        coordinator.control_mode = MODE_AUTO
+        coordinator.charge_allowed = True
+        coordinator.max_soc = 95.0
+        coordinator._pv_charge_hours = [("2026-04-28", 12)]
+        coordinator.hass.states.get.side_effect = lambda eid: {
+            "sensor.battery_soc": MockState("50"),
+            "number.grid_setpoint": MockState("0"),
+            "sensor.epex_spot": MockState("10"),
+        }.get(eid)
+        mock_dt_util.now.return_value = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        mock_dt_util.as_local.side_effect = lambda x: x
+        assert coordinator.solar_surplus_entity is None
+        assert coordinator._determine_action() == ACTION_IDLE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_determine_action_pv_charge_blocked_charging_hour(self, mock_dt_util, mock_hass):
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.control_mode = MODE_AUTO
+        coord.charge_allowed = True
+        coord.max_soc = 95.0
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._blocked_charging_hours = [12]
+        when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
+        assert coord._determine_action() == ACTION_IDLE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_pv_charge_takes_precedence_over_charge(self, mock_dt_util, mock_hass):
+        """When both a pv_charge and a charge slot match, pv_charge wins."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.control_mode = MODE_AUTO
+        coord.charge_allowed = True
+        coord.max_soc = 95.0
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._charge_hours = [("2026-04-28", 12)]
+        when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
+        assert coord._determine_action() == ACTION_PV_CHARGE
+
+    def test_clean_expired_slots_trims_pv_charge(self, mock_hass):
+        from custom_components.victron_charge_control.coordinator import dt_util
+        coord = self._make_solar_coordinator(mock_hass)
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        with patch.object(dt_util, "now", return_value=datetime(2026, 4, 28, 13, 0, tzinfo=timezone.utc)):
+            coord._clean_expired_slots()
+        assert coord.pv_charge_hours == []
+
+
+# ======================================================================
 # Auto schedule calculation
 # ======================================================================
 
@@ -972,6 +1183,41 @@ class TestCalculateAutoSchedule:
 
         assert ("2026-04-28", 0) not in coordinator.charge_hours
         assert ("2026-04-28", 5) not in coordinator.discharge_hours
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_pv_charge_slots_excluded_from_auto(self, mock_dt_util, coordinator):
+        """Manually-set PV charging slots should not be overwritten by auto schedule."""
+        coordinator.control_mode = MODE_AUTO
+        coordinator.cheapest_hours = 2
+        coordinator.expensive_hours = 2
+        coordinator.charge_price_threshold = 15.0
+        coordinator.discharge_price_threshold = 20.0
+        # Hour 0 would be the cheapest charge candidate; pre-mark it as pv_charge.
+        coordinator._pv_charge_hours = [("2026-04-28", 0)]
+
+        now = datetime(2026, 4, 28, 0, 0, tzinfo=timezone.utc)
+        mock_dt_util.now.return_value = now
+        mock_dt_util.as_local.side_effect = lambda x: x
+        mock_dt_util.parse_datetime.side_effect = lambda x: None
+
+        prices = [
+            (0, 2.0),   # cheapest but already pv_charge
+            (1, 5.0),
+            (2, 8.0),
+            (3, 15.0),
+            (4, 25.0),
+            (5, 30.0),
+        ]
+        self._setup_epex(coordinator, prices)
+
+        coordinator.calculate_auto_schedule()
+
+        # pv_charge slot preserved and not co-opted into charge/discharge
+        assert ("2026-04-28", 0) in coordinator.pv_charge_hours
+        assert ("2026-04-28", 0) not in coordinator.charge_hours
+        assert ("2026-04-28", 0) not in coordinator.discharge_hours
+        # Auto picks the next-cheapest hour for charge instead
+        assert ("2026-04-28", 1) in coordinator.charge_hours
 
 
 # ======================================================================

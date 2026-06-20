@@ -13,11 +13,13 @@ from homeassistant.const import UnitOfEnergy
 from custom_components.victron_charge_control.const import (
     ACTION_CHARGE,
     ACTION_IDLE,
+    ACTION_PV_CHARGE,
     CONTROL_MODES,
     DEFAULT_BLOCKED_CHARGING_HOURS,
     DEFAULT_BLOCKED_DISCHARGING_HOURS,
     DEFAULT_CHARGE_POWER,
     DEFAULT_MIN_SOC,
+    DEFAULT_PV_CHARGE_SHARE,
     DOMAIN,
     MODE_AUTO,
     MODE_OFF,
@@ -77,6 +79,22 @@ class TestDesiredActionSensor:
         sensor = DesiredActionSensor(coordinator, entry)
         assert sensor.unique_id == f"{entry.entry_id}_desired_action"
 
+    def test_pv_charge_icon_and_attribute(self, coordinator):
+        coordinator.data = ChargeControlData(
+            desired_action=ACTION_PV_CHARGE,
+            pv_charge_hours=[{"date": "2026-05-02", "hour": 12}],
+        )
+        entry = MockConfigEntry()
+        sensor = DesiredActionSensor(coordinator, entry)
+        sensor.hass = coordinator.hass
+        sensor.async_write_ha_state = MagicMock()
+        assert sensor.native_value == ACTION_PV_CHARGE
+        sensor._handle_coordinator_update()
+        assert sensor._attr_icon == "mdi:solar-power-variant"
+        assert sensor._attr_extra_state_attributes["pv_charge_hours"] == [
+            {"date": "2026-05-02", "hour": 12}
+        ]
+
 
 class TestTargetSetpointSensor:
     """Tests for the TargetSetpointSensor."""
@@ -112,6 +130,16 @@ class TestScheduleSensor:
         entry = MockConfigEntry()
         sensor = ScheduleSensor(coordinator, entry, "discharge")
         assert sensor.native_value == "2026-05-02:20,21"
+
+    def test_pv_charge_hours(self, coordinator):
+        coordinator.data = ChargeControlData(
+            pv_charge_hours=[{"date": "2026-05-02", "hour": 12}, {"date": "2026-05-02", "hour": 13}]
+        )
+        entry = MockConfigEntry()
+        sensor = ScheduleSensor(coordinator, entry, "pv_charge")
+        assert sensor.native_value == "2026-05-02:12,13"
+        assert sensor._attr_icon == "mdi:solar-power-variant"
+        assert sensor.unique_id == f"{entry.entry_id}_pv_charge_hours"
 
     def test_multi_day_charge_hours(self, coordinator):
         coordinator.data = ChargeControlData(
@@ -184,6 +212,44 @@ class TestChargePlanSensor:
         assert today_plan[20]["action"] == "discharge"
         assert today_plan[5]["action"] == "blocked"
         assert today_plan[10]["action"] == "idle"
+
+    def test_native_value_includes_pv_charge_only_when_present(self, coordinator):
+        coordinator.data = ChargeControlData(
+            charge_hours=[{"date": "2026-05-02", "hour": 1}],
+        )
+        entry = MockConfigEntry()
+        sensor = ChargePlanSensor(coordinator, entry)
+        # No pv_charge hours -> summary unchanged from legacy format
+        assert sensor.native_value == "1 charge, 0 discharge"
+
+        coordinator.data = ChargeControlData(
+            charge_hours=[{"date": "2026-05-02", "hour": 1}],
+            pv_charge_hours=[{"date": "2026-05-02", "hour": 12}, {"date": "2026-05-02", "hour": 13}],
+        )
+        assert sensor.native_value == "1 charge, 0 discharge, 2 pv_charge"
+
+    @patch("custom_components.victron_charge_control.sensor.dt_util")
+    def test_build_plan_includes_pv_charge(self, mock_dt_util, coordinator):
+        from datetime import datetime, timezone
+        mock_dt_util.now.return_value = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
+        coordinator.data = ChargeControlData(
+            charge_hours=[{"date": "2026-05-02", "hour": 2}],
+            pv_charge_hours=[{"date": "2026-05-02", "hour": 12}],
+        )
+        entry = MockConfigEntry()
+        sensor = ChargePlanSensor(coordinator, entry)
+        plan = sensor._build_plan(coordinator.data)
+        today_plan = [p for p in plan if p["date"] == "2026-05-02"]
+        assert today_plan[12]["action"] == "pv_charge"
+        assert today_plan[2]["action"] == "charge"
+        assert today_plan[10]["action"] == "idle"
+        # pv_charge_hours also surfaced as an attribute
+        sensor.hass = coordinator.hass
+        sensor.async_write_ha_state = MagicMock()
+        sensor._handle_coordinator_update()
+        assert sensor._attr_extra_state_attributes["pv_charge_hours"] == [
+            {"date": "2026-05-02", "hour": 12}
+        ]
 
 
 class TestLastScheduleUpdateSensor:
@@ -326,7 +392,7 @@ class TestVictronCCNumber:
     """Tests for the configurable number entities."""
 
     def test_number_descriptions_count(self):
-        assert len(NUMBERS) == 16
+        assert len(NUMBERS) == 17
 
     def test_native_value_reads_coordinator(self, coordinator):
         entry = MockConfigEntry()
@@ -365,6 +431,26 @@ class TestVictronCCNumber:
         desc = NUMBERS[0]
         number = VictronCCNumber(coordinator, entry, desc)
         assert number.unique_id == f"{entry.entry_id}_{desc.key}"
+
+    def test_pv_charge_share_description(self, coordinator):
+        desc = next(d for d in NUMBERS if d.key == "pv_charge_share")
+        assert desc.coordinator_attr == "pv_charge_share"
+        assert desc.default_value == DEFAULT_PV_CHARGE_SHARE
+        assert desc.native_min_value == 0
+        assert desc.native_max_value == 100
+        entry = MockConfigEntry()
+        number = VictronCCNumber(coordinator, entry, desc)
+        assert number.native_value == DEFAULT_PV_CHARGE_SHARE
+
+    @pytest.mark.asyncio
+    async def test_set_pv_charge_share(self, coordinator):
+        entry = MockConfigEntry()
+        desc = next(d for d in NUMBERS if d.key == "pv_charge_share")
+        number = VictronCCNumber(coordinator, entry, desc)
+        coordinator.async_request_refresh = AsyncMock()
+        number.async_write_ha_state = MagicMock()
+        await number.async_set_native_value(40.0)
+        assert coordinator.pv_charge_share == 40.0
 
 
 # ======================================================================
