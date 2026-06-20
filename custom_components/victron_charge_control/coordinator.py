@@ -144,6 +144,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.expensive_hours: int = DEFAULT_EXPENSIVE_HOURS
         self.charge_price_threshold: float = DEFAULT_CHARGE_PRICE_THRESHOLD
         self.discharge_price_threshold: float = DEFAULT_DISCHARGE_PRICE_THRESHOLD
+        self.setpoint_deadband: float = DEFAULT_DEADBAND
 
         # --- Grid feed-in control ---
         self.grid_feed_in_control_enabled: bool = False
@@ -950,7 +951,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         if (
             self._last_applied_setpoint is not None
-            and abs(target_setpoint - current) <= DEFAULT_DEADBAND
+            and abs(target_setpoint - current) <= self.setpoint_deadband
         ):
             return
 
