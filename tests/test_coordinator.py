@@ -1052,11 +1052,11 @@ class TestApplySetpoint:
         coordinator.hass.services.async_call.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_apply_setpoint_applies_above_150w_deadband(self, coordinator):
-        """200W diff exceeds the 150W deadband and triggers a service call."""
+    async def test_apply_setpoint_applies_above_200w_deadband(self, coordinator):
+        """300W diff exceeds the 200W deadband and triggers a service call."""
         coordinator.hass.states.get.return_value = MockState("3000")
         coordinator._last_applied_setpoint = 3000.0
-        await coordinator._apply_setpoint(3200.0)
+        await coordinator._apply_setpoint(3300.0)
         coordinator.hass.services.async_call.assert_called_once()
 
     @pytest.mark.asyncio
