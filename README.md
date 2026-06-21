@@ -44,6 +44,7 @@ the system from dashboards or automations.
 - **SOC protection** respects minimum and maximum battery limits, including hysteresis.
 - **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
 - **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint, with a soft SOC fallback to solar-only export when the battery is near its lower boundary.
+- **PV charging** charges the battery from solar surplus without importing from the grid, splitting surplus between battery and export according to a configurable share. PV charging is independent of the **Charge Allowed** switch and of blocked charging hours — it never draws from the grid, so it can stay active even when grid charging is disabled.
 - **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
 - **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts.
 - **Service API** exposes schedule manipulation for dashboards, scripts, and automations.
@@ -103,7 +104,7 @@ During setup, select the entities that connect this integration to your Victron 
 | Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. |
 | Grid consumption energy sensor | No | Cumulative grid import meter in kWh. |
 | Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. |
-| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. |
+| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export. |
 
 You can change these entities later from the integration options flow.
 
@@ -112,7 +113,7 @@ You can change these entities later from the integration options flow.
 | Entity | Platform | Description |
 | --- | --- | --- |
 | Control Mode | Select | `off`, `auto`, `manual`, `force_charge`, or `force_discharge`. |
-| Charge Allowed | Switch | Master enable for charging. |
+| Charge Allowed | Switch | Master enable for charging from the grid. PV (solar surplus) charging is independent of this switch and stays active even when it is off. |
 | Discharge Allowed | Switch | Master enable for discharging. |
 | Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
 | Min SOC | Number | Lower battery SOC boundary. |
@@ -120,6 +121,7 @@ You can change these entities later from the integration options flow.
 | SOC Hysteresis | Number | SOC buffer before resuming after a boundary is reached. |
 | Charge Power | Number | Target import power while charging. |
 | Discharge Power | Number | Target export power while discharging. |
+| PV Charging Battery Share | Number | Percentage of the solar surplus routed to the battery during PV charge hours. The remainder is exported to the grid. `100` keeps all surplus in the battery, `0` exports everything. |
 | Idle Setpoint | Number | Grid setpoint used while idle. |
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
 | Max Grid Setpoint | Number | Highest allowed grid setpoint. |
@@ -134,11 +136,12 @@ You can change these entities later from the integration options flow.
 | Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
 | Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
 | Recalculate Schedule | Button | Rebuilds the schedule from current price data. |
-| Desired Action | Sensor | Current computed action: charge, discharge, or idle. |
+| Desired Action | Sensor | Current computed action: charge, pv_charge, discharge, or idle. |
 | Target Setpoint | Sensor | Current computed grid setpoint in watts. |
 | Current Price | Sensor | Current EPEX Spot price. |
 | Charge Hours | Sensor | Date-aware scheduled charging slots. |
 | Discharge Hours | Sensor | Date-aware scheduled discharging slots. |
+| PV Charge Hours | Sensor | Date-aware scheduled PV charging slots. PV charging only runs when a solar surplus sensor is configured. |
 | Blocked Charging Hours | Sensor | Active charging block list. |
 | Blocked Discharging Hours | Sensor | Active discharging block list. |
 | Charge Plan | Sensor | Full hour-by-hour plan for today and tomorrow. |
