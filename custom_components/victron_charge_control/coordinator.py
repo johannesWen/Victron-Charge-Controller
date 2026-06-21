@@ -34,6 +34,7 @@ from .const import (
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_SOLAR_SURPLUS_ENTITY,
+    DEFAULT_ACTION_CONFIRM_SECONDS,
     DEFAULT_CHARGE_POWER,
     DEFAULT_CHARGE_PRICE_THRESHOLD,
     DEFAULT_CHEAPEST_HOURS,
@@ -191,6 +192,24 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # --- Last schedule update timestamp ---
         self._last_schedule_update: datetime | None = None
+
+        # --- Action-change debounce ---
+        # The decision engine is re-evaluated on every coordinator tick
+        # (~60s) and on every relevant entity change. A single noisy SOC
+        # reading can briefly flip _determine_action() to a different
+        # value, which would otherwise cause the grid setpoint and the
+        # dashboard's desired_action badge to flap in lock-step with the
+        # sensor jitter. To absorb those transient flips, a new action
+        # must persist for at least action_confirm_seconds before it is
+        # published and applied; the previous action continues to be
+        # reported in the meantime.
+        # ``_last_published_action`` starts as None so the very first
+        # decision is published immediately rather than being held back
+        # for action_confirm_seconds.
+        self.action_confirm_seconds: float = DEFAULT_ACTION_CONFIRM_SECONDS
+        self._last_published_action: str | None = None
+        self._pending_action: str | None = None
+        self._pending_action_since: datetime | None = None
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -879,7 +898,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._solar_surplus_mean = None
 
     def _update_soc_hysteresis(self, soc: float) -> None:
-        """Update SOC hysteresis blocked flags."""
+        """Update SOC hysteresis blocked flags.
+
+        All three flags are latched (Schmitt-trigger style): once a limit
+        is reached the flag stays set until the SOC moves a full
+        ``soc_hysteresis`` margin *back* across the threshold. This
+        prevents the ±1% sensor jitter near the SOC boundaries from
+        flapping the desired action and grid setpoint.
+        """
         if soc >= self.max_soc:
             self._charge_blocked_by_soc = True
         elif soc < self.max_soc - self.soc_hysteresis:
@@ -892,7 +918,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Soft protection: when SOC is near the lower boundary, switch
         # discharge setpoint math to solar-only (no battery discharge term).
-        self._discharge_solar_only = soc <= self.min_soc + self.soc_hysteresis
+        # Latched symmetrically to the other flags above — without this,
+        # a single noisy reading at the threshold toggles the discharge
+        # math between solar-only and full-battery modes, and the desired
+        # action oscillates with it. Release requires a full hysteresis
+        # margin back above the threshold.
+        if soc <= self.min_soc + self.soc_hysteresis:
+            self._discharge_solar_only = True
+        elif soc > self.min_soc + (2 * self.soc_hysteresis):
+            self._discharge_solar_only = False
 
     def _determine_action(self) -> str:
         """Deterministic priority stack — returns charge/discharge/idle."""
@@ -949,6 +983,63 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Priority 5: Fallback
         return ACTION_IDLE
+
+    def _resolve_published_action(self, live_action: str) -> str:
+        """Apply the action-change debounce to a live decision-engine result.
+
+        Returns the action that should be published to the dashboard and
+        used to compute the grid setpoint. A new ``live_action`` must
+        persist for ``action_confirm_seconds`` before it replaces the
+        currently published one; while it is being confirmed, the previous
+        action is returned instead, so the grid setpoint and the
+        ``desired_action`` sensor both stay stable.
+
+        MODE_OFF bypasses the debounce and forces ``ACTION_IDLE`` immediately
+        — switching the system off is a user-initiated safety state and
+        must not be delayed.
+
+        The first ever call also publishes immediately (no prior state to
+        confirm against), so the integration does not appear stuck at
+        ``idle`` for ``action_confirm_seconds`` after startup.
+        """
+        if self.control_mode == MODE_OFF:
+            self._pending_action = None
+            self._pending_action_since = None
+            self._last_published_action = ACTION_IDLE
+            return ACTION_IDLE
+
+        if self._last_published_action is None:
+            # First ever publish — no prior state to confirm against.
+            self._last_published_action = live_action
+            self._pending_action = None
+            self._pending_action_since = None
+            return live_action
+
+        if live_action == self._last_published_action:
+            # Live action matches what is already published — clear any
+            # pending change so the next genuine flip starts fresh.
+            self._pending_action = None
+            self._pending_action_since = None
+            return self._last_published_action
+
+        # Live action differs from the published one. If we have not yet
+        # seen this candidate, start the confirmation timer; if it is the
+        # same candidate as last tick, check whether it has been stable
+        # long enough to publish.
+        now = dt_util.now()
+        if self._pending_action != live_action:
+            self._pending_action = live_action
+            self._pending_action_since = now
+            return self._last_published_action
+
+        elapsed = (now - self._pending_action_since).total_seconds()
+        if elapsed >= self.action_confirm_seconds:
+            self._last_published_action = live_action
+            self._pending_action = None
+            self._pending_action_since = None
+            return live_action
+
+        return self._last_published_action
 
     def _compute_setpoint(self, action: str) -> float:
         """Compute the clamped grid setpoint for the given action."""
@@ -1136,7 +1227,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             )
 
         # Decision engine
-        action = self._determine_action()
+        live_action = self._determine_action()
+        # Apply the action-change debounce: a new desired action must
+        # persist for action_confirm_seconds before it is published and
+        # written to the grid setpoint. This absorbs transient flips of
+        # the decision engine (e.g. a single noisy SOC reading) without
+        # delaying genuine schedule transitions, since those persist.
+        action = self._resolve_published_action(live_action)
         setpoint = self._compute_setpoint(action)
 
         # Apply setpoint (only when not OFF)
