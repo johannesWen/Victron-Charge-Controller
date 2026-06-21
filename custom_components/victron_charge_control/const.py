@@ -57,6 +57,14 @@ DEFAULT_MAX_GRID_FEED_IN = 5000.0
 DEFAULT_REDUCED_GRID_FEED_IN = 0.0
 DEFAULT_PV_CHARGE_SHARE = 100.0
 
+# How long a new desired action must persist before it is published/applied.
+# Acts as a debounce: short, transient flips of the decision engine (e.g. a
+# noisy SOC reading bouncing across a limit) are absorbed and never reach
+# the grid setpoint or the dashboard. 30s is long enough to swallow a single
+# 60s-coordinator-cadence flap and short enough that a genuine schedule
+# transition (cheap hour starting, etc.) feels instant to the user.
+DEFAULT_ACTION_CONFIRM_SECONDS = 30.0
+
 # --- Update interval ---
 UPDATE_INTERVAL_SECONDS = 60
 

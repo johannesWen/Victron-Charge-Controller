@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -686,6 +686,191 @@ class TestSOCHysteresis:
 
 
 # ======================================================================
+# Action-change debounce (_resolve_published_action)
+# ======================================================================
+
+
+class TestActionDebounce:
+    """Tests for the action-change confirmation timer.
+
+    The decision engine is re-evaluated on every coordinator tick (~60s)
+    and on every relevant entity change. A single noisy SOC reading can
+    briefly flip the live action, which would otherwise cause the grid
+    setpoint and the dashboard's desired_action badge to flap in
+    lock-step with the sensor jitter.
+
+    ``_resolve_published_action`` is the debounce: a new live action must
+    persist for ``action_confirm_seconds`` before it is published. The
+    helper is called only from the publish path, so the underlying
+    ``_determine_action`` semantics are unchanged for callers that want
+    the unfiltered result.
+    """
+
+    def _set_soc(self, coordinator, soc):
+        coordinator.hass.states.get.return_value = MockState(str(soc))
+
+    def test_first_call_publishes_immediately(self, coordinator):
+        """The very first action must not be delayed by the debounce."""
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        self._set_soc(coordinator, 50.0)
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+
+    def test_steady_action_keeps_returning_same(self, coordinator):
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        self._set_soc(coordinator, 50.0)
+        # First call publishes immediately
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+        # Subsequent identical calls keep returning the same action with no
+        # pending state
+        for _ in range(5):
+            assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+        assert coordinator._pending_action is None
+        assert coordinator._pending_action_since is None
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_transient_flip_does_not_publish(self, mock_dt_util, coordinator):
+        """A brief flip to a different action that reverts must not publish.
+
+        This is the core user-visible scenario: SOC jitters between 94
+        and 95, so the live action briefly flips to idle and back to
+        charge. The debounce must suppress the idle publication.
+        """
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.action_confirm_seconds = 30.0
+
+        t0 = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+        mock_dt_util.now.return_value = t0
+
+        # Establish the steady state: charge is published
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+        assert coordinator._last_published_action == ACTION_CHARGE
+
+        # Tick +5s: live action flips to idle (e.g. SOC 95 triggered max)
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=5)
+        assert coordinator._resolve_published_action(ACTION_IDLE) == ACTION_CHARGE
+        # Pending candidate recorded, but idle is NOT yet published
+        assert coordinator._pending_action == ACTION_IDLE
+        assert coordinator._last_published_action == ACTION_CHARGE
+
+        # Tick +10s: live action flips back to charge (SOC dipped to 94)
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=10)
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+        # Pending state was cleared — charge is still the published action
+        assert coordinator._pending_action is None
+        assert coordinator._last_published_action == ACTION_CHARGE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_persistent_flip_publishes_after_confirm_window(self, mock_dt_util, coordinator):
+        """A new action that persists for the full confirm window is published."""
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.action_confirm_seconds = 30.0
+
+        t0 = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+        mock_dt_util.now.return_value = t0
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+
+        # Flip to idle at t=5s
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=5)
+        assert coordinator._resolve_published_action(ACTION_IDLE) == ACTION_CHARGE
+
+        # 20s later (t=25s, 20s since flip) — still not confirmed
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=25)
+        assert coordinator._resolve_published_action(ACTION_IDLE) == ACTION_CHARGE
+
+        # 30s after the flip (t=35s) — confirmed, published
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=35)
+        assert coordinator._resolve_published_action(ACTION_IDLE) == ACTION_IDLE
+        assert coordinator._last_published_action == ACTION_IDLE
+        assert coordinator._pending_action is None
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_published_action_drives_setpoint(self, mock_dt_util, coordinator):
+        """_compute_setpoint called from the publish path sees the debounced action.
+
+        The setpoint written to the grid entity must follow the debounced
+        action, not the live one — otherwise the setpoint flaps even
+        though the published desired_action does not.
+        """
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.action_confirm_seconds = 30.0
+        coordinator.charge_power = 3000.0
+
+        t0 = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+        mock_dt_util.now.return_value = t0
+        # Publish charge
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+
+        # Live flips to idle, but debounce holds the line: setpoint
+        # remains the charge setpoint, not the idle setpoint.
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=5)
+        published = coordinator._resolve_published_action(ACTION_IDLE)
+        sp = coordinator._compute_setpoint(published)
+        assert published == ACTION_CHARGE
+        assert sp == 3000.0  # charge_power, NOT idle_setpoint
+
+    def test_mode_off_bypasses_debounce(self, coordinator):
+        """Switching to MODE_OFF must force ACTION_IDLE immediately, no debounce.
+
+        Safety > smoothing: a user turning the system off must not be
+        delayed by action-change confirmation.
+        """
+        coordinator.control_mode = MODE_OFF
+        coordinator.action_confirm_seconds = 30.0
+        # Pretend charge is currently published
+        coordinator._last_published_action = ACTION_CHARGE
+        coordinator._pending_action = ACTION_CHARGE
+        coordinator._pending_action_since = datetime.now(tz=timezone.utc)
+        # MODE_OFF -> idle now, pending state cleared
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_IDLE
+        assert coordinator._last_published_action == ACTION_IDLE
+        assert coordinator._pending_action is None
+        assert coordinator._pending_action_since is None
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_rapid_flap_does_not_reset_confirm_timer(self, mock_dt_util, coordinator):
+        """Multiple 1-tick blips to the candidate action must not reset the timer.
+
+        Guards against a degenerate case: if a noisy sensor produces the
+        candidate action for one tick, then a different value, then the
+        candidate again, the original timestamp must be preserved so the
+        debounce still fires.
+        """
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        coordinator.charge_allowed = True
+        coordinator.action_confirm_seconds = 30.0
+
+        t0 = datetime(2026, 6, 21, 12, 0, 0, tzinfo=timezone.utc)
+        mock_dt_util.now.return_value = t0
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+
+        # t=5s: live action = idle (pending starts)
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=5)
+        assert coordinator._resolve_published_action(ACTION_IDLE) == ACTION_CHARGE
+        first_pending_since = coordinator._pending_action_since
+
+        # t=10s: brief blip back to charge (resets the timer candidate,
+        # but pending is cleared because live matches published)
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=10)
+        assert coordinator._resolve_published_action(ACTION_CHARGE) == ACTION_CHARGE
+        assert coordinator._pending_action is None
+
+        # t=20s: back to idle — a fresh pending entry is created. Since
+        # the previous candidate cleared, the timer restarts. This is
+        # the documented behaviour: a brief blip to the prior state does
+        # not count as continuous presence of the new candidate.
+        mock_dt_util.now.return_value = t0 + timedelta(seconds=20)
+        assert coordinator._resolve_published_action(ACTION_IDLE) == ACTION_CHARGE
+        second_pending_since = coordinator._pending_action_since
+        assert second_pending_since is not None
+        assert second_pending_since > first_pending_since
+
+
+# ======================================================================
 # Setpoint computation
 # ======================================================================
 
@@ -865,22 +1050,65 @@ class TestSolarSurplus:
         assert sp == 0.0  # idle via surplus-only mode
 
     def test_soc_hysteresis_sets_solar_only(self, coordinator):
-        """soc <= min_soc + hysteresis triggers solar-only mode."""
+        """soc <= min_soc + hysteresis triggers solar-only mode (latched)."""
         coordinator.min_soc = 10.0
         coordinator.soc_hysteresis = 2.0
         coordinator._update_soc_hysteresis(12.0)  # exactly at threshold
         assert coordinator._discharge_solar_only is True
 
+        # Latched: a 0.1% rise above min_soc + hysteresis must NOT release.
+        # Without the latch this would oscillate as the SOC jitters across
+        # the threshold — same root cause as the charge/discharge flaps
+        # the wider Schmitt-trigger patch is fixing.
         coordinator._update_soc_hysteresis(12.1)
-        assert coordinator._discharge_solar_only is False
+        assert coordinator._discharge_solar_only is True
 
+        # Re-engages when SOC dips back below the threshold.
         coordinator._update_soc_hysteresis(11.5)
         assert coordinator._discharge_solar_only is True
+
+        # Releases only after a full hysteresis margin above the threshold
+        # (min_soc + 2*hysteresis = 14.0).
+        coordinator._update_soc_hysteresis(14.1)
+        assert coordinator._discharge_solar_only is False
 
     def test_soc_hysteresis_clears_solar_only_above_threshold(self, coordinator):
         coordinator.min_soc = 10.0
         coordinator.soc_hysteresis = 2.0
         coordinator._update_soc_hysteresis(50.0)
+        assert coordinator._discharge_solar_only is False
+
+    def test_solar_only_does_not_release_within_hysteresis_band(self, coordinator):
+        """A 0.1% rise above min_soc + hysteresis must not release solar-only.
+
+        Regression test: previously the flag was assigned unconditionally
+        on every cycle (`soc <= min_soc + hysteresis`), so a SOC reading
+        that alternated between 11.9 and 12.1 would toggle the flag (and
+        therefore the discharge setpoint math) on every coordinator tick.
+        """
+        coordinator.min_soc = 10.0
+        coordinator.soc_hysteresis = 2.0
+        # Drive into solar-only
+        coordinator._update_soc_hysteresis(12.0)
+        assert coordinator._discharge_solar_only is True
+        # Tiny rise — must stay latched
+        coordinator._update_soc_hysteresis(12.1)
+        assert coordinator._discharge_solar_only is True
+        coordinator._update_soc_hysteresis(12.5)
+        assert coordinator._discharge_solar_only is True
+        # Drop back below threshold — still latched (re-engages)
+        coordinator._update_soc_hysteresis(11.5)
+        assert coordinator._discharge_solar_only is True
+
+    def test_solar_only_releases_after_full_hysteresis_margin(self, coordinator):
+        coordinator.min_soc = 10.0
+        coordinator.soc_hysteresis = 2.0
+        coordinator._update_soc_hysteresis(12.0)
+        assert coordinator._discharge_solar_only is True
+        # Release point is min_soc + 2*hysteresis = 14.0 (strictly above)
+        coordinator._update_soc_hysteresis(14.0)
+        assert coordinator._discharge_solar_only is True
+        coordinator._update_soc_hysteresis(14.1)
         assert coordinator._discharge_solar_only is False
 
 
