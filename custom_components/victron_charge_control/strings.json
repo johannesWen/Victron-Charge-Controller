@@ -173,7 +173,8 @@
     },
     "switch": {
       "charge_allowed": {
-        "name": "Charge Allowed"
+        "name": "Charge Allowed",
+        "description": "Allow charging from the grid. PV (solar surplus) charging is independent of this switch."
       },
       "discharge_allowed": {
         "name": "Discharge Allowed"

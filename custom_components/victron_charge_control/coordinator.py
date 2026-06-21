@@ -965,14 +965,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             # manually-set PV slot is honored even when the auto scheduler
             # also marked the hour. Requires the optional solar surplus
             # sensor; otherwise the slot falls back to idle.
+            # PV charging is independent of `charge_allowed` and
+            # `blocked_charging_hours` because it never draws from the grid
+            # — it only splits the existing solar surplus between battery
+            # and grid export. SOC blocking still applies.
             if (
                 current_slot in self._pv_charge_hours
-                and self.charge_allowed
                 and not self._charge_blocked_by_soc
                 and self._solar_surplus_entity is not None
             ):
-                if hour not in self._blocked_charging_hours:
-                    return ACTION_PV_CHARGE
+                return ACTION_PV_CHARGE
             if current_slot in self._charge_hours and self.charge_allowed and not self._charge_blocked_by_soc:
                 if hour not in self._blocked_charging_hours:
                     return ACTION_CHARGE
