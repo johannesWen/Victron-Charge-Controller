@@ -1224,7 +1224,8 @@ class TestPVCharging:
         assert coord._determine_action() == ACTION_PV_CHARGE
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
-    def test_determine_action_pv_charge_charge_not_allowed(self, mock_dt_util, mock_hass):
+    def test_determine_action_pv_charge_works_when_grid_charge_disallowed(self, mock_dt_util, mock_hass):
+        """PV charging is independent of charge_allowed — it never uses grid power."""
         coord = self._make_solar_coordinator(mock_hass)
         coord.control_mode = MODE_AUTO
         coord.charge_allowed = False
@@ -1232,7 +1233,7 @@ class TestPVCharging:
         coord._pv_charge_hours = [("2026-04-28", 12)]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
-        assert coord._determine_action() == ACTION_IDLE
+        assert coord._determine_action() == ACTION_PV_CHARGE
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_determine_action_pv_charge_soc_full(self, mock_dt_util, mock_hass):
@@ -1264,7 +1265,8 @@ class TestPVCharging:
         assert coordinator._determine_action() == ACTION_IDLE
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
-    def test_determine_action_pv_charge_blocked_charging_hour(self, mock_dt_util, mock_hass):
+    def test_determine_action_pv_charge_ignores_blocked_charging_hours(self, mock_dt_util, mock_hass):
+        """PV charging ignores blocked_charging_hours — it never draws from the grid."""
         coord = self._make_solar_coordinator(mock_hass)
         coord.control_mode = MODE_AUTO
         coord.charge_allowed = True
@@ -1273,7 +1275,7 @@ class TestPVCharging:
         coord._blocked_charging_hours = [12]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
-        assert coord._determine_action() == ACTION_IDLE
+        assert coord._determine_action() == ACTION_PV_CHARGE
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_pv_charge_takes_precedence_over_charge(self, mock_dt_util, mock_hass):
@@ -1284,6 +1286,32 @@ class TestPVCharging:
         coord.max_soc = 95.0
         coord._pv_charge_hours = [("2026-04-28", 12)]
         coord._charge_hours = [("2026-04-28", 12)]
+        when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
+        assert coord._determine_action() == ACTION_PV_CHARGE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_determine_action_pv_charge_blocked_by_soc(self, mock_dt_util, mock_hass):
+        """SOC-full still suppresses PV charging — battery can't absorb surplus."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.control_mode = MODE_AUTO
+        coord.charge_allowed = True
+        coord.max_soc = 95.0
+        coord.soc_hysteresis = 2.0
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
+        self._set_soc_and_time(coord, 96.0, mock_dt_util, when)
+        assert coord._determine_action() == ACTION_IDLE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_determine_action_pv_charge_blocked_hour_and_charge_not_allowed(self, mock_dt_util, mock_hass):
+        """PV charging fires even when both charge_allowed=False and hour is blocked."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.control_mode = MODE_AUTO
+        coord.charge_allowed = False
+        coord.max_soc = 95.0
+        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._blocked_charging_hours = [12]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
         assert coord._determine_action() == ACTION_PV_CHARGE
