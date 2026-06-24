@@ -1651,6 +1651,56 @@ class TestApplySetpoint:
 
         coordinator.hass.services.async_call.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_apply_setpoint_bypasses_deadband_on_idle(self, coordinator):
+        """Transitioning to idle must always write the idle setpoint.
+
+        Regression: previously, a transition from PV-Charging (or any
+        other state) to Idle could leave the entity holding the old
+        setpoint whenever the difference fell within ``setpoint_deadband``.
+        With ``action=ACTION_IDLE`` the deadband is bypassed and the
+        idle setpoint is always written.
+        """
+        coordinator.hass.states.get.return_value = MockState("-1500")
+        coordinator._last_applied_setpoint = -1500.0
+        coordinator.idle_setpoint = 0.0
+
+        # Sanity check: without the action override, the 1500W diff
+        # exceeds the deadband so the write would still happen.
+        # The interesting case is the small residual (e.g. -50W)
+        # which the deadband would otherwise skip.
+        coordinator.hass.states.get.return_value = MockState("-50")
+        coordinator._last_applied_setpoint = -50.0
+
+        # No action override: deadband blocks the small residual.
+        await coordinator._apply_setpoint(0.0)
+        coordinator.hass.services.async_call.assert_not_called()
+
+        # With ACTION_IDLE the deadband is bypassed and the write fires.
+        await coordinator._apply_setpoint(0.0, action=ACTION_IDLE)
+        coordinator.hass.services.async_call.assert_called_once_with(
+            "number",
+            "set_value",
+            {"entity_id": "number.grid_setpoint", "value": 0.0},
+            blocking=True,
+        )
+        assert coordinator._last_applied_setpoint == 0.0
+
+    @pytest.mark.asyncio
+    async def test_apply_setpoint_respects_deadband_when_charging(self, coordinator):
+        """Non-idle actions must still honour the deadband (regression guard)."""
+        coordinator.hass.states.get.return_value = MockState("3000")
+        coordinator._last_applied_setpoint = 3000.0
+
+        # 100W diff is within the default 200W deadband: must be skipped
+        # for non-idle actions.
+        await coordinator._apply_setpoint(3100.0, action=ACTION_CHARGE)
+        coordinator.hass.services.async_call.assert_not_called()
+
+        # And still applied above the deadband.
+        await coordinator._apply_setpoint(3300.0, action=ACTION_CHARGE)
+        coordinator.hass.services.async_call.assert_called_once()
+
 
 # ======================================================================
 # Grid feed-in control

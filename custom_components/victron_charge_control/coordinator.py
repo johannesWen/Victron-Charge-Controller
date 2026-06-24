@@ -1088,8 +1088,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Setpoint application
     # ------------------------------------------------------------------
 
-    async def _apply_setpoint(self, target_setpoint: float) -> None:
-        """Write the target setpoint to the Victron grid setpoint entity."""
+    async def _apply_setpoint(
+        self, target_setpoint: float, action: str | None = None
+    ) -> None:
+        """Write the target setpoint to the Victron grid setpoint entity.
+
+        When ``action`` is ``ACTION_IDLE`` the deadband is bypassed so the
+        grid setpoint is always reset to ``idle_setpoint``, regardless of
+        how close the previous value is. Without this, a transition from
+        PV-Charging (or any other state) to Idle could leave the entity
+        holding the old setpoint whenever the difference falls within
+        ``setpoint_deadband``.
+        """
         # Check entity availability
         state = self.hass.states.get(self._grid_setpoint_entity)
         if state is None or state.state in ("unavailable", "unknown"):
@@ -1106,7 +1116,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             current = 0.0
 
         if (
-            self._last_applied_setpoint is not None
+            action != ACTION_IDLE
+            and self._last_applied_setpoint is not None
             and abs(target_setpoint - current) <= self.setpoint_deadband
         ):
             return
@@ -1253,10 +1264,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Apply setpoint (only when not OFF)
         if self.control_mode != MODE_OFF:
-            await self._apply_setpoint(setpoint)
+            await self._apply_setpoint(setpoint, action=action)
         elif self._last_applied_setpoint != self.idle_setpoint:
             # When turning off, reset to idle
-            await self._apply_setpoint(self.idle_setpoint)
+            await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE)
 
         # Current price
         epex_state = self.hass.states.get(self._epex_spot_entity)
