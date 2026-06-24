@@ -550,18 +550,22 @@ class ChargePlanSensor(VictronCCBaseSensor):
         plan = []
         for day_str, price_map in [(today_str, price_map_today), (tomorrow_str, price_map_tomorrow)]:
             for hour in range(24):
-                if hour in data.blocked_charging_hours and hour in data.blocked_discharging_hours:
-                    action = "blocked"
-                elif hour in data.blocked_charging_hours:
-                    action = "blocked_charging"
-                elif hour in data.blocked_discharging_hours:
-                    action = "blocked_discharging"
-                elif (day_str, hour) in pv_charge_set:
+                # Per-day actions take precedence over recurring blocks. A
+                # per-day slot for a blocked hour is a user override (the
+                # auto-scheduler skips blocked hours, so the slot can only
+                # have been placed explicitly via set_hour_action).
+                if (day_str, hour) in pv_charge_set:
                     action = "pv_charge"
                 elif (day_str, hour) in charge_set:
                     action = "charge"
                 elif (day_str, hour) in discharge_set:
                     action = "discharge"
+                elif hour in data.blocked_charging_hours and hour in data.blocked_discharging_hours:
+                    action = "blocked"
+                elif hour in data.blocked_charging_hours:
+                    action = "blocked_charging"
+                elif hour in data.blocked_discharging_hours:
+                    action = "blocked_discharging"
                 else:
                     action = "idle"
                 entry = {"date": day_str, "hour": hour, "action": action}
