@@ -558,6 +558,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def set_hour_action(self, hour: int, action: str, date_str: str | None = None) -> None:
         """Set a specific hour to charge, discharge, blocked, or idle.
 
+        The recurring ``blocked_charging_hours`` / ``blocked_discharging_hours``
+        lists are preserved across non-blocked actions so that a per-day
+        override (e.g. picked from the plan card for a blocked bar) only
+        applies to ``(date_str, hour)`` while the same hour on future days
+        stays blocked. To remove the block entirely, use the dedicated
+        ``set_blocked_charging_hours`` / ``set_blocked_discharging_hours``
+        services.
+
         Args:
             hour: Hour of day (0-23).
             action: One of ACTION_CHARGE, ACTION_DISCHARGE, ACTION_BLOCKED, ACTION_IDLE.
@@ -572,13 +580,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         slot: ScheduleSlot = (date_str, hour)
 
-        # Remove from charge/discharge/pv_charge lists (date-specific)
+        # Remove from charge/discharge/pv_charge lists (date-specific).
+        # The recurring blocked_*_hours lists are intentionally left intact
+        # for non-BLOCKED actions; the override lives only in the per-day
+        # slot and the decision engine treats a per-day slot for a blocked
+        # hour as a user override.
         self._charge_hours = [s for s in self._charge_hours if s != slot]
         self._discharge_hours = [s for s in self._discharge_hours if s != slot]
         self._pv_charge_hours = [s for s in self._pv_charge_hours if s != slot]
-        # Remove from blocked lists (recurring)
-        self._blocked_charging_hours = [h for h in self._blocked_charging_hours if h != hour]
-        self._blocked_discharging_hours = [h for h in self._blocked_discharging_hours if h != hour]
 
         # Add to correct list
         if action == ACTION_CHARGE:
@@ -588,8 +597,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         elif action == ACTION_DISCHARGE:
             self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
         elif action == ACTION_BLOCKED:
-            self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
-            self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
+            if hour not in self._blocked_charging_hours:
+                self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
+            if hour not in self._blocked_discharging_hours:
+                self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
         self._last_schedule_update = dt_util.now()
         self.hass.async_create_task(self.async_request_refresh())
 
@@ -976,11 +987,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             ):
                 return ACTION_PV_CHARGE
             if current_slot in self._charge_hours and self.charge_allowed and not self._charge_blocked_by_soc:
-                if hour not in self._blocked_charging_hours:
-                    return ACTION_CHARGE
+                # A per-day charge slot for a blocked hour is a user override
+                # (set_hour_action leaves blocked_charging_hours intact and
+                # the auto-scheduler skips blocked hours, so the slot can
+                # only have been placed explicitly). Honor it.
+                return ACTION_CHARGE
             if current_slot in self._discharge_hours and self.discharge_allowed and not self._discharge_blocked_by_soc:
-                if hour not in self._blocked_discharging_hours:
-                    return ACTION_DISCHARGE
+                return ACTION_DISCHARGE
             return ACTION_IDLE
 
         # Priority 5: Fallback

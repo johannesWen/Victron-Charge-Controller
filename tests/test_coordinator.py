@@ -248,6 +248,47 @@ class TestSetHourAction:
         coordinator.set_hour_action(25, ACTION_CHARGE, "2026-05-02")
         assert coordinator.charge_hours == []
 
+    def test_set_charge_preserves_blocked_lists(self, coordinator):
+        # Setting a non-blocked action must not remove the hour from the
+        # recurring blocked lists — only ACTION_BLOCKED does that.
+        coordinator._blocked_charging_hours = [5]
+        coordinator._blocked_discharging_hours = [5]
+        coordinator.set_hour_action(5, ACTION_CHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) in coordinator.charge_hours
+        assert 5 in coordinator.blocked_charging_hours
+        assert 5 in coordinator.blocked_discharging_hours
+
+    def test_set_discharge_preserves_blocked_lists(self, coordinator):
+        coordinator._blocked_charging_hours = [5]
+        coordinator._blocked_discharging_hours = [5]
+        coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) in coordinator.discharge_hours
+        assert 5 in coordinator.blocked_charging_hours
+        assert 5 in coordinator.blocked_discharging_hours
+
+    def test_set_pv_charge_preserves_blocked_lists(self, coordinator):
+        coordinator._blocked_charging_hours = [5]
+        coordinator._blocked_discharging_hours = [5]
+        coordinator.set_hour_action(5, ACTION_PV_CHARGE, "2026-05-02")
+        assert ("2026-05-02", 5) in coordinator.pv_charge_hours
+        assert 5 in coordinator.blocked_charging_hours
+        assert 5 in coordinator.blocked_discharging_hours
+
+    def test_set_idle_preserves_blocked_lists(self, coordinator):
+        coordinator._blocked_charging_hours = [5]
+        coordinator._blocked_discharging_hours = [5]
+        coordinator.set_hour_action(5, ACTION_IDLE, "2026-05-02")
+        assert 5 in coordinator.blocked_charging_hours
+        assert 5 in coordinator.blocked_discharging_hours
+
+    def test_set_blocked_is_idempotent(self, coordinator):
+        # Re-blocking an already-blocked hour must not duplicate entries.
+        coordinator._blocked_charging_hours = [5]
+        coordinator._blocked_discharging_hours = [5]
+        coordinator.set_hour_action(5, ACTION_BLOCKED, "2026-05-02")
+        assert coordinator.blocked_charging_hours == [5]
+        assert coordinator.blocked_discharging_hours == [5]
+
 
 # ======================================================================
 # EPEX data extraction
@@ -575,22 +616,55 @@ class TestDetermineAction:
         assert coordinator._determine_action() == ACTION_IDLE
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
-    def test_blocked_charging_hour_returns_idle(self, mock_dt_util, coordinator):
+    def test_blocked_charging_hour_without_override_returns_idle(self, mock_dt_util, coordinator):
         coordinator.control_mode = MODE_AUTO
         coordinator.charge_allowed = True
-        coordinator._charge_hours = [("2026-04-28", 3)]
         coordinator._blocked_charging_hours = [3]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_IDLE
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
-    def test_blocked_discharging_hour_returns_idle(self, mock_dt_util, coordinator):
+    def test_blocked_discharging_hour_without_override_returns_idle(self, mock_dt_util, coordinator):
         coordinator.control_mode = MODE_AUTO
         coordinator.discharge_allowed = True
+        coordinator._blocked_discharging_hours = [20]
+        mock_dt_util.now.return_value = datetime(2026, 4, 28, 20, 15, tzinfo=timezone.utc)
+        self._set_soc(coordinator, 50.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_blocked_charging_hour_with_charge_override_returns_charge(self, mock_dt_util, coordinator):
+        """A per-day charge slot for a blocked hour is a user override and
+        must be honored by the decision engine."""
+        coordinator.control_mode = MODE_AUTO
+        coordinator.charge_allowed = True
+        coordinator.max_soc = 95.0
+        coordinator._charge_hours = [("2026-04-28", 3)]
+        coordinator._blocked_charging_hours = [3]
+        mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
+        self._set_soc(coordinator, 50.0)
+        assert coordinator._determine_action() == ACTION_CHARGE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_blocked_discharging_hour_with_discharge_override_returns_discharge(self, mock_dt_util, coordinator):
+        coordinator.control_mode = MODE_AUTO
+        coordinator.discharge_allowed = True
+        coordinator.min_soc = 10.0
         coordinator._discharge_hours = [("2026-04-28", 20)]
         coordinator._blocked_discharging_hours = [20]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 20, 15, tzinfo=timezone.utc)
+        self._set_soc(coordinator, 50.0)
+        assert coordinator._determine_action() == ACTION_DISCHARGE
+
+    @patch("custom_components.victron_charge_control.coordinator.dt_util")
+    def test_blocked_both_hours_with_no_override_returns_idle(self, mock_dt_util, coordinator):
+        coordinator.control_mode = MODE_AUTO
+        coordinator.charge_allowed = True
+        coordinator.discharge_allowed = True
+        coordinator._blocked_charging_hours = [10]
+        coordinator._blocked_discharging_hours = [10]
+        mock_dt_util.now.return_value = datetime(2026, 4, 28, 10, 0, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_IDLE
 
