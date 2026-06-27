@@ -22,7 +22,9 @@ from .const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
+    DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
 )
 
@@ -152,15 +154,36 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
             errors = _validate_entities(self.hass, user_input)
 
             if not errors:
-                # Update the config entry data with new values
+                # Update the config entry data with new values. The grace
+                # period is a user-tunable option, not an entity reference,
+                # so it must NOT be written into entry.data — keep data
+                # strictly limited to entity selectors.
+                data_update = {
+                    key: value
+                    for key, value in user_input.items()
+                    if key != CONF_SAFETY_STARTUP_GRACE_SECONDS
+                }
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
-                    data=_clean_entity_data({**self._config_entry.data, **user_input}),
+                    data=_clean_entity_data({**self._config_entry.data, **data_update}),
                 )
-                return self.async_create_entry(title="", data={})
+                # Options (e.g. grace period) are returned via async_create_entry
+                # so they land in entry.options rather than entry.data.
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        CONF_SAFETY_STARTUP_GRACE_SECONDS: int(
+                            user_input.get(
+                                CONF_SAFETY_STARTUP_GRACE_SECONDS,
+                                DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+                            )
+                        ),
+                    },
+                )
 
         # Pre-fill with current values
         current = self._config_entry.data
+        current_options = self._config_entry.options
         schema = vol.Schema(
             {
                 vol.Required(
@@ -204,6 +227,21 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     default=current.get(CONF_SOLAR_SURPLUS_ENTITY, ""),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="power"),
+                ),
+                vol.Optional(
+                    CONF_SAFETY_STARTUP_GRACE_SECONDS,
+                    default=current_options.get(
+                        CONF_SAFETY_STARTUP_GRACE_SECONDS,
+                        DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0,
+                        max=600,
+                        step=10,
+                        unit_of_measurement="s",
+                        mode=selector.NumberSelectorMode.BOX,
+                    ),
                 ),
             }
         )
