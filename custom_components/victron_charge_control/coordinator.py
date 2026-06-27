@@ -250,6 +250,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}.{entry.entry_id}"
         )
         self._schedule_loaded_from_store: bool = False
+        # ``_suspend_save`` blocks fire-and-forget Store writes for the
+        # entire ``async_setup`` window. Without it, the three text
+        # entities (``BlockedChargingHoursText``,
+        # ``BlockedDischargingHoursText``, ``ReplanHoursText``) call
+        # their setters from ``async_added_to_hass`` during
+        # ``forward_entry_setups`` and schedule a save. The first
+        # ``await`` inside ``async_setup`` then lets the event loop run
+        # those pending saves — which write the (still empty) charge
+        # / discharge / pv_charge slots to the Store, overwriting the
+        # user's persisted plan before ``_async_load_schedule`` ever
+        # gets to read it. The flag is cleared at the very end of
+        # ``async_setup`` so the first real user mutation after startup
+        # is persisted.
+        self._suspend_save: bool = True
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -750,7 +764,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         Used by the public mutators (``set_charge_hours``,
         ``toggle_hour``, ...) so the call site stays sync and the
         disk write does not block the caller.
+
+        No-op while ``_suspend_save`` is True (the entire
+        ``async_setup`` window). This is what prevents the text
+        entities' ``async_added_to_hass`` from clobbering the
+        persisted plan during HA startup — see the comment on the
+        ``_suspend_save`` attribute in ``__init__``.
         """
+        if self._suspend_save:
+            return
         self.hass.async_create_task(self._async_save_schedule())
 
     async def _async_load_schedule(self) -> None:
@@ -1630,9 +1652,24 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Assistant restart. The user can still trigger a fresh plan via
         # the **Recalculate Schedule** button or by waiting for the next
         # configured replan hour.
+        #
+        # The load is the very first ``await`` in this method on
+        # purpose: it runs before any other code that could yield, and
+        # combined with ``_suspend_save`` (still True at this point) it
+        # guarantees the text entities' ``async_added_to_hass``
+        # restore-setters, which ran earlier during
+        # ``forward_entry_setups``, did not write a stale empty plan
+        # over the user's persisted one.
         await self._async_load_schedule()
 
         await self.async_request_refresh()
+
+        # From this point on, public mutators are allowed to write to
+        # the Store again. Set last so a race between any
+        # ``hass.async_create_task`` save scheduled during
+        # ``forward_entry_setups`` and the load above cannot clobber
+        # the restored state.
+        self._suspend_save = False
 
     async def async_shutdown(self) -> None:
         """Remove all listeners."""

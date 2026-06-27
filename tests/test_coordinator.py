@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2034,8 +2035,8 @@ class TestPlanPersistenceSave:
         # In sync test contexts the helper returns a MagicMock and the
         # coroutine is never awaited, so we drive the save directly.
         await coordinator._async_save_schedule()
-        mock_store.async_save.assert_awaited()
-        payload = mock_store.async_save.await_args.args[0]
+        assert len(mock_store.save_calls) == 1
+        payload = mock_store.save_calls[-1]
         assert payload["charge_hours"] == [["2026-05-02", 1], ["2026-05-02", 3]]
         assert payload["discharge_hours"] == []
         assert payload["pv_charge_hours"] == []
@@ -2047,15 +2048,15 @@ class TestPlanPersistenceSave:
     async def test_set_discharge_hours_writes_store(self, coordinator, mock_store):
         coordinator.set_discharge_hours([("2026-05-02", 20)])
         await coordinator._async_save_schedule()
-        mock_store.async_save.assert_awaited()
-        payload = mock_store.async_save.await_args.args[0]
+        assert len(mock_store.save_calls) == 1
+        payload = mock_store.save_calls[-1]
         assert payload["discharge_hours"] == [["2026-05-02", 20]]
 
     @pytest.mark.asyncio
     async def test_set_blocked_charging_hours_writes_store(self, coordinator, mock_store):
         coordinator.set_blocked_charging_hours([18, 19, 20])
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert payload["blocked_charging_hours"] == [18, 19, 20]
         assert payload["blocked_discharging_hours"] == []
 
@@ -2063,28 +2064,28 @@ class TestPlanPersistenceSave:
     async def test_set_blocked_discharging_hours_writes_store(self, coordinator, mock_store):
         coordinator.set_blocked_discharging_hours([15, 16])
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert payload["blocked_discharging_hours"] == [15, 16]
 
     @pytest.mark.asyncio
     async def test_toggle_hour_writes_store(self, coordinator, mock_store):
         coordinator.toggle_hour(5, "2026-05-02")
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert payload["charge_hours"] == [["2026-05-02", 5]]
 
     @pytest.mark.asyncio
     async def test_set_hour_action_pv_charge_writes_store(self, coordinator, mock_store):
         coordinator.set_hour_action(7, ACTION_PV_CHARGE, "2026-05-02")
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert payload["pv_charge_hours"] == [["2026-05-02", 7]]
 
     @pytest.mark.asyncio
     async def test_set_hour_action_blocked_writes_store(self, coordinator, mock_store):
         coordinator.set_hour_action(8, ACTION_BLOCKED, "2026-05-02")
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert payload["blocked_charging_hours"] == [8]
         assert payload["blocked_discharging_hours"] == [8]
 
@@ -2097,7 +2098,7 @@ class TestPlanPersistenceSave:
         coordinator._blocked_discharging_hours = [15]
         coordinator.clear_schedule()
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert payload["charge_hours"] == []
         assert payload["discharge_hours"] == []
         assert payload["pv_charge_hours"] == []
@@ -2146,8 +2147,8 @@ class TestPlanPersistenceSave:
 
         await coordinator._async_save_schedule()
 
-        mock_store.async_save.assert_awaited()
-        payload = mock_store.async_save.await_args.args[0]
+        assert len(mock_store.save_calls) == 1
+        payload = mock_store.save_calls[-1]
         # Cheapest 2 hours: 0 and 1
         assert ["2026-04-28", 0] in payload["charge_hours"]
         assert ["2026-04-28", 1] in payload["charge_hours"]
@@ -2158,7 +2159,9 @@ class TestPlanPersistenceSave:
     @pytest.mark.asyncio
     async def test_save_failure_does_not_raise(self, coordinator, mock_store):
         """A failing Store must not propagate to the caller."""
-        mock_store.async_save.side_effect = OSError("disk full")
+        async def boom(_data):
+            raise OSError("disk full")
+        mock_store.async_save = boom
         # _async_save_schedule swallows exceptions and only logs a warning.
         await coordinator._async_save_schedule()  # must not raise
 
@@ -2172,7 +2175,7 @@ class TestPlanPersistenceSave:
 
         coordinator._last_schedule_update = dt_util.now()
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert isinstance(payload["last_schedule_update"], str)
         # ISO 8601 with timezone offset
         assert "T" in payload["last_schedule_update"]
@@ -2181,7 +2184,7 @@ class TestPlanPersistenceSave:
     async def test_save_serializes_none_timestamp(self, coordinator, mock_store):
         coordinator._last_schedule_update = None
         await coordinator._async_save_schedule()
-        payload = mock_store.async_save.await_args.args[0]
+        payload = mock_store.save_calls[-1]
         assert payload["last_schedule_update"] is None
 
 
@@ -2448,7 +2451,7 @@ class TestAsyncSetupPersistsAfterRestoreEntity:
             VictronChargeControlCoordinator,
         )
 
-        mock_store.async_load = AsyncMock(return_value=None)
+        mock_store._data = None
         coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
         coord._blocked_charging_hours = [18]
         coord.async_request_refresh = AsyncMock()
@@ -2460,10 +2463,182 @@ class TestAsyncSetupPersistsAfterRestoreEntity:
         ):
             await coord.async_setup()
 
-        # First mutation
+        # First mutation. The save is fire-and-forget; in async test
+        # contexts ``hass.async_create_task`` schedules the coroutine on
+        # the loop and the test must drive it to completion
+        # deterministically.
         coord.set_blocked_charging_hours([18, 19, 20, 21])
         await coord._async_save_schedule()
 
-        mock_store.async_save.assert_awaited()
-        payload = mock_store.async_save.await_args.args[0]
+        assert len(mock_store.save_calls) == 1
+        payload = mock_store.save_calls[-1]
         assert payload["blocked_charging_hours"] == [18, 19, 20, 21]
+
+
+class TestSetupRaceWithTextEntityRestore:
+    """Reproduces the bug where the text entities' ``async_added_to_hass``
+    call setters that trigger Store saves, and those saves run before
+    ``async_setup`` ever loads from the Store — wiping the persisted
+    plan with empty charge/discharge slots.
+
+    Real flow on HA restart:
+      1. Coordinator is created (in-memory state empty).
+      2. ``forward_entry_setups`` runs — for each ``TextEntity`` HA calls
+         ``async_added_to_hass``, which calls e.g.
+         ``coordinator.set_blocked_charging_hours(...)``.
+      3. That setter schedules a fire-and-forget save via
+         ``hass.async_create_task(self._async_save_schedule())``.
+      4. ``async_setup`` runs and ``await``s
+         ``_async_load_schedule()``. The very first ``await`` in
+         ``async_setup`` lets the event loop run the pending save
+         coroutine, which writes the (empty charge_hours + restored
+         blocked_hours) state to the Store.
+      5. ``_async_load_schedule`` then reads the Store and gets the
+         empty plan that the text-entity save just wrote.
+
+    The fix is to suspend saves during setup so step 3 is a no-op.
+    """
+
+    @pytest.mark.asyncio
+    async def test_text_entity_setter_during_setup_does_not_clobber_store(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        # Pre-populated Store with a real plan that must survive restart
+        mock_store._data = {
+            "charge_hours": [["2026-05-02", 1], ["2026-05-02", 2]],
+            "discharge_hours": [["2026-05-02", 20]],
+            "pv_charge_hours": [["2026-05-02", 12]],
+            "blocked_charging_hours": [18, 19, 20],
+            "blocked_discharging_hours": [15, 16],
+            "last_schedule_update": None,
+        }
+
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.async_request_refresh = AsyncMock()
+
+        # Simulate the three text entities restoring their values via
+        # setters — this is exactly what happens during
+        # ``forward_entry_setups`` in real HA. Each setter schedules a
+        # fire-and-forget save (which the conftest records so we can
+        # drain it and observe the result).
+        coord.set_blocked_charging_hours([18, 19, 20])
+        coord.set_blocked_discharging_hours([15, 16])
+        coord.set_replan_hours([18])
+
+        # Drain the scheduled saves to faithfully reproduce the in-HA
+        # event-loop yield between ``forward_entry_setups`` and
+        # ``async_setup`` — in real HA the pending save coroutines run
+        # here, and without the fix they write the (still empty)
+        # charge/discharge/pv_charge slots to the Store, clobbering
+        # the persisted plan.
+        if mock_hass._scheduled_tasks:
+            await asyncio.gather(*mock_hass._scheduled_tasks, return_exceptions=True)
+
+        # With the fix in place, the suppression means the saves were
+        # never scheduled and the Store still has the pre-populated
+        # plan. Without the fix, the Store was just overwritten with
+        # empty slots — which is exactly the bug.
+        assert mock_store._data["charge_hours"] == [
+            ["2026-05-02", 1],
+            ["2026-05-02", 2],
+        ], (
+            "Text-entity restore clobbered the persisted plan with "
+            "empty charge_hours — the suspension is not in place."
+        )
+        assert mock_store._data["discharge_hours"] == [["2026-05-02", 20]]
+        assert mock_store._data["pv_charge_hours"] == [["2026-05-02", 12]]
+
+        # Now run async_setup — this loads the plan from the Store and
+        # must restore every slot exactly.
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        assert coord._charge_hours == [("2026-05-02", 1), ("2026-05-02", 2)]
+        assert coord._discharge_hours == [("2026-05-02", 20)]
+        assert coord._pv_charge_hours == [("2026-05-02", 12)]
+        assert coord._blocked_charging_hours == [18, 19, 20]
+        assert coord._blocked_discharging_hours == [15, 16]
+        assert coord._schedule_loaded_from_store is True
+
+    @pytest.mark.asyncio
+    async def test_saves_are_re_enabled_after_setup(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        """The suppression must be cleared by the end of ``async_setup``,
+        so the first real user mutation after startup is persisted.
+        """
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        mock_store._data = None
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.async_request_refresh = AsyncMock()
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        assert coord._suspend_save is False
+
+        # First real user action. The save is fire-and-forget; in
+        # async test contexts ``hass.async_create_task`` schedules the
+        # coroutine on the loop and the test must yield once for it to
+        # run.
+        coord.set_charge_hours([("2026-05-02", 5)])
+        # Drive the save synchronously so the assertion is
+        # deterministic without depending on event-loop scheduling.
+        await coord._async_save_schedule()
+        assert len(mock_store.save_calls) == 1
+        assert mock_store.save_calls[-1]["charge_hours"] == [["2026-05-02", 5]]
+
+    @pytest.mark.asyncio
+    async def test_saves_suspended_during_setup_no_user_path(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        """End-to-end: nothing written to the Store while setup runs,
+        even if every text entity fires its restore setter. The test
+        drains the scheduled save coroutines so the assertion actually
+        observes what would happen in real HA.
+        """
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        mock_store._data = None
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.async_request_refresh = AsyncMock()
+
+        # Simulate text entities' restore
+        coord.set_blocked_charging_hours([18, 19, 20, 21, 22, 23])
+        coord.set_blocked_discharging_hours([15, 16, 17])
+        coord.set_replan_hours([18])
+        # Drain pending saves so we can assert on the actual outcome
+        # (without the fix the Store would be written to here).
+        if mock_hass._scheduled_tasks:
+            await asyncio.gather(
+                *mock_hass._scheduled_tasks, return_exceptions=True
+            )
+        # No save may have happened — all those calls are suppressed.
+        assert len(mock_store.save_calls) == 0
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        # Still no save during setup itself
+        assert len(mock_store.save_calls) == 0
