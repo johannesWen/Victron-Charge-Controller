@@ -20,6 +20,7 @@ from custom_components.victron_charge_control.const import (
     DEFAULT_CHARGE_POWER,
     DEFAULT_MIN_SOC,
     DEFAULT_PV_CHARGE_SHARE,
+    DEFAULT_REPLAN_HOURS,
     DOMAIN,
     MODE_AUTO,
     MODE_OFF,
@@ -47,6 +48,7 @@ from custom_components.victron_charge_control.button import RecalculateScheduleB
 from custom_components.victron_charge_control.text import (
     BlockedChargingHoursText,
     BlockedDischargingHoursText,
+    ReplanHoursText,
     _parse_hours,
     _format_hours,
 )
@@ -637,3 +639,160 @@ class TestBlockedDischargingHoursText:
         await text.async_set_value("7, 8")
 
         assert coordinator.blocked_discharging_hours == [7, 8]
+
+
+class TestReplanHoursText:
+    """Tests for ReplanHoursText entity."""
+
+    def test_native_value(self, coordinator):
+        entry = MockConfigEntry()
+        coordinator._replan_hours = [18]
+        text = ReplanHoursText(coordinator, entry)
+        assert text.native_value == "18"
+
+    @pytest.mark.asyncio
+    async def test_set_value(self, coordinator):
+        entry = MockConfigEntry()
+        text = ReplanHoursText(coordinator, entry)
+        text.async_write_ha_state = MagicMock()
+
+        await text.async_set_value("6, 18")
+
+        assert coordinator.replan_hours == [6, 18]
+
+
+def _last_state(state: str | None):
+    """Build a minimal async-get-last-state return value."""
+    return SimpleNamespace(state=state)
+
+
+class TestHoursRestoreLogic:
+    """Tests for async_added_to_hass restore behaviour.
+
+    These cover the bug where clearing every blocked hour (which persists
+    state == "") was indistinguishable from "no saved state", so the
+    coordinator was reset to the hardcoded defaults on every restart.
+    """
+
+    @pytest.mark.asyncio
+    async def test_blocked_charging_no_last_state_uses_defaults(self, coordinator):
+        entry = MockConfigEntry()
+        text = BlockedChargingHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=None)
+        coordinator.set_blocked_charging_hours = MagicMock(wraps=coordinator.set_blocked_charging_hours)
+
+        await text.async_added_to_hass()
+
+        coordinator.set_blocked_charging_hours.assert_called_once_with(
+            list(DEFAULT_BLOCKED_CHARGING_HOURS)
+        )
+
+    @pytest.mark.asyncio
+    async def test_blocked_charging_empty_state_preserves_empty_list(self, coordinator):
+        """The bug: empty string used to be conflated with no saved state."""
+        entry = MockConfigEntry()
+        text = BlockedChargingHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=_last_state(""))
+        coordinator.set_blocked_charging_hours = MagicMock(wraps=coordinator.set_blocked_charging_hours)
+
+        await text.async_added_to_hass()
+
+        coordinator.set_blocked_charging_hours.assert_called_once_with([])
+
+    @pytest.mark.asyncio
+    async def test_blocked_charging_unavailable_state_uses_defaults(self, coordinator):
+        entry = MockConfigEntry()
+        text = BlockedChargingHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=_last_state("unavailable"))
+        coordinator.set_blocked_charging_hours = MagicMock(wraps=coordinator.set_blocked_charging_hours)
+
+        await text.async_added_to_hass()
+
+        coordinator.set_blocked_charging_hours.assert_called_once_with(
+            list(DEFAULT_BLOCKED_CHARGING_HOURS)
+        )
+
+    @pytest.mark.asyncio
+    async def test_blocked_charging_explicit_value_restored(self, coordinator):
+        entry = MockConfigEntry()
+        text = BlockedChargingHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=_last_state("18, 19, 20"))
+        coordinator.set_blocked_charging_hours = MagicMock(wraps=coordinator.set_blocked_charging_hours)
+
+        await text.async_added_to_hass()
+
+        coordinator.set_blocked_charging_hours.assert_called_once_with([18, 19, 20])
+
+    @pytest.mark.asyncio
+    async def test_blocked_discharging_no_last_state_uses_defaults(self, coordinator):
+        entry = MockConfigEntry()
+        text = BlockedDischargingHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=None)
+        coordinator.set_blocked_discharging_hours = MagicMock(
+            wraps=coordinator.set_blocked_discharging_hours
+        )
+
+        await text.async_added_to_hass()
+
+        coordinator.set_blocked_discharging_hours.assert_called_once_with(
+            list(DEFAULT_BLOCKED_DISCHARGING_HOURS)
+        )
+
+    @pytest.mark.asyncio
+    async def test_blocked_discharging_empty_state_preserves_empty_list(self, coordinator):
+        entry = MockConfigEntry()
+        text = BlockedDischargingHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=_last_state(""))
+        coordinator.set_blocked_discharging_hours = MagicMock(
+            wraps=coordinator.set_blocked_discharging_hours
+        )
+
+        await text.async_added_to_hass()
+
+        coordinator.set_blocked_discharging_hours.assert_called_once_with([])
+
+    @pytest.mark.asyncio
+    async def test_blocked_discharging_explicit_value_restored(self, coordinator):
+        entry = MockConfigEntry()
+        text = BlockedDischargingHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=_last_state("7, 8"))
+        coordinator.set_blocked_discharging_hours = MagicMock(
+            wraps=coordinator.set_blocked_discharging_hours
+        )
+
+        await text.async_added_to_hass()
+
+        coordinator.set_blocked_discharging_hours.assert_called_once_with([7, 8])
+
+    @pytest.mark.asyncio
+    async def test_replan_no_last_state_uses_defaults(self, coordinator):
+        entry = MockConfigEntry()
+        text = ReplanHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=None)
+        coordinator.set_replan_hours = MagicMock(wraps=coordinator.set_replan_hours)
+
+        await text.async_added_to_hass()
+
+        coordinator.set_replan_hours.assert_called_once_with(list(DEFAULT_REPLAN_HOURS))
+
+    @pytest.mark.asyncio
+    async def test_replan_empty_state_preserves_empty_list(self, coordinator):
+        entry = MockConfigEntry()
+        text = ReplanHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=_last_state(""))
+        coordinator.set_replan_hours = MagicMock(wraps=coordinator.set_replan_hours)
+
+        await text.async_added_to_hass()
+
+        coordinator.set_replan_hours.assert_called_once_with([])
+
+    @pytest.mark.asyncio
+    async def test_replan_explicit_value_restored(self, coordinator):
+        entry = MockConfigEntry()
+        text = ReplanHoursText(coordinator, entry)
+        text.async_get_last_state = AsyncMock(return_value=_last_state("6, 22"))
+        coordinator.set_replan_hours = MagicMock(wraps=coordinator.set_replan_hours)
+
+        await text.async_added_to_hass()
+
+        coordinator.set_replan_hours.assert_called_once_with([6, 22])

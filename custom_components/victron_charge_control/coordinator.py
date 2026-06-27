@@ -33,6 +33,7 @@ from .const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_ACTION_CONFIRM_SECONDS,
     DEFAULT_CHARGE_POWER,
@@ -52,6 +53,7 @@ from .const import (
     DEFAULT_PV_CHARGE_SHARE,
     DEFAULT_REDUCED_GRID_FEED_IN,
     DEFAULT_REPLAN_HOURS,
+    DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
     EPEX_ATTR_DATA,
@@ -210,6 +212,26 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._last_published_action: str | None = None
         self._pending_action: str | None = None
         self._pending_action_since: datetime | None = None
+
+        # --- Safety watchdog startup grace period ---
+        # On HA startup the first coordinator refresh typically runs before
+        # the upstream Victron / EPEX integrations have published a real
+        # state. Without a grace window the safety watchdog would see
+        # ``"unavailable"`` and spuriously switch the system to OFF on
+        # every restart. The deadline is cleared early on the first tick
+        # where all critical entities report a real state, so a healthy
+        # startup exits the grace period almost immediately. The grace
+        # period length is user-configurable via the options flow.
+        grace_seconds: int = int(
+            entry.options.get(
+                CONF_SAFETY_STARTUP_GRACE_SECONDS,
+                DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+            )
+        )
+        self.safety_startup_grace_seconds: int = grace_seconds
+        self._safety_startup_deadline: datetime | None = (
+            dt_util.now() + timedelta(seconds=grace_seconds)
+        ) if grace_seconds > 0 else None
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -1236,11 +1258,28 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._sample_solar_surplus()
 
         # Safety check
-        if self.control_mode != MODE_OFF and not self._check_safety():
+        now = dt_util.now()
+        in_startup_grace = (
+            self._safety_startup_deadline is not None
+            and now < self._safety_startup_deadline
+        )
+        safe = self._check_safety()
+        if safe and self._safety_startup_deadline is not None:
+            # First tick with all critical entities reporting a real state
+            # ends the grace period early — the watchdog becomes fully
+            # active for the rest of the run.
+            self._safety_startup_deadline = None
+            _LOGGER.debug("Safety watchdog startup grace period cleared after first safe tick")
+        if (
+            self.control_mode != MODE_OFF
+            and not safe
+            and not in_startup_grace
+        ):
             _LOGGER.warning(
                 "Safety watchdog: critical entity unavailable — switching to OFF"
             )
             self.control_mode = MODE_OFF
+            self._safety_startup_deadline = None
             await self.hass.services.async_call(
                 "persistent_notification",
                 "create",
@@ -1250,6 +1289,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     "notification_id": "victron_cc_safety_stop",
                 },
                 blocking=False,
+            )
+        elif not safe and in_startup_grace:
+            remaining = (self._safety_startup_deadline - now).total_seconds()
+            _LOGGER.debug(
+                "Safety watchdog: critical entity unavailable during startup "
+                "grace (%.0fs remaining) — tolerating",
+                remaining,
             )
 
         # Decision engine
@@ -1424,3 +1470,4 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         for unsub in self._unsub_listeners:
             unsub()
         self._unsub_listeners.clear()
+        self._safety_startup_deadline = None

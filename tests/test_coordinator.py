@@ -13,6 +13,7 @@ from custom_components.victron_charge_control.const import (
     ACTION_DISCHARGE,
     ACTION_IDLE,
     ACTION_PV_CHARGE,
+    CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_CHARGE_POWER,
     DEFAULT_DEADBAND,
@@ -21,6 +22,7 @@ from custom_components.victron_charge_control.const import (
     DEFAULT_MAX_GRID_SETPOINT,
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_PV_CHARGE_SHARE,
+    DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     MODE_AUTO,
     MODE_FORCE_CHARGE,
     MODE_FORCE_DISCHARGE,
@@ -1584,6 +1586,153 @@ class TestSafetyWatchdog:
         """If entity doesn't exist (None), it's not marked unavailable."""
         coordinator.hass.states.get.return_value = None
         assert coordinator._check_safety() is True
+
+
+class TestSafetyStartupGrace:
+    """Tests for the safety watchdog startup grace period.
+
+    Covers the bug where the watchdog would spuriously switch the system
+    to OFF on every Home Assistant restart because the first coordinator
+    refresh typically runs before upstream Victron / EPEX integrations
+    have published a real state.
+    """
+
+    @pytest.mark.asyncio
+    async def test_grace_period_initialised_in_constructor(self, mock_hass, mock_config_entry):
+        """Coordinator starts with a future grace deadline equal to grace_seconds."""
+        mock_config_entry.options = {CONF_SAFETY_STARTUP_GRACE_SECONDS: 60}
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.async_request_refresh = MagicMock()
+
+        assert coord.safety_startup_grace_seconds == 60
+        assert coord._safety_startup_deadline is not None
+
+        from custom_components.victron_charge_control.coordinator import dt_util
+        remaining = (coord._safety_startup_deadline - dt_util.now()).total_seconds()
+        assert 55 <= remaining <= 61
+
+    @pytest.mark.asyncio
+    async def test_grace_period_default_when_option_missing(self, mock_hass, mock_config_entry):
+        mock_config_entry.options = {}
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+
+        assert coord.safety_startup_grace_seconds == DEFAULT_SAFETY_STARTUP_GRACE_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_grace_period_zero_disables_grace(self, mock_hass, mock_config_entry):
+        mock_config_entry.options = {CONF_SAFETY_STARTUP_GRACE_SECONDS: 0}
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+
+        assert coord.safety_startup_grace_seconds == 0
+        assert coord._safety_startup_deadline is None
+
+    @pytest.mark.asyncio
+    async def test_first_safe_tick_clears_grace_deadline(self, coordinator):
+        """A safe tick exits the grace period early."""
+        from custom_components.victron_charge_control.coordinator import dt_util
+        coordinator._safety_startup_deadline = dt_util.now() + timedelta(seconds=60)
+        coordinator.hass.states.get.return_value = MockState("50")
+        coordinator.control_mode = MODE_AUTO
+        coordinator.async_request_refresh = MagicMock()
+        coordinator.hass.services.async_call = AsyncMock()
+
+        await coordinator._async_update_data()
+
+        assert coordinator._safety_startup_deadline is None
+        assert coordinator.control_mode == MODE_AUTO
+        # No persistent notification was raised
+        notification_calls = [
+            c
+            for c in coordinator.hass.services.async_call.call_args_list
+            if c.args and c.args[0] == "persistent_notification"
+        ]
+        assert notification_calls == []
+
+    @pytest.mark.asyncio
+    async def test_unavailable_during_grace_does_not_switch_off(self, coordinator):
+        """Unavailable critical entities are tolerated while the grace is active."""
+        from custom_components.victron_charge_control.coordinator import dt_util
+        coordinator._safety_startup_deadline = dt_util.now() + timedelta(seconds=60)
+        coordinator.control_mode = MODE_AUTO
+
+        def side_effect(entity_id):
+            if entity_id == "sensor.battery_soc":
+                return MockState("unavailable")
+            return MockState("50")
+
+        coordinator.hass.states.get.side_effect = side_effect
+        coordinator.async_request_refresh = MagicMock()
+        coordinator.hass.services.async_call = AsyncMock()
+
+        await coordinator._async_update_data()
+
+        assert coordinator.control_mode == MODE_AUTO
+        # Grace deadline was NOT cleared, so the watchdog stays in grace
+        assert coordinator._safety_startup_deadline is not None
+        # No persistent notification was raised
+        notification_calls = [
+            c
+            for c in coordinator.hass.services.async_call.call_args_list
+            if c.args and c.args[0] == "persistent_notification"
+        ]
+        assert notification_calls == []
+
+    @pytest.mark.asyncio
+    async def test_unavailable_after_grace_still_switches_off(self, coordinator):
+        """Once the grace period has elapsed, unavailable entities trip the watchdog."""
+        from custom_components.victron_charge_control.coordinator import dt_util
+        coordinator._safety_startup_deadline = dt_util.now() - timedelta(seconds=1)
+        coordinator.control_mode = MODE_AUTO
+
+        def side_effect(entity_id):
+            if entity_id == "sensor.battery_soc":
+                return MockState("unavailable")
+            return MockState("50")
+
+        coordinator.hass.states.get.side_effect = side_effect
+        coordinator.async_request_refresh = MagicMock()
+        coordinator.hass.services.async_call = AsyncMock()
+
+        await coordinator._async_update_data()
+
+        assert coordinator.control_mode == MODE_OFF
+        # Grace deadline was cleared by the OFF switch
+        assert coordinator._safety_startup_deadline is None
+        # Persistent notification was created
+        notification_calls = [
+            c
+            for c in coordinator.hass.services.async_call.call_args_list
+            if c.args and c.args[0] == "persistent_notification"
+        ]
+        assert len(notification_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_grace_zero_trips_watchdog_immediately(self, coordinator):
+        """A configured grace of 0 disables the grace window entirely."""
+        from custom_components.victron_charge_control.coordinator import dt_util
+        coordinator._safety_startup_deadline = None
+        coordinator.control_mode = MODE_AUTO
+
+        def side_effect(entity_id):
+            if entity_id == "sensor.battery_soc":
+                return MockState("unavailable")
+            return MockState("50")
+
+        coordinator.hass.states.get.side_effect = side_effect
+        coordinator.async_request_refresh = MagicMock()
+        coordinator.hass.services.async_call = AsyncMock()
+
+        await coordinator._async_update_data()
+
+        assert coordinator.control_mode == MODE_OFF
+
+    @pytest.mark.asyncio
+    async def test_shutdown_clears_grace_deadline(self, coordinator):
+        coordinator._safety_startup_deadline = MagicMock()  # non-None placeholder
+
+        await coordinator.async_shutdown()
+
+        assert coordinator._safety_startup_deadline is None
 
 
 # ======================================================================

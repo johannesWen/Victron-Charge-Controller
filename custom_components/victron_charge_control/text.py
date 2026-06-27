@@ -96,11 +96,11 @@ class BlockedChargingHoursText(
         """Restore last known value on startup."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state:
+        if last_state is None or last_state.state in ("unknown", "unavailable"):
+            self.coordinator.set_blocked_charging_hours(list(DEFAULT_BLOCKED_CHARGING_HOURS))
+        else:
             hours = _parse_hours(last_state.state)
             self.coordinator.set_blocked_charging_hours(hours)
-        else:
-            self.coordinator.set_blocked_charging_hours(list(DEFAULT_BLOCKED_CHARGING_HOURS))
 
 
 class BlockedDischargingHoursText(
@@ -143,11 +143,11 @@ class BlockedDischargingHoursText(
         """Restore last known value on startup."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state:
+        if last_state is None or last_state.state in ("unknown", "unavailable"):
+            self.coordinator.set_blocked_discharging_hours(list(DEFAULT_BLOCKED_DISCHARGING_HOURS))
+        else:
             hours = _parse_hours(last_state.state)
             self.coordinator.set_blocked_discharging_hours(hours)
-        else:
-            self.coordinator.set_blocked_discharging_hours(list(DEFAULT_BLOCKED_DISCHARGING_HOURS))
 
 
 class ReplanHoursText(
@@ -192,8 +192,8 @@ class ReplanHoursText(
         """Restore last known value on startup."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state:
+        if last_state is None or last_state.state in ("unknown", "unavailable"):
+            self.coordinator.set_replan_hours(list(DEFAULT_REPLAN_HOURS))
+        else:
             hours = _parse_hours(last_state.state)
             self.coordinator.set_replan_hours(hours)
-        else:
-            self.coordinator.set_replan_hours(list(DEFAULT_REPLAN_HOURS))
