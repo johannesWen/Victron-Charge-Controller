@@ -2017,3 +2017,453 @@ class TestReplanHours:
         await coordinator.async_shutdown()
         unsub.assert_called_once()
         assert coordinator._replan_unsub is None
+
+
+# ======================================================================
+# Plan persistence (Store)
+# ======================================================================
+
+
+class TestPlanPersistenceSave:
+    """The Store is written on every plan mutation."""
+
+    @pytest.mark.asyncio
+    async def test_set_charge_hours_writes_store(self, coordinator, mock_store):
+        coordinator.set_charge_hours([("2026-05-02", 3), ("2026-05-02", 1)])
+        # The fire-and-forget save is scheduled via hass.async_create_task.
+        # In sync test contexts the helper returns a MagicMock and the
+        # coroutine is never awaited, so we drive the save directly.
+        await coordinator._async_save_schedule()
+        mock_store.async_save.assert_awaited()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["charge_hours"] == [["2026-05-02", 1], ["2026-05-02", 3]]
+        assert payload["discharge_hours"] == []
+        assert payload["pv_charge_hours"] == []
+        assert payload["blocked_charging_hours"] == []
+        assert payload["blocked_discharging_hours"] == []
+        assert payload["last_schedule_update"] is not None
+
+    @pytest.mark.asyncio
+    async def test_set_discharge_hours_writes_store(self, coordinator, mock_store):
+        coordinator.set_discharge_hours([("2026-05-02", 20)])
+        await coordinator._async_save_schedule()
+        mock_store.async_save.assert_awaited()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["discharge_hours"] == [["2026-05-02", 20]]
+
+    @pytest.mark.asyncio
+    async def test_set_blocked_charging_hours_writes_store(self, coordinator, mock_store):
+        coordinator.set_blocked_charging_hours([18, 19, 20])
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["blocked_charging_hours"] == [18, 19, 20]
+        assert payload["blocked_discharging_hours"] == []
+
+    @pytest.mark.asyncio
+    async def test_set_blocked_discharging_hours_writes_store(self, coordinator, mock_store):
+        coordinator.set_blocked_discharging_hours([15, 16])
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["blocked_discharging_hours"] == [15, 16]
+
+    @pytest.mark.asyncio
+    async def test_toggle_hour_writes_store(self, coordinator, mock_store):
+        coordinator.toggle_hour(5, "2026-05-02")
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["charge_hours"] == [["2026-05-02", 5]]
+
+    @pytest.mark.asyncio
+    async def test_set_hour_action_pv_charge_writes_store(self, coordinator, mock_store):
+        coordinator.set_hour_action(7, ACTION_PV_CHARGE, "2026-05-02")
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["pv_charge_hours"] == [["2026-05-02", 7]]
+
+    @pytest.mark.asyncio
+    async def test_set_hour_action_blocked_writes_store(self, coordinator, mock_store):
+        coordinator.set_hour_action(8, ACTION_BLOCKED, "2026-05-02")
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["blocked_charging_hours"] == [8]
+        assert payload["blocked_discharging_hours"] == [8]
+
+    @pytest.mark.asyncio
+    async def test_clear_schedule_writes_empty_store(self, coordinator, mock_store):
+        coordinator._charge_hours = [("2026-05-02", 1)]
+        coordinator._discharge_hours = [("2026-05-02", 20)]
+        coordinator._pv_charge_hours = [("2026-05-02", 12)]
+        coordinator._blocked_charging_hours = [18]
+        coordinator._blocked_discharging_hours = [15]
+        coordinator.clear_schedule()
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["charge_hours"] == []
+        assert payload["discharge_hours"] == []
+        assert payload["pv_charge_hours"] == []
+        assert payload["blocked_charging_hours"] == []
+        assert payload["blocked_discharging_hours"] == []
+
+    @pytest.mark.asyncio
+    async def test_calculate_auto_schedule_writes_store(
+        self, coordinator, mock_store, mock_hass
+    ):
+        """The auto scheduler also persists its result."""
+        from custom_components.victron_charge_control.coordinator import (
+            dt_util,
+        )
+
+        # Mock the current time so the test EPEX data is in the future.
+        # Without this, real ``dt_util.now()`` is later than the
+        # ``base_date`` used by ``make_epex_data`` and the auto-scheduler
+        # filters out everything as "in the past".
+        with patch(
+            "custom_components.victron_charge_control.coordinator.dt_util"
+        ) as mock_dt_util:
+            now = datetime(2026, 4, 28, 0, 0, tzinfo=timezone.utc)
+            mock_dt_util.now.return_value = now
+            mock_dt_util.as_local.side_effect = lambda x: x
+            mock_dt_util.parse_datetime.side_effect = lambda x: None
+
+            # Mock EPEX state
+            epex_state = MockState("5.0", {"data": make_epex_data(
+                [(0, 1.0), (1, 2.0), (2, 30.0), (3, 31.0), (4, 5.0)]
+            )})
+
+            def states_get(entity_id):
+                if entity_id == coordinator._epex_spot_entity:
+                    return epex_state
+                return MockState("50")  # battery SOC
+
+            mock_hass.states.get.side_effect = states_get
+            coordinator.control_mode = MODE_AUTO
+            coordinator.cheapest_hours = 2
+            coordinator.expensive_hours = 2
+            coordinator.charge_price_threshold = 10.0
+            coordinator.discharge_price_threshold = 20.0
+
+            coordinator.calculate_auto_schedule()
+
+        await coordinator._async_save_schedule()
+
+        mock_store.async_save.assert_awaited()
+        payload = mock_store.async_save.await_args.args[0]
+        # Cheapest 2 hours: 0 and 1
+        assert ["2026-04-28", 0] in payload["charge_hours"]
+        assert ["2026-04-28", 1] in payload["charge_hours"]
+        # Most expensive 2 hours: 3 and 2
+        assert ["2026-04-28", 2] in payload["discharge_hours"]
+        assert ["2026-04-28", 3] in payload["discharge_hours"]
+
+    @pytest.mark.asyncio
+    async def test_save_failure_does_not_raise(self, coordinator, mock_store):
+        """A failing Store must not propagate to the caller."""
+        mock_store.async_save.side_effect = OSError("disk full")
+        # _async_save_schedule swallows exceptions and only logs a warning.
+        await coordinator._async_save_schedule()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_save_serializes_timestamp_as_iso(
+        self, coordinator, mock_store
+    ):
+        from custom_components.victron_charge_control.coordinator import (
+            dt_util,
+        )
+
+        coordinator._last_schedule_update = dt_util.now()
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert isinstance(payload["last_schedule_update"], str)
+        # ISO 8601 with timezone offset
+        assert "T" in payload["last_schedule_update"]
+
+    @pytest.mark.asyncio
+    async def test_save_serializes_none_timestamp(self, coordinator, mock_store):
+        coordinator._last_schedule_update = None
+        await coordinator._async_save_schedule()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["last_schedule_update"] is None
+
+
+class TestPlanPersistenceLoad:
+    """The Store is read on startup and applied to the coordinator."""
+
+    @pytest.mark.asyncio
+    async def test_empty_store_leaves_state_untouched(self, coordinator, mock_store):
+        """An empty Store must not wipe or auto-replan the coordinator."""
+        from custom_components.victron_charge_control.coordinator import (
+            dt_util,
+        )
+
+        mock_store.async_load = AsyncMock(return_value=None)
+        coordinator._charge_hours = [("2026-05-02", 1)]
+        coordinator._discharge_hours = [("2026-05-02", 20)]
+        coordinator._blocked_charging_hours = [18]
+        coordinator._blocked_discharging_hours = [15]
+        coordinator._pv_charge_hours = [("2026-05-02", 12)]
+
+        await coordinator._async_load_schedule()
+
+        # State must be preserved, not wiped
+        assert coordinator._charge_hours == [("2026-05-02", 1)]
+        assert coordinator._discharge_hours == [("2026-05-02", 20)]
+        assert coordinator._pv_charge_hours == [("2026-05-02", 12)]
+        assert coordinator._blocked_charging_hours == [18]
+        assert coordinator._blocked_discharging_hours == [15]
+        # Flag stays false because nothing was actually applied
+        assert coordinator._schedule_loaded_from_store is False
+
+    @pytest.mark.asyncio
+    async def test_loaded_store_restores_slots(self, coordinator, mock_store):
+        mock_store.async_load = AsyncMock(return_value={
+            "charge_hours": [["2026-05-02", 1], ["2026-05-02", 3]],
+            "discharge_hours": [["2026-05-02", 20]],
+            "pv_charge_hours": [["2026-05-02", 12]],
+            "blocked_charging_hours": [18, 19, 20],
+            "blocked_discharging_hours": [15, 16],
+            "last_schedule_update": "2026-05-02T10:30:00+00:00",
+        })
+
+        await coordinator._async_load_schedule()
+
+        assert coordinator._charge_hours == [
+            ("2026-05-02", 1),
+            ("2026-05-02", 3),
+        ]
+        assert coordinator._discharge_hours == [("2026-05-02", 20)]
+        assert coordinator._pv_charge_hours == [("2026-05-02", 12)]
+        assert coordinator._blocked_charging_hours == [18, 19, 20]
+        assert coordinator._blocked_discharging_hours == [15, 16]
+        assert coordinator._last_schedule_update is not None
+        assert coordinator._last_schedule_update.year == 2026
+        assert coordinator._schedule_loaded_from_store is True
+
+    @pytest.mark.asyncio
+    async def test_load_drops_malformed_slots(self, coordinator, mock_store):
+        """Invalid slot entries must be silently dropped, not crash."""
+        mock_store.async_load = AsyncMock(return_value={
+            "charge_hours": [
+                ["2026-05-02", 1],          # valid
+                ["not-a-date", 5],           # bad date
+                ["2026-05-02", 25],          # bad hour
+                ["2026-05-02", "3"],         # hour not int
+                "not a list",                # not a list
+                ["2026-05-02", 2, "extra"],  # too many fields
+            ],
+            "discharge_hours": [],
+            "pv_charge_hours": [],
+            "blocked_charging_hours": [50, -1, 5, "5", 3],
+            "blocked_discharging_hours": [],
+            "last_schedule_update": None,
+        })
+
+        await coordinator._async_load_schedule()
+
+        # Only the valid slot survived
+        assert coordinator._charge_hours == [("2026-05-02", 1)]
+        # Hours: 50 and -1 dropped, "5" dropped, duplicates deduped -> 3, 5
+        assert coordinator._blocked_charging_hours == [3, 5]
+        # _last_schedule_update untouched (None in payload)
+        assert coordinator._last_schedule_update is None
+
+    @pytest.mark.asyncio
+    async def test_load_with_non_dict_payload(self, coordinator, mock_store):
+        """A list or string payload must be treated like an empty Store."""
+        mock_store.async_load = AsyncMock(return_value=["unexpected", "list"])
+        coordinator._charge_hours = [("2026-05-02", 1)]
+
+        await coordinator._async_load_schedule()
+
+        # State preserved, no crash
+        assert coordinator._charge_hours == [("2026-05-02", 1)]
+        assert coordinator._schedule_loaded_from_store is False
+
+    @pytest.mark.asyncio
+    async def test_load_handles_store_read_error(self, coordinator, mock_store):
+        """A failing Store.async_load must not crash the integration."""
+        mock_store.async_load = AsyncMock(side_effect=OSError("disk full"))
+        coordinator._charge_hours = [("2026-05-02", 1)]
+
+        # Must not raise
+        await coordinator._async_load_schedule()
+
+        # State preserved
+        assert coordinator._charge_hours == [("2026-05-02", 1)]
+        assert coordinator._schedule_loaded_from_store is False
+
+
+class TestAsyncSetupNoReplan:
+    """async_setup must NOT auto-replan on restart."""
+
+    @pytest.mark.asyncio
+    async def test_setup_does_not_replan_in_auto_mode(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        """The previous auto-replan block must be gone: a restart in
+        auto mode does not call calculate_auto_schedule, and the
+        previous plan from the Store is restored as-is.
+        """
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        # Pre-populate the Store with a real plan
+        mock_store.async_load = AsyncMock(return_value={
+            "charge_hours": [["2026-05-02", 1], ["2026-05-02", 2]],
+            "discharge_hours": [["2026-05-02", 20]],
+            "pv_charge_hours": [],
+            "blocked_charging_hours": [18],
+            "blocked_discharging_hours": [15],
+            "last_schedule_update": None,
+        })
+
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.control_mode = MODE_AUTO  # restored by RestoreEntity
+        coord.calculate_auto_schedule = MagicMock()
+        coord.async_request_refresh = AsyncMock()
+
+        # Stub the time/state listeners so async_setup can run cleanly
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        # The auto-replan must NOT have been called
+        coord.calculate_auto_schedule.assert_not_called()
+
+        # The Store was loaded and applied
+        mock_store.async_load.assert_awaited()
+        assert coord._charge_hours == [("2026-05-02", 1), ("2026-05-02", 2)]
+        assert coord._discharge_hours == [("2026-05-02", 20)]
+        assert coord._blocked_charging_hours == [18]
+        assert coord._blocked_discharging_hours == [15]
+        assert coord._schedule_loaded_from_store is True
+
+        # First refresh was triggered so entities pick up the restored state
+        coord.async_request_refresh.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_setup_with_empty_store_keeps_state_and_does_not_replan(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        """A fresh install (empty Store) must not auto-replan either."""
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        mock_store.async_load = AsyncMock(return_value=None)
+        # Simulate RestoreEntity having restored blocked hours
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.control_mode = MODE_AUTO
+        coord._blocked_charging_hours = [18, 19]
+        coord._blocked_discharging_hours = [15]
+        coord.calculate_auto_schedule = MagicMock()
+        coord.async_request_refresh = AsyncMock()
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        coord.calculate_auto_schedule.assert_not_called()
+        # RestoreEntity-restored state must be preserved
+        assert coord._blocked_charging_hours == [18, 19]
+        assert coord._blocked_discharging_hours == [15]
+        # No actual load happened
+        assert coord._schedule_loaded_from_store is False
+        coord.async_request_refresh.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_setup_does_not_replan_in_off_mode(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        mock_store.async_load = AsyncMock(return_value=None)
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.calculate_auto_schedule = MagicMock()
+        coord.async_request_refresh = AsyncMock()
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        coord.calculate_auto_schedule.assert_not_called()
+
+
+class TestAsyncSetupPersistsAfterRestoreEntity:
+    """Migration path: RestoreEntity sets state, then any mutation saves."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_blocked_hours_preserved_when_store_empty(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        """If RestoreEntity populated blocked hours but the Store is
+        empty (pre-persistence migration), the load must not overwrite
+        the restored state.
+        """
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        mock_store.async_load = AsyncMock(return_value=None)
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        # RestoreEntity restored these in text.py's async_added_to_hass
+        coord._blocked_charging_hours = [18, 19, 20]
+        coord._blocked_discharging_hours = [15, 16]
+        coord._replan_hours = [3, 20]
+        coord.control_mode = MODE_AUTO
+        coord.async_request_refresh = AsyncMock()
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        # RestoreEntity-restored state is untouched
+        assert coord._blocked_charging_hours == [18, 19, 20]
+        assert coord._blocked_discharging_hours == [15, 16]
+        assert coord._replan_hours == [3, 20]
+
+    @pytest.mark.asyncio
+    async def test_next_mutation_writes_store_after_migration(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        """After a fresh restart on a migrated install, the very first
+        user action (e.g. changing blocked hours) writes the Store, so
+        the next restart goes through the normal load path.
+        """
+        from custom_components.victron_charge_control.coordinator import (
+            VictronChargeControlCoordinator,
+        )
+
+        mock_store.async_load = AsyncMock(return_value=None)
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord._blocked_charging_hours = [18]
+        coord.async_request_refresh = AsyncMock()
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch(
+            "custom_components.victron_charge_control.coordinator.async_track_time_change"
+        ):
+            await coord.async_setup()
+
+        # First mutation
+        coord.set_blocked_charging_hours([18, 19, 20, 21])
+        await coord._async_save_schedule()
+
+        mock_store.async_save.assert_awaited()
+        payload = mock_store.async_save.await_args.args[0]
+        assert payload["blocked_charging_hours"] == [18, 19, 20, 21]
