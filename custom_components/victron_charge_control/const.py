@@ -4,6 +4,15 @@ from __future__ import annotations
 
 DOMAIN = "victron_charge_control"
 
+# --- Persistent storage ---
+# Used to save the charge/discharge plan so it survives Home Assistant
+# restarts. The actual Store key is unique per config entry and is
+# constructed as ``f"{STORAGE_KEY_PREFIX}.{entry_id}"``. Bump
+# ``STORAGE_VERSION`` whenever the persisted shape changes; Home Assistant
+# will then ignore previously written data and start fresh.
+STORAGE_VERSION = 1
+STORAGE_KEY_PREFIX = f"{DOMAIN}_schedule"
+
 # --- Config entry keys (from config flow) ---
 CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_GRID_SETPOINT_ENTITY = "grid_setpoint_entity"

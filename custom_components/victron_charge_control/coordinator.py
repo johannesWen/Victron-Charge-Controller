@@ -18,6 +18,7 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -65,6 +66,8 @@ from .const import (
     MODE_FORCE_DISCHARGE,
     MODE_MANUAL,
     MODE_OFF,
+    STORAGE_KEY_PREFIX,
+    STORAGE_VERSION,
     UPDATE_INTERVAL_SECONDS,
 )
 
@@ -232,6 +235,35 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._safety_startup_deadline: datetime | None = (
             dt_util.now() + timedelta(seconds=grace_seconds)
         ) if grace_seconds > 0 else None
+
+        # --- Persistent plan storage ---
+        # The charge/discharge/pv_charge slots and the blocked-hour lists
+        # are persisted to a Home Assistant ``Store`` so they survive
+        # restarts. The Store is keyed by config entry id so multiple
+        # entries would not collide (today only one is allowed by the
+        # config flow, but the per-entry key keeps the code future-proof).
+        # ``_schedule_loaded_from_store`` tracks whether async_setup()
+        # actually applied a payload from disk; it is used to keep the
+        # post-load save decision sensible (no point writing back an
+        # empty default state on every restart).
+        self._store: Store = Store(
+            hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}.{entry.entry_id}"
+        )
+        self._schedule_loaded_from_store: bool = False
+        # ``_suspend_save`` blocks fire-and-forget Store writes for the
+        # entire ``async_setup`` window. Without it, the three text
+        # entities (``BlockedChargingHoursText``,
+        # ``BlockedDischargingHoursText``, ``ReplanHoursText``) call
+        # their setters from ``async_added_to_hass`` during
+        # ``forward_entry_setups`` and schedule a save. The first
+        # ``await`` inside ``async_setup`` then lets the event loop run
+        # those pending saves — which write the (still empty) charge
+        # / discharge / pv_charge slots to the Store, overwriting the
+        # user's persisted plan before ``_async_load_schedule`` ever
+        # gets to read it. The flag is cleared at the very end of
+        # ``async_setup`` so the first real user mutation after startup
+        # is persisted.
+        self._suspend_save: bool = True
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -455,6 +487,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             [s for s in slots if self._valid_slot(s[0], s[1])]
         )
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_discharge_hours(self, slots: list[ScheduleSlot]) -> None:
@@ -463,18 +496,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             [s for s in slots if self._valid_slot(s[0], s[1])]
         )
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_charging_hours(self, hours: list[int]) -> None:
         """Set blocked charging hours (recurring daily) and trigger update."""
         self._blocked_charging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_discharging_hours(self, hours: list[int]) -> None:
         """Set blocked discharging hours (recurring daily) and trigger update."""
         self._blocked_discharging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_replan_hours(self, hours: list[int]) -> None:
@@ -495,6 +531,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             )
         else:
             _LOGGER.info("Replan hours updated to %s", normalized)
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def _install_replan_listener(self) -> None:
@@ -529,6 +566,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._charge_hours = []
             self._discharge_hours = []
             _LOGGER.info("Daily schedule reset (manual mode)")
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def toggle_hour(self, hour: int, date_str: str | None = None) -> None:
@@ -575,6 +613,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             # idle → charge
             self._charge_hours = self._sort_slots(self._charge_hours + [slot])
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_hour_action(self, hour: int, action: str, date_str: str | None = None) -> None:
@@ -624,6 +663,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if hour not in self._blocked_discharging_hours:
                 self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def clear_schedule(self) -> None:
@@ -634,7 +674,153 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._blocked_charging_hours = []
         self._blocked_discharging_hours = []
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
+
+    # ------------------------------------------------------------------
+    # Plan persistence
+    # ------------------------------------------------------------------
+    #
+    # The charge/discharge/pv_charge plan and the blocked-hour lists are
+    # written to a Home Assistant ``Store`` on every change and reloaded
+    # on startup. The Store payload is intentionally minimal: slot lists
+    # are serialized as ``[[date, hour], ...]`` and the schedule update
+    # timestamp as an ISO string (or ``None``). Malformed entries are
+    # silently dropped at load time so a corrupted Store can never wedge
+    # the integration; the user can always press the **Recalculate
+    # Schedule** button to rebuild the plan.
+    #
+    # On startup, if the Store is empty the coordinator's in-memory state
+    # is left untouched. This is important for two reasons:
+    #   1. A fresh install must not auto-replan (the user has explicitly
+    #      asked for that behavior).
+    #   2. Migrating from a version that did not write to the Store
+    #      leaves the RestoreEntity-restored state on the coordinator
+    #      intact, so blocked hours / replan hours / control mode are
+    #      still recovered.
+    #
+    # Once the user changes anything, the next save populates the Store
+    # and the migration path is no longer needed.
+
+    @staticmethod
+    def _serialize_slots(slots: list[ScheduleSlot]) -> list[list[Any]]:
+        """Serialize schedule slots for JSON storage."""
+        return [[d, h] for d, h in slots]
+
+    @staticmethod
+    def _deserialize_slots(raw: Any) -> list[ScheduleSlot]:
+        """Deserialize slot list from JSON, dropping any malformed entry.
+
+        Each valid slot becomes a ``(date_str, hour)`` tuple; everything
+        else is silently discarded. Returns an empty list on any
+        structural error so a corrupt Store cannot crash the integration.
+        """
+        if not isinstance(raw, list):
+            return []
+        result: list[ScheduleSlot] = []
+        for item in raw:
+            if (
+                isinstance(item, (list, tuple))
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and isinstance(item[1], int)
+            ):
+                date_str, hour = item[0], item[1]
+                if VictronChargeControlCoordinator._valid_slot(date_str, hour):
+                    result.append((date_str, hour))
+        return result
+
+    @staticmethod
+    def _deserialize_hours(raw: Any) -> list[int]:
+        """Deserialize an hour-of-day list, dropping any out-of-range value."""
+        if not isinstance(raw, list):
+            return []
+        return sorted({int(h) for h in raw if isinstance(h, int) and 0 <= h <= 23})
+
+    async def _async_save_schedule(self) -> None:
+        """Persist the current plan to the Home Assistant Store."""
+        payload = {
+            "charge_hours": self._serialize_slots(self._charge_hours),
+            "discharge_hours": self._serialize_slots(self._discharge_hours),
+            "pv_charge_hours": self._serialize_slots(self._pv_charge_hours),
+            "blocked_charging_hours": list(self._blocked_charging_hours),
+            "blocked_discharging_hours": list(self._blocked_discharging_hours),
+            "last_schedule_update": (
+                self._last_schedule_update.isoformat()
+                if self._last_schedule_update is not None
+                else None
+            ),
+        }
+        try:
+            await self._store.async_save(payload)
+        except Exception:  # noqa: BLE001
+            # Persistence is best-effort. A failed write must not break
+            # the running integration; the next change will retry.
+            _LOGGER.warning("Failed to persist charge plan to Store", exc_info=True)
+
+    def _async_schedule_save(self) -> None:
+        """Schedule a fire-and-forget save of the current plan.
+
+        Used by the public mutators (``set_charge_hours``,
+        ``toggle_hour``, ...) so the call site stays sync and the
+        disk write does not block the caller.
+
+        No-op while ``_suspend_save`` is True (the entire
+        ``async_setup`` window). This is what prevents the text
+        entities' ``async_added_to_hass`` from clobbering the
+        persisted plan during HA startup — see the comment on the
+        ``_suspend_save`` attribute in ``__init__``.
+        """
+        if self._suspend_save:
+            return
+        self.hass.async_create_task(self._async_save_schedule())
+
+    async def _async_load_schedule(self) -> None:
+        """Load the plan from the Store and apply it to the coordinator.
+
+        If the Store is empty (fresh install, first ever start, or a
+        migration from a pre-persistence version), the coordinator's
+        in-memory state is left untouched. This is the desired behavior
+        because:
+
+        * A fresh install must not auto-replan (the user explicitly
+          requested no replan on HA restart).
+        * On a migration, the RestoreEntity callbacks on
+          ``text.py``/``select.py`` have already restored blocked hours,
+          replan hours and the control mode into the coordinator; the
+          Store load must not wipe them.
+        """
+        try:
+            data = await self._store.async_load()
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Failed to load charge plan from Store", exc_info=True)
+            return
+
+        if not isinstance(data, dict):
+            # Empty Store or unsupported payload shape: keep whatever the
+            # RestoreEntity callbacks already populated.
+            return
+
+        self._charge_hours = self._deserialize_slots(data.get("charge_hours"))
+        self._discharge_hours = self._deserialize_slots(data.get("discharge_hours"))
+        self._pv_charge_hours = self._deserialize_slots(data.get("pv_charge_hours"))
+        self._blocked_charging_hours = self._deserialize_hours(
+            data.get("blocked_charging_hours")
+        )
+        self._blocked_discharging_hours = self._deserialize_hours(
+            data.get("blocked_discharging_hours")
+        )
+        ts_raw = data.get("last_schedule_update")
+        if isinstance(ts_raw, str):
+            parsed = dt_util.parse_datetime(ts_raw)
+            self._last_schedule_update = parsed
+        self._schedule_loaded_from_store = True
+        _LOGGER.info(
+            "Loaded charge plan from Store: %d charge, %d discharge, %d pv_charge slots",
+            len(self._charge_hours),
+            len(self._discharge_hours),
+            len(self._pv_charge_hours),
+        )
 
     # ------------------------------------------------------------------
     # EPEX data extraction helpers
@@ -775,6 +961,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._charge_hours = self._sort_slots(charge_slots)
         self._discharge_hours = self._sort_slots(discharge_slots)
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
 
         _LOGGER.info(
             "Auto schedule calculated — Charge: %s, Discharge: %s (%d hours evaluated)",
@@ -1456,11 +1643,33 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Initial data
         self.data = ChargeControlData()
 
-        # Initial schedule calculation if already in auto mode (e.g. after restart)
-        if self.control_mode == MODE_AUTO:
-            self.calculate_auto_schedule()
+        # Restore the previous charge plan from the persistent Store. If
+        # the Store is empty (fresh install, first ever start, or a
+        # migration from a pre-persistence version) the coordinator's
+        # in-memory state is left untouched — in particular we
+        # deliberately do NOT call calculate_auto_schedule() here so the
+        # user's previous plan is not silently overwritten on a Home
+        # Assistant restart. The user can still trigger a fresh plan via
+        # the **Recalculate Schedule** button or by waiting for the next
+        # configured replan hour.
+        #
+        # The load is the very first ``await`` in this method on
+        # purpose: it runs before any other code that could yield, and
+        # combined with ``_suspend_save`` (still True at this point) it
+        # guarantees the text entities' ``async_added_to_hass``
+        # restore-setters, which ran earlier during
+        # ``forward_entry_setups``, did not write a stale empty plan
+        # over the user's persisted one.
+        await self._async_load_schedule()
 
         await self.async_request_refresh()
+
+        # From this point on, public mutators are allowed to write to
+        # the Store again. Set last so a race between any
+        # ``hass.async_create_task`` save scheduled during
+        # ``forward_entry_setups`` and the load above cannot clobber
+        # the restored state.
+        self._suspend_save = False
 
     async def async_shutdown(self) -> None:
         """Remove all listeners."""

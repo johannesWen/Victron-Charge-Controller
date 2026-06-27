@@ -46,7 +46,7 @@ the system from dashboards or automations.
 - **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint, with a soft SOC fallback to solar-only export when the battery is near its lower boundary.
 - **PV charging** charges the battery from solar surplus without importing from the grid, splitting surplus between battery and export according to a configurable share. PV charging is independent of the **Charge Allowed** switch and of blocked charging hours — it never draws from the grid, so it can stay active even when grid charging is disabled.
 - **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
-- **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts.
+- **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts. The full charge/discharge plan (charge/discharge/pv_charge slots, blocked hours, last update) is also persisted and reloaded on restart — and a restart in auto mode does **not** trigger a replan, so the plan you set up the night before survives HA reboots untouched.
 - **Service API** exposes schedule manipulation for dashboards, scripts, and automations.
 
 ## Dashboard Card
