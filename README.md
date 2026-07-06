@@ -9,11 +9,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square" alt="HACS custom repository"></a>
+  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Default-orange?style=flat-square" alt="HACS custom repository"></a>
   <a href="https://github.com/johannesWen/Victron-Charge-Controller/releases"><img src="https://img.shields.io/github/v/release/johannesWen/Victron-Charge-Controller?style=flat-square" alt="Latest release"></a>
   <a href="https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johannesWen/Victron-Charge-Controller/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
   <a href="https://github.com/johannesWen/Victron-Charge-Controller/blob/main/LICENSE"><img src="https://img.shields.io/github/license/johannesWen/Victron-Charge-Controller?style=flat-square" alt="License"></a>
-  <img src="https://img.shields.io/badge/Home%20Assistant-Custom%20Integration-18BCF2?style=flat-square" alt="Home Assistant custom integration">
+  <!-- <img src="https://img.shields.io/badge/Home%20Assistant-Custom%20Integration-18BCF2?style=flat-square" alt="Home Assistant custom integration"> -->
 </p>
 
 Victron Charge Controller is a Home Assistant custom integration for scheduling
@@ -68,8 +68,7 @@ repository.
 | Component | Purpose |
 | --- | --- |
 | Home Assistant | Runs the custom integration and exposes entities/services. |
-| [Victron GX modbusTCP](https://github.com/sfstar/hass-victron) | Provides a writable ESS grid setpoint entity. |
-| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC and Victron telemetry. |
+| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC, writable ESS grid setpoint and Victron telemetry. |
 | [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly day-ahead electricity prices. |
 
 The config flow requires a battery SOC sensor, writable grid setpoint number, EPEX Spot price sensor, and writable max grid feed-in number. Grid import/export energy sensors are optional and enable cost and energy tracking.
@@ -78,19 +77,12 @@ The config flow requires a battery SOC sensor, writable grid setpoint number, EP
 
 ### HACS
 
-1. Open **HACS** in Home Assistant.
-2. Open the three-dot menu and select **Custom repositories**.
-3. Add this repository URL:
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=johannesWen&repository=Victron-Charge-Controller&category=integration)
 
-   ```text
-   https://github.com/johannesWen/Victron-Charge-Controller
-   ```
-
-4. Select category **Integration**.
-5. Install **Victron Charge Control**.
-6. Restart Home Assistant.
-7. Go to **Settings** > **Devices & Services** > **Add Integration**.
-8. Search for **Victron Charge Control** and complete the setup flow.
+1. Search for **Victron Charge Control** in HACS and install it.
+2. Restart Home Assistant after installation completes.
+3. Go to **Settings** > **Devices & Services** > **Add Integration** and search for **Victron Charge Control**.
+4. Complete the setup flow.
 
 ## Setup
 
