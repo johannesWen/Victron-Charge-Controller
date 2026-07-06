@@ -982,6 +982,63 @@ class TestComputeSetpoint:
         sp = coordinator._compute_setpoint(ACTION_DISCHARGE)
         assert sp == -5000.0
 
+    # --- Reduced-mode clamping --------------------------------------
+
+    def test_discharge_clamped_to_reduced_zero(self, coordinator):
+        """Discharge with reduced feed-in = 0W must not export at all."""
+        coordinator.discharge_power = 3000.0
+        coordinator._solar_surplus_mean = None
+        coordinator.reduced_max_grid_feed_in = 0.0
+        sp = coordinator._compute_setpoint(ACTION_DISCHARGE, is_reduced=True)
+        assert sp == 0.0  # not -3000
+
+    def test_discharge_clamped_to_reduced_limit(self, coordinator):
+        """Discharge export is capped at -reduced_max_grid_feed_in."""
+        coordinator.discharge_power = 3000.0
+        coordinator._solar_surplus_mean = None
+        coordinator.reduced_max_grid_feed_in = 500.0
+        sp = coordinator._compute_setpoint(ACTION_DISCHARGE, is_reduced=True)
+        assert sp == -500.0
+
+    def test_discharge_clamped_to_reduced_with_solar(self, coordinator):
+        """Discharge with solar surplus is still clamped to the reduced limit."""
+        coordinator.discharge_power = 3000.0
+        coordinator._solar_surplus_mean = 2000.0  # raw = -(3000 + 2000) = -5000
+        coordinator.reduced_max_grid_feed_in = 1000.0
+        sp = coordinator._compute_setpoint(ACTION_DISCHARGE, is_reduced=True)
+        assert sp == -1000.0
+
+    def test_discharge_solar_only_clamped(self, coordinator):
+        """Solar-only discharge is also clamped to the reduced limit."""
+        coordinator.discharge_power = 3000.0
+        coordinator._solar_surplus_mean = 2000.0
+        coordinator._discharge_solar_only = True
+        coordinator.reduced_max_grid_feed_in = 500.0
+        sp = coordinator._compute_setpoint(ACTION_DISCHARGE, is_reduced=True)
+        assert sp == -500.0
+
+    def test_discharge_unclamped_when_not_reduced(self, coordinator):
+        """Default mode keeps the existing Discharge setpoint behavior."""
+        coordinator.discharge_power = 3000.0
+        coordinator._solar_surplus_mean = None
+        coordinator.reduced_max_grid_feed_in = 0.0
+        sp = coordinator._compute_setpoint(ACTION_DISCHARGE, is_reduced=False)
+        assert sp == -3000.0
+
+    def test_charge_ignores_reduced_flag(self, coordinator):
+        """Reduced mode only affects export-direction setpoints; Charge is import."""
+        coordinator.charge_power = 3000.0
+        coordinator.reduced_max_grid_feed_in = 0.0
+        sp = coordinator._compute_setpoint(ACTION_CHARGE, is_reduced=True)
+        assert sp == 3000.0
+
+    def test_idle_ignores_reduced_flag(self, coordinator):
+        """Idle setpoint is independent of reduced mode."""
+        coordinator.idle_setpoint = 50.0
+        coordinator.reduced_max_grid_feed_in = 0.0
+        sp = coordinator._compute_setpoint(ACTION_IDLE, is_reduced=True)
+        assert sp == 50.0
+
 
 # ======================================================================
 # Solar surplus (optional) — sampling, mean, and discharge setpoint
@@ -1288,6 +1345,75 @@ class TestPVCharging:
         coord._charge_blocked_by_soc = True
         sp = coord._compute_setpoint(ACTION_PV_CHARGE)
         assert sp == 0.0  # idle_setpoint, not -surplus
+
+    # --- Reduced-mode clamping --------------------------------------
+
+    def test_setpoint_clamped_to_reduced_zero(self, mock_hass):
+        """PV Charge with reduced feed-in = 0W must not export at all."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord.reduced_max_grid_feed_in = 0.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE, is_reduced=True)
+        assert sp == 0.0  # not -2000
+
+    def test_setpoint_clamped_to_reduced_limit(self, mock_hass):
+        """PV Charge export is capped at -reduced_max_grid_feed_in."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord.reduced_max_grid_feed_in = 500.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE, is_reduced=True)
+        assert sp == -500.0
+
+    def test_setpoint_unclamped_when_not_reduced(self, mock_hass):
+        """Default mode keeps the existing PV Charge setpoint behavior."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord.reduced_max_grid_feed_in = 0.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE, is_reduced=False)
+        assert sp == -2000.0
+
+    def test_setpoint_idle_inside_reduced(self, mock_hass):
+        """When the raw setpoint is already inside the reduced limit, leave it alone."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 90.0  # raw ≈ -200W, inside the 500W limit
+        coord.reduced_max_grid_feed_in = 500.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE, is_reduced=True)
+        # (1-0.9)*(-2000) + 0.9*0 = -200 — already > -500, no clamp needed
+        assert sp == pytest.approx(-200.0)
+
+    def test_setpoint_soc_block_inside_reduced(self, mock_hass):
+        """When SOC is full the PV setpoint falls back to idle, regardless of reduced."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 0.0
+        coord.reduced_max_grid_feed_in = 0.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = True
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE, is_reduced=True)
+        assert sp == 0.0  # idle_setpoint, not -surplus
+
+    def test_setpoint_above_reduced_limit_unchanged(self, mock_hass):
+        """An exporting setpoint shallower than the reduced limit is unchanged."""
+        coord = self._make_solar_coordinator(mock_hass)
+        coord.idle_setpoint = 0.0
+        coord.pv_charge_share = 100.0  # raw = idle_setpoint = 0 (no export)
+        coord.reduced_max_grid_feed_in = 0.0
+        coord._solar_surplus_mean = 2000.0
+        coord._charge_blocked_by_soc = False
+        sp = coord._compute_setpoint(ACTION_PV_CHARGE, is_reduced=True)
+        assert sp == 0.0
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_determine_action_pv_charge_active(self, mock_dt_util, mock_hass):
@@ -1855,6 +1981,72 @@ class TestApplySetpoint:
 # ======================================================================
 # Grid feed-in control
 # ======================================================================
+
+
+class TestIsReducedFeedInMode:
+    """Tests for the _is_reduced_feed_in_mode helper."""
+
+    def test_disabled_returns_false(self, coordinator):
+        coordinator.grid_feed_in_control_enabled = False
+        coordinator.grid_feed_in_price_threshold = 10.0
+        assert coordinator._is_reduced_feed_in_mode(5.0) is False
+
+    def test_no_price_returns_false(self, coordinator):
+        coordinator.grid_feed_in_control_enabled = True
+        coordinator.grid_feed_in_price_threshold = 10.0
+        assert coordinator._is_reduced_feed_in_mode(None) is False
+
+    def test_below_threshold_returns_true(self, coordinator):
+        coordinator.grid_feed_in_control_enabled = True
+        coordinator.grid_feed_in_price_threshold = 10.0
+        assert coordinator._is_reduced_feed_in_mode(5.0) is True
+
+    def test_at_threshold_returns_false(self, coordinator):
+        coordinator.grid_feed_in_control_enabled = True
+        coordinator.grid_feed_in_price_threshold = 10.0
+        assert coordinator._is_reduced_feed_in_mode(10.0) is False
+
+    def test_above_threshold_returns_false(self, coordinator):
+        coordinator.grid_feed_in_control_enabled = True
+        coordinator.grid_feed_in_price_threshold = 10.0
+        assert coordinator._is_reduced_feed_in_mode(15.0) is False
+
+    def test_negative_price_with_disabled_returns_false(self, coordinator):
+        coordinator.grid_feed_in_control_enabled = False
+        coordinator.grid_feed_in_price_threshold = 10.0
+        assert coordinator._is_reduced_feed_in_mode(-50.0) is False
+
+
+class TestGetCurrentPriceCt:
+    """Tests for the _get_current_price_ct helper."""
+
+    def test_returns_none_when_unavailable(self, coordinator):
+        coordinator.hass.states.get.return_value = MockState("unavailable")
+        assert coordinator._get_current_price_ct() is None
+
+    def test_returns_none_when_unknown(self, coordinator):
+        coordinator.hass.states.get.return_value = MockState("unknown")
+        assert coordinator._get_current_price_ct() is None
+
+    def test_returns_none_when_state_missing(self, coordinator):
+        coordinator.hass.states.get.return_value = None
+        assert coordinator._get_current_price_ct() is None
+
+    def test_returns_none_for_unparseable_state(self, coordinator):
+        coordinator.hass.states.get.return_value = MockState("not-a-number")
+        assert coordinator._get_current_price_ct() is None
+
+    def test_ct_unit_passes_through(self, coordinator):
+        coordinator.hass.states.get.return_value = MockState(
+            "12.5", {"unit_of_measurement": "ct/kWh"}
+        )
+        assert coordinator._get_current_price_ct() == 12.5
+
+    def test_eur_unit_converted_to_ct(self, coordinator):
+        coordinator.hass.states.get.return_value = MockState(
+            "0.125", {"unit_of_measurement": "EUR/kWh"}
+        )
+        assert coordinator._get_current_price_ct() == pytest.approx(12.5)
 
 
 class TestGridFeedInControl:

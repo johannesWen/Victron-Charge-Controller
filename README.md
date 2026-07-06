@@ -121,7 +121,7 @@ You can change these entities later from the integration options flow.
 | SOC Hysteresis | Number | SOC buffer before resuming after a boundary is reached. |
 | Charge Power | Number | Target import power while charging. |
 | Discharge Power | Number | Target export power while discharging. |
-| PV Charging Battery Share | Number | Percentage of the solar surplus routed to the battery during PV charge hours. The remainder is exported to the grid. `100` keeps all surplus in the battery, `0` exports everything. |
+| PV Charging Battery Share | Number | Percentage of the solar surplus routed to the battery during PV charge hours. The remainder is exported to the grid. `100` keeps all surplus in the battery, `0` exports everything. When the reduced grid feed-in mode is active, the export portion is further capped at the reduced limit, so the setpoint never asks the ESS to feed in more than the active limit allows. |
 | Idle Setpoint | Number | Grid setpoint used while idle. |
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
 | Max Grid Setpoint | Number | Highest allowed grid setpoint. |
@@ -132,7 +132,7 @@ You can change these entities later from the integration options flow.
 | Discharge Price Threshold | Number | Minimum price for automatic discharging. |
 | Grid Feed-in Price Threshold | Number | Price at or below which feed-in is reduced. |
 | Default Max Grid Feed-in | Number | Normal feed-in limit. |
-| Reduced Max Grid Feed-in | Number | Feed-in limit used when prices are low. |
+| Reduced Max Grid Feed-in | Number | Feed-in limit used when prices are low. While reduced feed-in mode is active, the PV-Charge and Discharge setpoints are clamped on the export side to this value (and to `Min Grid Setpoint` when lower), so the integration never asks the ESS to feed more into the grid than the active limit allows. |
 | Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
 | Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
 | Recalculate Schedule | Button | Rebuilds the schedule from current price data. |

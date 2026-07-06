@@ -1002,6 +1002,24 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return price / 100.0
         return price
 
+    def _get_current_price_ct(self) -> float | None:
+        """Read the EPEX spot price in the same unit as ``grid_feed_in_price_threshold``.
+
+        Returns ``None`` when the EPEX sensor is unavailable or unparseable.
+        Used to determine the reduced-mode status before computing the
+        setpoint, so the PV-Charge/Discharge setpoints can be clamped to
+        the active feed-in limit in the same tick.
+        """
+        state = self.hass.states.get(self._epex_spot_entity)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return None
+        price_eur_kwh = self._normalize_price_eur_per_kwh(
+            state.state, dict(state.attributes)
+        )
+        if price_eur_kwh is None:
+            return None
+        return price_eur_kwh * 100.0
+
     def _get_entity_float(self, entity_id: str | None) -> float | None:
         """Read a numeric entity state, returning None when unavailable or invalid."""
         if entity_id is None:
@@ -1265,8 +1283,17 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         return self._last_published_action
 
-    def _compute_setpoint(self, action: str) -> float:
-        """Compute the clamped grid setpoint for the given action."""
+    def _compute_setpoint(self, action: str, *, is_reduced: bool = False) -> float:
+        """Compute the clamped grid setpoint for the given action.
+
+        ``is_reduced`` is True when the reduced grid feed-in mode is active
+        (the ESS ``max_grid_feed_in`` entity has been pulled down to
+        ``reduced_max_grid_feed_in`` because the spot price is below
+        ``grid_feed_in_price_threshold``). In that case the PV-Charge and
+        Discharge setpoints are clamped on the export side so the
+        integration never asks the ESS to feed more into the grid than
+        the active feed-in limit allows.
+        """
         if action == ACTION_CHARGE:
             raw = self.charge_power  # positive = import
         elif action == ACTION_PV_CHARGE:
@@ -1280,6 +1307,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 surplus = self._solar_surplus_mean or 0.0
                 f = max(0.0, min(1.0, self.pv_charge_share / 100.0))
                 raw = (1.0 - f) * (-surplus) + f * self.idle_setpoint
+            if is_reduced:
+                # Don't ask the ESS to feed in more than the reduced mode
+                # allows. raw is negative when exporting; the limit is
+                # positive (W), so the most negative allowed setpoint is
+                # -reduced_max_grid_feed_in.
+                raw = max(raw, -self.reduced_max_grid_feed_in)
         elif action == ACTION_DISCHARGE:
             surplus = self._solar_surplus_mean or 0.0
             if self._discharge_solar_only:
@@ -1288,6 +1321,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             else:
                 # Normal discharge: discharge power + solar surplus
                 raw = -(self.discharge_power + surplus)
+            if is_reduced:
+                raw = max(raw, -self.reduced_max_grid_feed_in)
         else:
             raw = self.idle_setpoint
 
@@ -1351,11 +1386,27 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Grid feed-in control
     # ------------------------------------------------------------------
 
+    def _is_reduced_feed_in_mode(self, current_price: float | None) -> bool:
+        """Return whether the reduced grid feed-in mode should be active.
+
+        Used by both ``_compute_setpoint`` (to clamp the export side of the
+        PV-Charge and Discharge setpoints) and ``_apply_grid_feed_in`` (to
+        decide which limit to push to the ESS). The two paths must agree so
+        the setpoint and the ESS feed-in limit never contradict each other.
+        """
+        if not self.grid_feed_in_control_enabled:
+            return False
+        if current_price is None:
+            return False
+        return current_price < self.grid_feed_in_price_threshold
+
     async def _apply_grid_feed_in(self, current_price: float | None) -> tuple[bool, float | None]:
         """Control max grid feed-in based on spot price.
 
         Returns (is_reduced, applied_value).
         """
+        is_reduced = self._is_reduced_feed_in_mode(current_price)
+
         if not self.grid_feed_in_control_enabled:
             # Reset to default when feature is disabled
             if self._last_applied_feed_in is not None and self._last_applied_feed_in != self.default_max_grid_feed_in:
@@ -1379,12 +1430,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return False, None
 
         # Determine target feed-in value
-        if current_price < self.grid_feed_in_price_threshold:
-            target_feed_in = self.reduced_max_grid_feed_in
-            is_reduced = True
-        else:
-            target_feed_in = self.default_max_grid_feed_in
-            is_reduced = False
+        target_feed_in = self.reduced_max_grid_feed_in if is_reduced else self.default_max_grid_feed_in
 
         # Check entity availability
         state = self.hass.states.get(self._max_grid_feed_in_entity)
@@ -1485,6 +1531,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 remaining,
             )
 
+        # Current price (ct/kWh). Read here so the reduced-mode status
+        # is available to the setpoint calculation in the same tick —
+        # _apply_grid_feed_in runs later but only writes the ESS entity,
+        # the decision must be made now.
+        current_price_ct = self._get_current_price_ct()
+        is_reduced = self._is_reduced_feed_in_mode(current_price_ct)
+
         # Decision engine
         live_action = self._determine_action()
         # Apply the action-change debounce: a new desired action must
@@ -1493,7 +1546,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # the decision engine (e.g. a single noisy SOC reading) without
         # delaying genuine schedule transitions, since those persist.
         action = self._resolve_published_action(live_action)
-        setpoint = self._compute_setpoint(action)
+        setpoint = self._compute_setpoint(action, is_reduced=is_reduced)
 
         # Apply setpoint (only when not OFF)
         if self.control_mode != MODE_OFF:
@@ -1557,8 +1610,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Clean expired schedule slots
         self._clean_expired_slots()
 
-        # Grid feed-in control
-        current_price_ct = current_price_eur_per_kwh * 100 if current_price_eur_per_kwh is not None else None
+        # Grid feed-in control (writes the ESS feed-in entity; uses the
+        # price already read at the top of this method).
         feed_in_active, applied_feed_in = await self._apply_grid_feed_in(current_price_ct)
 
         # Cost tracking from optional cumulative kWh meters
