@@ -71,10 +71,72 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 
+from .solar import sample_solar_surplus
+from .epex import (
+    extract_price_ct,
+    find_epex_data,
+    get_battery_soc,
+    get_current_price_ct,
+    get_entity_float,
+    normalize_price_eur_per_kwh,
+)
+from .schedule import (
+    clean_expired_slots,
+    clear_all as schedule_clear_all,
+    normalize_blocked_hours,
+    set_charge_slots,
+    set_discharge_slots,
+    set_hour_action as schedule_set_hour_action,
+    sort_slots,
+    today_str as schedule_today_str,
+    toggle_hour as schedule_toggle_hour,
+    valid_slot,
+)
+from .persistence import (
+    apply_loaded_plan,
+    build_plan_payload,
+    deserialize_hours,
+    deserialize_slots,
+    serialize_slots,
+)
+from .energy import accumulate_cost_tracking, read_meter_delta
+from .decision import (
+    DebounceState,
+    DecisionState,
+    SocHysteresisState,
+    compute_setpoint as decision_compute_setpoint,
+    determine_action as decision_determine_action,
+    resolve_published_action as decision_resolve_published_action,
+    update_soc_hysteresis as decision_update_soc_hysteresis,
+)
+from .actuation import (
+    apply_grid_feed_in as actuation_apply_grid_feed_in,
+    apply_setpoint as actuation_apply_setpoint,
+    is_reduced_feed_in_mode as actuation_is_reduced_feed_in_mode,
+)
+from .safety import check_safety as safety_check_safety, is_in_startup_grace
+from .planning import calculate_auto_schedule as planning_calculate_auto_schedule
+
 _LOGGER = logging.getLogger(__name__)
 
 # Type alias for a date-qualified schedule slot: (ISO date "YYYY-MM-DD", hour 0-23)
 ScheduleSlot = tuple[str, int]
+
+
+@dataclass
+class EpexPriceView:
+    """Snapshot of the EPEX data extracted on a single tick.
+
+    Built by ``_step_load_epex_view`` and consumed by the cost tracker
+    and the ``ChargeControlData`` snapshot — keeps the per-tick
+    arguments grouped so the pipeline method signatures stay short.
+    """
+
+    current_price: float | None
+    eur_per_kwh: float | None
+    attributes: dict[str, Any]
+    prices_today: list[dict[str, Any]]
+    prices_tomorrow: list[dict[str, Any]]
 
 
 @dataclass
@@ -446,69 +508,47 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     @staticmethod
     def _sort_slots(slots: list[ScheduleSlot]) -> list[ScheduleSlot]:
         """Sort schedule slots by (date, hour)."""
-        return sorted(set(slots))
+        return sort_slots(slots)
 
     @staticmethod
     def _valid_slot(date_str: str, hour: int) -> bool:
         """Validate a schedule slot."""
-        if not (0 <= hour <= 23):
-            return False
-        try:
-            datetime.strptime(date_str, "%Y-%m-%d")
-            return True
-        except ValueError:
-            return False
+        return valid_slot(date_str, hour)
 
     def _today_str(self) -> str:
         """Get today's date as ISO string."""
-        return dt_util.now().strftime("%Y-%m-%d")
+        return schedule_today_str()
 
     def _clean_expired_slots(self) -> None:
         """Remove schedule slots that are in the past."""
-        now = dt_util.now()
-        current_date = now.strftime("%Y-%m-%d")
-        current_hour = now.hour
-
-        def is_future(slot: ScheduleSlot) -> bool:
-            d, h = slot
-            if d > current_date:
-                return True
-            if d == current_date and h >= current_hour:
-                return True
-            return False
-
-        self._charge_hours = [s for s in self._charge_hours if is_future(s)]
-        self._discharge_hours = [s for s in self._discharge_hours if is_future(s)]
-        self._pv_charge_hours = [s for s in self._pv_charge_hours if is_future(s)]
+        self._charge_hours, self._discharge_hours, self._pv_charge_hours = clean_expired_slots(
+            self._charge_hours, self._discharge_hours, self._pv_charge_hours
+        )
 
     def set_charge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set charge hours (date-aware) and trigger update."""
-        self._charge_hours = self._sort_slots(
-            [s for s in slots if self._valid_slot(s[0], s[1])]
-        )
+        self._charge_hours = set_charge_slots(slots)
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_discharge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set discharge hours (date-aware) and trigger update."""
-        self._discharge_hours = self._sort_slots(
-            [s for s in slots if self._valid_slot(s[0], s[1])]
-        )
+        self._discharge_hours = set_discharge_slots(slots)
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_charging_hours(self, hours: list[int]) -> None:
         """Set blocked charging hours (recurring daily) and trigger update."""
-        self._blocked_charging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+        self._blocked_charging_hours = normalize_blocked_hours(hours)
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_discharging_hours(self, hours: list[int]) -> None:
         """Set blocked discharging hours (recurring daily) and trigger update."""
-        self._blocked_discharging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
+        self._blocked_discharging_hours = normalize_blocked_hours(hours)
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -519,7 +559,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         Empty list disables automatic replanning. Triggers a refresh so the
         text entity state stays in sync.
         """
-        normalized = sorted(set(h for h in hours if 0 <= h <= 23))
+        normalized = normalize_blocked_hours(hours)
         if normalized == self._replan_hours:
             return
         self._replan_hours = normalized
@@ -579,39 +619,24 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             hour: Hour of day (0-23).
             date_str: ISO date string (YYYY-MM-DD). Defaults to today.
         """
-        if hour < 0 or hour > 23:
+        (
+            self._charge_hours,
+            self._discharge_hours,
+            self._pv_charge_hours,
+            self._blocked_charging_hours,
+            self._blocked_discharging_hours,
+            no_op,
+        ) = schedule_toggle_hour(
+            hour,
+            date_str,
+            self._charge_hours,
+            self._discharge_hours,
+            self._pv_charge_hours,
+            self._blocked_charging_hours,
+            self._blocked_discharging_hours,
+        )
+        if no_op:
             return
-        if date_str is None:
-            date_str = self._today_str()
-        if not self._valid_slot(date_str, hour):
-            return
-
-        slot: ScheduleSlot = (date_str, hour)
-
-        if slot in self._charge_hours:
-            # charge → pv_charge
-            self._charge_hours = [s for s in self._charge_hours if s != slot]
-            if slot not in self._pv_charge_hours:
-                self._pv_charge_hours = self._sort_slots(self._pv_charge_hours + [slot])
-        elif slot in self._pv_charge_hours:
-            # pv_charge → discharge
-            self._pv_charge_hours = [s for s in self._pv_charge_hours if s != slot]
-            if slot not in self._discharge_hours:
-                self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
-        elif slot in self._discharge_hours:
-            # discharge → blocked (both, recurring)
-            self._discharge_hours = [s for s in self._discharge_hours if s != slot]
-            if hour not in self._blocked_charging_hours:
-                self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
-            if hour not in self._blocked_discharging_hours:
-                self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
-        elif hour in self._blocked_charging_hours or hour in self._blocked_discharging_hours:
-            # blocked → idle
-            self._blocked_charging_hours = [h for h in self._blocked_charging_hours if h != hour]
-            self._blocked_discharging_hours = [h for h in self._blocked_discharging_hours if h != hour]
-        else:
-            # idle → charge
-            self._charge_hours = self._sort_slots(self._charge_hours + [slot])
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -632,47 +657,38 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             action: One of ACTION_CHARGE, ACTION_DISCHARGE, ACTION_BLOCKED, ACTION_IDLE.
             date_str: ISO date string (YYYY-MM-DD). Defaults to today.
         """
-        if hour < 0 or hour > 23:
+        (
+            self._charge_hours,
+            self._discharge_hours,
+            self._pv_charge_hours,
+            self._blocked_charging_hours,
+            self._blocked_discharging_hours,
+            no_op,
+        ) = schedule_set_hour_action(
+            hour,
+            action,
+            date_str,
+            self._charge_hours,
+            self._discharge_hours,
+            self._pv_charge_hours,
+            self._blocked_charging_hours,
+            self._blocked_discharging_hours,
+        )
+        if no_op:
             return
-        if date_str is None:
-            date_str = self._today_str()
-        if not self._valid_slot(date_str, hour):
-            return
-
-        slot: ScheduleSlot = (date_str, hour)
-
-        # Remove from charge/discharge/pv_charge lists (date-specific).
-        # The recurring blocked_*_hours lists are intentionally left intact
-        # for non-BLOCKED actions; the override lives only in the per-day
-        # slot and the decision engine treats a per-day slot for a blocked
-        # hour as a user override.
-        self._charge_hours = [s for s in self._charge_hours if s != slot]
-        self._discharge_hours = [s for s in self._discharge_hours if s != slot]
-        self._pv_charge_hours = [s for s in self._pv_charge_hours if s != slot]
-
-        # Add to correct list
-        if action == ACTION_CHARGE:
-            self._charge_hours = self._sort_slots(self._charge_hours + [slot])
-        elif action == ACTION_PV_CHARGE:
-            self._pv_charge_hours = self._sort_slots(self._pv_charge_hours + [slot])
-        elif action == ACTION_DISCHARGE:
-            self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
-        elif action == ACTION_BLOCKED:
-            if hour not in self._blocked_charging_hours:
-                self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
-            if hour not in self._blocked_discharging_hours:
-                self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def clear_schedule(self) -> None:
         """Clear all scheduled hours."""
-        self._charge_hours = []
-        self._discharge_hours = []
-        self._pv_charge_hours = []
-        self._blocked_charging_hours = []
-        self._blocked_discharging_hours = []
+        (
+            self._charge_hours,
+            self._discharge_hours,
+            self._pv_charge_hours,
+            self._blocked_charging_hours,
+            self._blocked_discharging_hours,
+        ) = schedule_clear_all()
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -705,52 +721,28 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     @staticmethod
     def _serialize_slots(slots: list[ScheduleSlot]) -> list[list[Any]]:
         """Serialize schedule slots for JSON storage."""
-        return [[d, h] for d, h in slots]
+        return serialize_slots(slots)
 
     @staticmethod
     def _deserialize_slots(raw: Any) -> list[ScheduleSlot]:
-        """Deserialize slot list from JSON, dropping any malformed entry.
-
-        Each valid slot becomes a ``(date_str, hour)`` tuple; everything
-        else is silently discarded. Returns an empty list on any
-        structural error so a corrupt Store cannot crash the integration.
-        """
-        if not isinstance(raw, list):
-            return []
-        result: list[ScheduleSlot] = []
-        for item in raw:
-            if (
-                isinstance(item, (list, tuple))
-                and len(item) == 2
-                and isinstance(item[0], str)
-                and isinstance(item[1], int)
-            ):
-                date_str, hour = item[0], item[1]
-                if VictronChargeControlCoordinator._valid_slot(date_str, hour):
-                    result.append((date_str, hour))
-        return result
+        """Deserialize slot list from JSON, dropping any malformed entry."""
+        return deserialize_slots(raw)
 
     @staticmethod
     def _deserialize_hours(raw: Any) -> list[int]:
         """Deserialize an hour-of-day list, dropping any out-of-range value."""
-        if not isinstance(raw, list):
-            return []
-        return sorted({int(h) for h in raw if isinstance(h, int) and 0 <= h <= 23})
+        return deserialize_hours(raw)
 
     async def _async_save_schedule(self) -> None:
         """Persist the current plan to the Home Assistant Store."""
-        payload = {
-            "charge_hours": self._serialize_slots(self._charge_hours),
-            "discharge_hours": self._serialize_slots(self._discharge_hours),
-            "pv_charge_hours": self._serialize_slots(self._pv_charge_hours),
-            "blocked_charging_hours": list(self._blocked_charging_hours),
-            "blocked_discharging_hours": list(self._blocked_discharging_hours),
-            "last_schedule_update": (
-                self._last_schedule_update.isoformat()
-                if self._last_schedule_update is not None
-                else None
-            ),
-        }
+        payload = build_plan_payload(
+            charge_hours=self._charge_hours,
+            discharge_hours=self._discharge_hours,
+            pv_charge_hours=self._pv_charge_hours,
+            blocked_charging_hours=self._blocked_charging_hours,
+            blocked_discharging_hours=self._blocked_discharging_hours,
+            last_schedule_update=self._last_schedule_update,
+        )
         try:
             await self._store.async_save(payload)
         except Exception:  # noqa: BLE001
@@ -796,25 +788,19 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             _LOGGER.warning("Failed to load charge plan from Store", exc_info=True)
             return
 
-        if not isinstance(data, dict):
+        applied = apply_loaded_plan(data)
+        if applied is None:
             # Empty Store or unsupported payload shape: keep whatever the
             # RestoreEntity callbacks already populated.
             return
 
-        self._charge_hours = self._deserialize_slots(data.get("charge_hours"))
-        self._discharge_hours = self._deserialize_slots(data.get("discharge_hours"))
-        self._pv_charge_hours = self._deserialize_slots(data.get("pv_charge_hours"))
-        self._blocked_charging_hours = self._deserialize_hours(
-            data.get("blocked_charging_hours")
-        )
-        self._blocked_discharging_hours = self._deserialize_hours(
-            data.get("blocked_discharging_hours")
-        )
-        ts_raw = data.get("last_schedule_update")
-        if isinstance(ts_raw, str):
-            parsed = dt_util.parse_datetime(ts_raw)
-            self._last_schedule_update = parsed
-        self._schedule_loaded_from_store = True
+        self._charge_hours = applied["charge_hours"]
+        self._discharge_hours = applied["discharge_hours"]
+        self._pv_charge_hours = applied["pv_charge_hours"]
+        self._blocked_charging_hours = applied["blocked_charging_hours"]
+        self._blocked_discharging_hours = applied["blocked_discharging_hours"]
+        self._last_schedule_update = applied["last_schedule_update"]
+        self._schedule_loaded_from_store = applied["loaded"]
         _LOGGER.info(
             "Loaded charge plan from Store: %d charge, %d discharge, %d pv_charge slots",
             len(self._charge_hours),
@@ -828,47 +814,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     @staticmethod
     def _find_epex_data(attributes: dict[str, Any]) -> list[dict[str, Any]]:
-        """Find the list of price entries from EPEX entity attributes.
-
-        Supports mampfes/ha-epex-spot ('data' attribute) and other integrations
-        that store entries under alternative attribute names.
-        """
-        # Try the known attribute name first
-        data = attributes.get(EPEX_ATTR_DATA)
-        if isinstance(data, list) and data:
-            return data
-        # Fallback: search for any list attribute containing price-like dicts
-        for attr_name, attr_value in attributes.items():
-            if not isinstance(attr_value, list) or not attr_value:
-                continue
-            first = attr_value[0]
-            if isinstance(first, dict) and (
-                EPEX_KEY_START_TIME in first
-                or EPEX_KEY_PRICE in first
-                or EPEX_KEY_PRICE_EUR in first
-            ):
-                return attr_value
-        return []
+        """Find the list of price entries from EPEX entity attributes."""
+        return find_epex_data(attributes)
 
     @staticmethod
     def _extract_price_ct(item: dict[str, Any]) -> float | None:
-        """Extract price in ct/kWh from a single EPEX entry.
-
-        Handles both 'price_ct_per_kwh' (cents) and 'price_per_kwh' (EUR).
-        """
-        price = item.get(EPEX_KEY_PRICE)
-        if price is not None:
-            try:
-                return float(price)
-            except (ValueError, TypeError):
-                return None
-        price_eur = item.get(EPEX_KEY_PRICE_EUR)
-        if price_eur is not None:
-            try:
-                return float(price_eur) * 100.0  # EUR → ct
-            except (ValueError, TypeError):
-                return None
-        return None
+        """Extract price in ct/kWh from a single EPEX entry."""
+        return extract_price_ct(item)
 
     # ------------------------------------------------------------------
     # Auto schedule calculation from EPEX prices
@@ -876,99 +828,26 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def calculate_auto_schedule(self) -> None:
         """Calculate optimal charge/discharge hours from EPEX spot prices."""
-        if self.control_mode != MODE_AUTO:
+        result = planning_calculate_auto_schedule(
+            self.hass,
+            epex_spot_entity=self._epex_spot_entity,
+            control_mode=self.control_mode,
+            cheapest_hours=self.cheapest_hours,
+            expensive_hours=self.expensive_hours,
+            charge_price_threshold=self.charge_price_threshold,
+            discharge_price_threshold=self.discharge_price_threshold,
+            blocked_charging_hours=self._blocked_charging_hours,
+            blocked_discharging_hours=self._blocked_discharging_hours,
+            pv_charge_hours=self._pv_charge_hours,
+            now=dt_util.now(),
+        )
+        if result is None:
             return
-
-        epex_state = self.hass.states.get(self._epex_spot_entity)
-        if epex_state is None:
-            _LOGGER.warning("EPEX entity %s not found", self._epex_spot_entity)
-            return
-
-        epex_data = self._find_epex_data(epex_state.attributes)
-        if not epex_data:
-            _LOGGER.warning("No EPEX price data available in %s", self._epex_spot_entity)
-            return
-
-        now = dt_util.now()
-        current_slot = (now.strftime("%Y-%m-%d"), now.hour)
-
-        # Build price list for all future hours (today + tomorrow)
-        prices: list[dict[str, Any]] = []
-        for item in epex_data:
-            start_time = item.get(EPEX_KEY_START_TIME)
-            if start_time is None:
-                continue
-            if isinstance(start_time, str):
-                try:
-                    sdt = dt_util.parse_datetime(start_time)
-                    if sdt is not None:
-                        sdt = dt_util.as_local(sdt)
-                except (ValueError, TypeError):
-                    continue
-            elif isinstance(start_time, datetime):
-                sdt = dt_util.as_local(start_time)
-            else:
-                continue
-
-            if sdt is None:
-                continue
-
-            slot_date = sdt.strftime("%Y-%m-%d")
-            slot_hour = sdt.hour
-            slot = (slot_date, slot_hour)
-
-            # Include any hour that hasn't ended yet
-            if slot >= current_slot:
-                price = self._extract_price_ct(item)
-                if price is not None:
-                    prices.append({"date": slot_date, "hour": slot_hour, "price": price})
-
-        if not prices:
-            _LOGGER.info("No future hours with price data available")
-            return
-
-        # Sort ascending by price
-        prices.sort(key=lambda x: x["price"])
-
-        # Pick cheapest N hours below charge threshold (skip blocked charging hours)
-        # and never override manually-set PV charging slots.
-        pv_charge_set = set(self._pv_charge_hours)
-        charge_slots: list[ScheduleSlot] = []
-        for item in prices:
-            if len(charge_slots) >= self.cheapest_hours:
-                break
-            slot = (item["date"], item["hour"])
-            if slot in pv_charge_set:
-                continue
-            if item["hour"] not in self._blocked_charging_hours and item["price"] <= self.charge_price_threshold:
-                charge_slots.append(slot)
-
-        # Pick most expensive N hours above discharge threshold (skip blocked discharging hours)
-        discharge_slots: list[ScheduleSlot] = []
-        for item in reversed(prices):
-            if len(discharge_slots) >= self.expensive_hours:
-                break
-            slot = (item["date"], item["hour"])
-            if slot in pv_charge_set:
-                continue
-            if item["hour"] not in self._blocked_discharging_hours and item["price"] >= self.discharge_price_threshold:
-                discharge_slots.append(slot)
-
-        # Resolve conflicts: discharge wins (remove from charge)
-        discharge_set = set(discharge_slots)
-        charge_slots = [s for s in charge_slots if s not in discharge_set]
-
-        self._charge_hours = self._sort_slots(charge_slots)
-        self._discharge_hours = self._sort_slots(discharge_slots)
+        charge_slots, discharge_slots = result
+        self._charge_hours = charge_slots
+        self._discharge_hours = discharge_slots
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
-
-        _LOGGER.info(
-            "Auto schedule calculated — Charge: %s, Discharge: %s (%d hours evaluated)",
-            self._charge_hours,
-            self._discharge_hours,
-            len(prices),
-        )
 
     # ------------------------------------------------------------------
     # Decision engine
@@ -976,13 +855,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def _get_battery_soc(self) -> float | None:
         """Get current battery SOC, or None if unavailable."""
-        state = self.hass.states.get(self._battery_soc_entity)
-        if state is None or state.state in ("unavailable", "unknown"):
-            return None
-        try:
-            return float(state.state)
-        except (ValueError, TypeError):
-            return None
+        return get_battery_soc(self.hass, self._battery_soc_entity)
 
     @staticmethod
     def _normalize_price_eur_per_kwh(
@@ -990,17 +863,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         attributes: dict[str, Any],
     ) -> float | None:
         """Normalize an EPEX state value to EUR/kWh for cost accounting."""
-        if state_value in (None, "unavailable", "unknown"):
-            return None
-        try:
-            price = float(state_value)
-        except (ValueError, TypeError):
-            return None
-
-        unit = str(attributes.get("unit_of_measurement", "")).strip().lower()
-        if "ct" in unit or "cent" in unit or unit.startswith("c/") or " c/" in unit:
-            return price / 100.0
-        return price
+        return normalize_price_eur_per_kwh(state_value, attributes)
 
     def _get_current_price_ct(self) -> float | None:
         """Read the EPEX spot price in the same unit as ``grid_feed_in_price_threshold``.
@@ -1010,27 +873,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         setpoint, so the PV-Charge/Discharge setpoints can be clamped to
         the active feed-in limit in the same tick.
         """
-        state = self.hass.states.get(self._epex_spot_entity)
-        if state is None or state.state in ("unavailable", "unknown"):
-            return None
-        price_eur_kwh = self._normalize_price_eur_per_kwh(
-            state.state, dict(state.attributes)
-        )
-        if price_eur_kwh is None:
-            return None
-        return price_eur_kwh * 100.0
+        return get_current_price_ct(self.hass, self._epex_spot_entity)
 
     def _get_entity_float(self, entity_id: str | None) -> float | None:
         """Read a numeric entity state, returning None when unavailable or invalid."""
-        if entity_id is None:
-            return None
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state in ("unavailable", "unknown"):
-            return None
-        try:
-            return float(state.state)
-        except (ValueError, TypeError):
-            return None
+        return get_entity_float(self.hass, entity_id)
 
     def _read_meter_delta(
         self,
@@ -1039,28 +886,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         last_attr: str,
     ) -> tuple[bool, float | None]:
         """Return a positive meter delta and update the stored baseline."""
-        if entity_id is None:
-            return False, None
-
-        current_kwh = self._get_entity_float(entity_id)
-        if current_kwh is None:
-            return False, None
-
         last_kwh = getattr(self, last_attr)
-        if last_kwh is None:
-            setattr(self, last_attr, current_kwh)
-            return True, None
-
-        delta_kwh = current_kwh - last_kwh
-        if delta_kwh < 0:
-            # The selected energy sensor reset or was replaced. Re-baseline only.
-            setattr(self, last_attr, current_kwh)
-            return True, None
-        if delta_kwh == 0:
-            return False, None
-
-        setattr(self, last_attr, current_kwh)
-        return True, delta_kwh
+        new_last, delta, _ = read_meter_delta(self.hass, entity_id, last_kwh)
+        if new_last is not None:
+            setattr(self, last_attr, new_last)
+            return True, delta
+        return False, None
 
     def _update_cost_tracking(self, current_price_eur_per_kwh: float | None) -> None:
         """Update cumulative grid energy costs, revenue, and kWh import/export."""
@@ -1073,30 +904,23 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             last_attr="_last_grid_feed_in_kwh",
         )
 
-        # Accumulate kWh import/export (price-independent)
-        if consumption_delta_kwh is not None:
-            self._grid_energy_import += consumption_delta_kwh
+        new_cost, new_revenue, new_import, new_export, baselines_changed = (
+            accumulate_cost_tracking(
+                consumption_delta_kwh=consumption_delta_kwh,
+                feed_in_delta_kwh=feed_in_delta_kwh,
+                current_price_eur_per_kwh=current_price_eur_per_kwh,
+                cost=self._grid_energy_cost,
+                revenue=self._grid_energy_revenue,
+                import_kwh=self._grid_energy_import,
+                export_kwh=self._grid_energy_export,
+            )
+        )
+        self._grid_energy_cost = new_cost
+        self._grid_energy_revenue = new_revenue
+        self._grid_energy_import = new_import
+        self._grid_energy_export = new_export
 
-        if feed_in_delta_kwh is not None:
-            self._grid_energy_export += feed_in_delta_kwh
-
-        if current_price_eur_per_kwh is not None:
-            price_abs = abs(current_price_eur_per_kwh)
-            if consumption_delta_kwh is not None:
-                amount = consumption_delta_kwh * price_abs
-                if current_price_eur_per_kwh >= 0:
-                    self._grid_energy_cost += amount
-                else:
-                    self._grid_energy_revenue += amount
-
-            if feed_in_delta_kwh is not None:
-                amount = feed_in_delta_kwh * price_abs
-                if current_price_eur_per_kwh >= 0:
-                    self._grid_energy_revenue += amount
-                else:
-                    self._grid_energy_cost += amount
-
-        if updated_consumption or updated_feed_in:
+        if updated_consumption or updated_feed_in or baselines_changed:
             self._last_cost_update = dt_util.now()
 
     def _sample_solar_surplus(self) -> None:
@@ -1106,227 +930,95 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         or has an invalid/non-numeric state. Negative values are treated as zero.
         The deque is trimmed to the last 15 minutes on every call.
         """
-        if self._solar_surplus_entity is None:
-            return
-
-        state = self.hass.states.get(self._solar_surplus_entity)
-        if state is None or state.state in ("unavailable", "unknown"):
-            return
-
-        try:
-            value = float(state.state)
-        except (ValueError, TypeError):
-            return
-
-        if value < 0.0:
-            value = 0.0
-
-        now = dt_util.now()
-        self._solar_samples.append((now, value))
-
-        cutoff = now - timedelta(minutes=15)
-        while self._solar_samples and self._solar_samples[0][0] < cutoff:
-            self._solar_samples.popleft()
-
-        if self._solar_samples:
-            self._solar_surplus_mean = sum(
-                v for _, v in self._solar_samples
-            ) / len(self._solar_samples)
-        else:
-            self._solar_surplus_mean = None
+        self._solar_surplus_mean = sample_solar_surplus(
+            self.hass, self._solar_surplus_entity, self._solar_samples
+        )
 
     def _update_soc_hysteresis(self, soc: float) -> None:
-        """Update SOC hysteresis blocked flags.
-
-        All three flags are latched (Schmitt-trigger style): once a limit
-        is reached the flag stays set until the SOC moves a full
-        ``soc_hysteresis`` margin *back* across the threshold. This
-        prevents the ±1% sensor jitter near the SOC boundaries from
-        flapping the desired action and grid setpoint.
-        """
-        if soc >= self.max_soc:
-            self._charge_blocked_by_soc = True
-        elif soc < self.max_soc - self.soc_hysteresis:
-            self._charge_blocked_by_soc = False
-
-        if soc <= self.min_soc:
-            self._discharge_blocked_by_soc = True
-        elif soc > self.min_soc + self.soc_hysteresis:
-            self._discharge_blocked_by_soc = False
-
-        # Soft protection: when SOC is near the lower boundary, switch
-        # discharge setpoint math to solar-only (no battery discharge term).
-        # Latched symmetrically to the other flags above — without this,
-        # a single noisy reading at the threshold toggles the discharge
-        # math between solar-only and full-battery modes, and the desired
-        # action oscillates with it. Release requires a full hysteresis
-        # margin back above the threshold.
-        if soc <= self.min_soc + self.soc_hysteresis:
-            self._discharge_solar_only = True
-        elif soc > self.min_soc + (2 * self.soc_hysteresis):
-            self._discharge_solar_only = False
+        """Update SOC hysteresis blocked flags (Schmitt-trigger style)."""
+        new_state = decision_update_soc_hysteresis(
+            soc,
+            max_soc=self.max_soc,
+            min_soc=self.min_soc,
+            hysteresis=self.soc_hysteresis,
+            state=SocHysteresisState(
+                charge_blocked_by_soc=self._charge_blocked_by_soc,
+                discharge_blocked_by_soc=self._discharge_blocked_by_soc,
+                discharge_solar_only=self._discharge_solar_only,
+            ),
+        )
+        self._charge_blocked_by_soc = new_state.charge_blocked_by_soc
+        self._discharge_blocked_by_soc = new_state.discharge_blocked_by_soc
+        self._discharge_solar_only = new_state.discharge_solar_only
 
     def _determine_action(self) -> str:
         """Deterministic priority stack — returns charge/discharge/idle."""
-        # Priority 1: System off
-        if self.control_mode == MODE_OFF:
-            return ACTION_IDLE
-
-        # Priority 2: SOC unavailable
-        soc = self._get_battery_soc()
-        if soc is None:
+        # The decision engine does not touch the SOC flags unless it had
+        # a usable SOC reading. Build the result with the latched state
+        # preserved, then apply the new flags back to the coordinator.
+        result = decision_determine_action(
+            state=DecisionState(
+                control_mode=self.control_mode,
+                charge_allowed=self.charge_allowed,
+                discharge_allowed=self.discharge_allowed,
+                max_soc=self.max_soc,
+                min_soc=self.min_soc,
+                soc_hysteresis=self.soc_hysteresis,
+                charge_hours=self._charge_hours,
+                discharge_hours=self._discharge_hours,
+                pv_charge_hours=self._pv_charge_hours,
+                solar_surplus_entity=self._solar_surplus_entity,
+            ),
+            soc_state=SocHysteresisState(
+                charge_blocked_by_soc=self._charge_blocked_by_soc,
+                discharge_blocked_by_soc=self._discharge_blocked_by_soc,
+                discharge_solar_only=self._discharge_solar_only,
+            ),
+            hass=self.hass,
+            battery_soc_entity=self._battery_soc_entity,
+            now=dt_util.now(),
+        )
+        if result.action == ACTION_IDLE and self._get_battery_soc() is None:
             _LOGGER.debug("Battery SOC unavailable — falling back to idle")
-            return ACTION_IDLE
-
-        self._update_soc_hysteresis(soc)
-
-        # Priority 3: Force modes
-        if self.control_mode == MODE_FORCE_CHARGE:
-            if self.charge_allowed and not self._charge_blocked_by_soc:
-                return ACTION_CHARGE
-            return ACTION_IDLE
-
-        if self.control_mode == MODE_FORCE_DISCHARGE:
-            if self.discharge_allowed and not self._discharge_blocked_by_soc:
-                return ACTION_DISCHARGE
-            return ACTION_IDLE
-
-        # Priority 4: Blocked hours — override schedule per action type
-        if self.control_mode in (MODE_AUTO, MODE_MANUAL):
-            now = dt_util.now()
-            current_date = now.strftime("%Y-%m-%d")
-            hour = now.hour
-            current_slot: ScheduleSlot = (current_date, hour)
-
-            # Priority 5: Auto or Manual — look up schedule (date-aware)
-            # PV Charging takes precedence over plain charge/discharge so a
-            # manually-set PV slot is honored even when the auto scheduler
-            # also marked the hour. Requires the optional solar surplus
-            # sensor; otherwise the slot falls back to idle.
-            # PV charging is independent of `charge_allowed` and
-            # `blocked_charging_hours` because it never draws from the grid
-            # — it only splits the existing solar surplus between battery
-            # and grid export. SOC blocking still applies.
-            if (
-                current_slot in self._pv_charge_hours
-                and not self._charge_blocked_by_soc
-                and self._solar_surplus_entity is not None
-            ):
-                return ACTION_PV_CHARGE
-            if current_slot in self._charge_hours and self.charge_allowed and not self._charge_blocked_by_soc:
-                # A per-day charge slot for a blocked hour is a user override
-                # (set_hour_action leaves blocked_charging_hours intact and
-                # the auto-scheduler skips blocked hours, so the slot can
-                # only have been placed explicitly). Honor it.
-                return ACTION_CHARGE
-            if current_slot in self._discharge_hours and self.discharge_allowed and not self._discharge_blocked_by_soc:
-                return ACTION_DISCHARGE
-            return ACTION_IDLE
-
-        # Priority 5: Fallback
-        return ACTION_IDLE
+        self._charge_blocked_by_soc = result.soc_state.charge_blocked_by_soc
+        self._discharge_blocked_by_soc = result.soc_state.discharge_blocked_by_soc
+        self._discharge_solar_only = result.soc_state.discharge_solar_only
+        return result.action
 
     def _resolve_published_action(self, live_action: str) -> str:
-        """Apply the action-change debounce to a live decision-engine result.
-
-        Returns the action that should be published to the dashboard and
-        used to compute the grid setpoint. A new ``live_action`` must
-        persist for ``action_confirm_seconds`` before it replaces the
-        currently published one; while it is being confirmed, the previous
-        action is returned instead, so the grid setpoint and the
-        ``desired_action`` sensor both stay stable.
-
-        MODE_OFF bypasses the debounce and forces ``ACTION_IDLE`` immediately
-        — switching the system off is a user-initiated safety state and
-        must not be delayed.
-
-        The first ever call also publishes immediately (no prior state to
-        confirm against), so the integration does not appear stuck at
-        ``idle`` for ``action_confirm_seconds`` after startup.
-        """
-        if self.control_mode == MODE_OFF:
-            self._pending_action = None
-            self._pending_action_since = None
-            self._last_published_action = ACTION_IDLE
-            return ACTION_IDLE
-
-        if self._last_published_action is None:
-            # First ever publish — no prior state to confirm against.
-            self._last_published_action = live_action
-            self._pending_action = None
-            self._pending_action_since = None
-            return live_action
-
-        if live_action == self._last_published_action:
-            # Live action matches what is already published — clear any
-            # pending change so the next genuine flip starts fresh.
-            self._pending_action = None
-            self._pending_action_since = None
-            return self._last_published_action
-
-        # Live action differs from the published one. If we have not yet
-        # seen this candidate, start the confirmation timer; if it is the
-        # same candidate as last tick, check whether it has been stable
-        # long enough to publish.
-        now = dt_util.now()
-        if self._pending_action != live_action:
-            self._pending_action = live_action
-            self._pending_action_since = now
-            return self._last_published_action
-
-        elapsed = (now - self._pending_action_since).total_seconds()
-        if elapsed >= self.action_confirm_seconds:
-            self._last_published_action = live_action
-            self._pending_action = None
-            self._pending_action_since = None
-            return live_action
-
-        return self._last_published_action
+        """Apply the action-change debounce to a live decision-engine result."""
+        result = decision_resolve_published_action(
+            live_action,
+            control_mode=self.control_mode,
+            action_confirm_seconds=self.action_confirm_seconds,
+            state=DebounceState(
+                last_published_action=self._last_published_action,
+                pending_action=self._pending_action,
+                pending_action_since=self._pending_action_since,
+            ),
+            now=dt_util.now(),
+        )
+        self._last_published_action = result.state.last_published_action
+        self._pending_action = result.state.pending_action
+        self._pending_action_since = result.state.pending_action_since
+        return result.published_action
 
     def _compute_setpoint(self, action: str, *, is_reduced: bool = False) -> float:
-        """Compute the clamped grid setpoint for the given action.
-
-        ``is_reduced`` is True when the reduced grid feed-in mode is active
-        (the ESS ``max_grid_feed_in`` entity has been pulled down to
-        ``reduced_max_grid_feed_in`` because the spot price is below
-        ``grid_feed_in_price_threshold``). In that case the PV-Charge and
-        Discharge setpoints are clamped on the export side so the
-        integration never asks the ESS to feed more into the grid than
-        the active feed-in limit allows.
-        """
-        if action == ACTION_CHARGE:
-            raw = self.charge_power  # positive = import
-        elif action == ACTION_PV_CHARGE:
-            if self._charge_blocked_by_soc:
-                # Battery full — can't absorb surplus; fall back to idle.
-                raw = self.idle_setpoint
-            else:
-                # Split the solar surplus between battery and grid.
-                # f=0 -> export all surplus (G=-surplus); f=1 -> self-consume
-                # so surplus charges the battery (G=idle_setpoint).
-                surplus = self._solar_surplus_mean or 0.0
-                f = max(0.0, min(1.0, self.pv_charge_share / 100.0))
-                raw = (1.0 - f) * (-surplus) + f * self.idle_setpoint
-            if is_reduced:
-                # Don't ask the ESS to feed in more than the reduced mode
-                # allows. raw is negative when exporting; the limit is
-                # positive (W), so the most negative allowed setpoint is
-                # -reduced_max_grid_feed_in.
-                raw = max(raw, -self.reduced_max_grid_feed_in)
-        elif action == ACTION_DISCHARGE:
-            surplus = self._solar_surplus_mean or 0.0
-            if self._discharge_solar_only:
-                # Soft SOC protection: only export what solar is producing
-                raw = -surplus
-            else:
-                # Normal discharge: discharge power + solar surplus
-                raw = -(self.discharge_power + surplus)
-            if is_reduced:
-                raw = max(raw, -self.reduced_max_grid_feed_in)
-        else:
-            raw = self.idle_setpoint
-
-        return max(self.min_grid_setpoint, min(raw, self.max_grid_setpoint))
+        """Compute the clamped grid setpoint for the given action."""
+        return decision_compute_setpoint(
+            action,
+            is_reduced=is_reduced,
+            charge_power=self.charge_power,
+            discharge_power=self.discharge_power,
+            idle_setpoint=self.idle_setpoint,
+            min_grid_setpoint=self.min_grid_setpoint,
+            max_grid_setpoint=self.max_grid_setpoint,
+            charge_blocked_by_soc=self._charge_blocked_by_soc,
+            discharge_solar_only=self._discharge_solar_only,
+            solar_surplus_mean=self._solar_surplus_mean,
+            pv_charge_share=self.pv_charge_share,
+            reduced_max_grid_feed_in=self.reduced_max_grid_feed_in,
+        )
 
     # ------------------------------------------------------------------
     # Setpoint application
@@ -1344,42 +1036,24 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         holding the old setpoint whenever the difference falls within
         ``setpoint_deadband``.
         """
-        # Check entity availability
-        state = self.hass.states.get(self._grid_setpoint_entity)
-        if state is None or state.state in ("unavailable", "unknown"):
-            _LOGGER.warning(
-                "Grid setpoint entity %s is unavailable — skipping actuation",
-                self._grid_setpoint_entity,
+        def _log(current: float, target: float) -> None:
+            _LOGGER.info(
+                "Setpoint: %.0fW → %.0fW (action=%s, mode=%s, SOC=%s)",
+                current,
+                target,
+                self.data.desired_action if self.data else "?",
+                self.control_mode,
+                self._get_battery_soc(),
             )
-            return
 
-        # Deadband: skip if difference is too small
-        try:
-            current = float(state.state)
-        except (ValueError, TypeError):
-            current = 0.0
-
-        if (
-            action != ACTION_IDLE
-            and self._last_applied_setpoint is not None
-            and abs(target_setpoint - current) <= self.setpoint_deadband
-        ):
-            return
-
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {"entity_id": self._grid_setpoint_entity, "value": target_setpoint},
-            blocking=True,
-        )
-        self._last_applied_setpoint = target_setpoint
-        _LOGGER.info(
-            "Setpoint: %.0fW → %.0fW (action=%s, mode=%s, SOC=%s)",
-            current,
-            target_setpoint,
-            self.data.desired_action if self.data else "?",
-            self.control_mode,
-            self._get_battery_soc(),
+        self._last_applied_setpoint = await actuation_apply_setpoint(
+            self.hass,
+            entity_id=self._grid_setpoint_entity,
+            target_setpoint=target_setpoint,
+            action=action,
+            last_applied_setpoint=self._last_applied_setpoint,
+            setpoint_deadband=self.setpoint_deadband,
+            on_log=_log,
         )
 
     # ------------------------------------------------------------------
@@ -1387,87 +1061,30 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # ------------------------------------------------------------------
 
     def _is_reduced_feed_in_mode(self, current_price: float | None) -> bool:
-        """Return whether the reduced grid feed-in mode should be active.
-
-        Used by both ``_compute_setpoint`` (to clamp the export side of the
-        PV-Charge and Discharge setpoints) and ``_apply_grid_feed_in`` (to
-        decide which limit to push to the ESS). The two paths must agree so
-        the setpoint and the ESS feed-in limit never contradict each other.
-        """
-        if not self.grid_feed_in_control_enabled:
-            return False
-        if current_price is None:
-            return False
-        return current_price < self.grid_feed_in_price_threshold
+        """Return whether the reduced grid feed-in mode should be active."""
+        return actuation_is_reduced_feed_in_mode(
+            grid_feed_in_control_enabled=self.grid_feed_in_control_enabled,
+            current_price=current_price,
+            grid_feed_in_price_threshold=self.grid_feed_in_price_threshold,
+        )
 
     async def _apply_grid_feed_in(self, current_price: float | None) -> tuple[bool, float | None]:
         """Control max grid feed-in based on spot price.
 
         Returns (is_reduced, applied_value).
         """
-        is_reduced = self._is_reduced_feed_in_mode(current_price)
-
-        if not self.grid_feed_in_control_enabled:
-            # Reset to default when feature is disabled
-            if self._last_applied_feed_in is not None and self._last_applied_feed_in != self.default_max_grid_feed_in:
-                state = self.hass.states.get(self._max_grid_feed_in_entity)
-                if state is not None and state.state not in ("unavailable", "unknown"):
-                    await self.hass.services.async_call(
-                        "number",
-                        "set_value",
-                        {"entity_id": self._max_grid_feed_in_entity, "value": self.default_max_grid_feed_in},
-                        blocking=True,
-                    )
-                    _LOGGER.info(
-                        "Grid feed-in control disabled — reset to default %.0fW",
-                        self.default_max_grid_feed_in,
-                    )
-                self._last_applied_feed_in = None
-            return False, None
-
-        if current_price is None:
-            _LOGGER.debug("No current price available — skipping grid feed-in control")
-            return False, None
-
-        # Determine target feed-in value
-        target_feed_in = self.reduced_max_grid_feed_in if is_reduced else self.default_max_grid_feed_in
-
-        # Check entity availability
-        state = self.hass.states.get(self._max_grid_feed_in_entity)
-        if state is None or state.state in ("unavailable", "unknown"):
-            _LOGGER.warning(
-                "Max grid feed-in entity %s is unavailable — skipping",
-                self._max_grid_feed_in_entity,
-            )
-            return is_reduced, None
-
-        # Skip if value hasn't changed
-        try:
-            current_val = float(state.state)
-        except (ValueError, TypeError):
-            current_val = 0.0
-
-        if (
-            self._last_applied_feed_in is not None
-            and abs(target_feed_in - current_val) <= DEFAULT_DEADBAND
-        ):
-            return is_reduced, target_feed_in
-
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {"entity_id": self._max_grid_feed_in_entity, "value": target_feed_in},
-            blocking=True,
+        is_reduced, applied_value, new_last = await actuation_apply_grid_feed_in(
+            self.hass,
+            entity_id=self._max_grid_feed_in_entity,
+            grid_feed_in_control_enabled=self.grid_feed_in_control_enabled,
+            current_price=current_price,
+            default_max_grid_feed_in=self.default_max_grid_feed_in,
+            reduced_max_grid_feed_in=self.reduced_max_grid_feed_in,
+            grid_feed_in_price_threshold=self.grid_feed_in_price_threshold,
+            last_applied_feed_in=self._last_applied_feed_in,
         )
-        self._last_applied_feed_in = target_feed_in
-        _LOGGER.info(
-            "Grid feed-in: %.0fW → %.0fW (price=%.2f ct/kWh, threshold=%.2f ct/kWh)",
-            current_val,
-            target_feed_in,
-            current_price,
-            self.grid_feed_in_price_threshold,
-        )
-        return is_reduced, target_feed_in
+        self._last_applied_feed_in = new_last
+        return is_reduced, applied_value
 
     # ------------------------------------------------------------------
     # Safety watchdog
@@ -1475,34 +1092,64 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def _check_safety(self) -> bool:
         """Check critical entities. Returns True if safe, False to trigger shutdown."""
-        for entity_id in (self._battery_soc_entity, self._grid_setpoint_entity):
-            state = self.hass.states.get(entity_id)
-            if state is not None and state.state in ("unavailable", "unknown"):
-                return False
-        return True
+        return safety_check_safety(
+            self.hass,
+            [self._battery_soc_entity, self._grid_setpoint_entity],
+        )
 
     # ------------------------------------------------------------------
     # Core update method
     # ------------------------------------------------------------------
 
     async def _async_update_data(self) -> ChargeControlData:
-        """Run the decision engine and apply the setpoint."""
-        # Sample solar surplus (no-op when entity not configured)
-        self._sample_solar_surplus()
+        """Run the decision engine and apply the setpoint.
 
-        # Safety check
-        now = dt_util.now()
-        in_startup_grace = (
-            self._safety_startup_deadline is not None
-            and now < self._safety_startup_deadline
+        The tick is broken into named pipeline methods to keep each
+        concern testable in isolation:
+
+        1. ``_sample_solar_surplus`` — refresh the 15-minute solar mean
+        2. ``_step_safety`` — watchdog + startup grace + OFF switch
+        3. ``_step_decide`` — current price → live action → published
+           action (debounced) → computed setpoint
+        4. ``_step_apply_setpoint`` — write the setpoint to the ESS
+        5. ``_step_load_epex_view`` — read EPEX state, build the
+           today/tomorrow price list, normalize the current price
+        6. ``_clean_expired_slots`` — drop past schedule slots
+        7. ``_apply_grid_feed_in`` — push reduced/default feed-in to ESS
+        8. ``_update_cost_tracking`` — accumulate cost/revenue/import/export
+        9. ``_build_snapshot`` — assemble the ChargeControlData result
+        """
+        self._sample_solar_surplus()
+        await self._step_safety()
+        current_price_ct, is_reduced, action, setpoint = self._step_decide()
+        await self._step_apply_setpoint(action, setpoint)
+        price_view = self._step_load_epex_view()
+        self._clean_expired_slots()
+        feed_in_active, applied_feed_in = await self._apply_grid_feed_in(
+            current_price_ct
         )
+        self._update_cost_tracking(price_view.eur_per_kwh)
+        return self._build_snapshot(
+            action=action,
+            setpoint=setpoint,
+            price_view=price_view,
+            feed_in_active=feed_in_active,
+            applied_feed_in=applied_feed_in,
+        )
+
+    async def _step_safety(self) -> None:
+        """Run the safety watchdog for this tick."""
+        now = dt_util.now()
+        in_startup_grace = is_in_startup_grace(now, self._safety_startup_deadline)
         safe = self._check_safety()
         if safe and self._safety_startup_deadline is not None:
             # First tick with all critical entities reporting a real state
             # ends the grace period early — the watchdog becomes fully
             # active for the rest of the run.
             self._safety_startup_deadline = None
-            _LOGGER.debug("Safety watchdog startup grace period cleared after first safe tick")
+            _LOGGER.debug(
+                "Safety watchdog startup grace period cleared after first safe tick"
+            )
         if (
             self.control_mode != MODE_OFF
             and not safe
@@ -1518,7 +1165,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 "create",
                 {
                     "title": "Victron Charge Control — Safety Stop",
-                    "message": "A critical Victron entity became unavailable. System switched to OFF.",
+                    "message": (
+                        "A critical Victron entity became unavailable. "
+                        "System switched to OFF."
+                    ),
                     "notification_id": "victron_cc_safety_stop",
                 },
                 blocking=False,
@@ -1531,34 +1181,34 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 remaining,
             )
 
-        # Current price (ct/kWh). Read here so the reduced-mode status
-        # is available to the setpoint calculation in the same tick —
-        # _apply_grid_feed_in runs later but only writes the ESS entity,
-        # the decision must be made now.
+    def _step_decide(self) -> tuple[float | None, bool, str, float]:
+        """Read the current price, pick an action, and compute the setpoint.
+
+        The current price is read once here (in ct/kWh) so both the
+        reduced-mode predicate and ``_apply_grid_feed_in`` see the same
+        value in the same tick.
+        """
         current_price_ct = self._get_current_price_ct()
         is_reduced = self._is_reduced_feed_in_mode(current_price_ct)
-
-        # Decision engine
         live_action = self._determine_action()
-        # Apply the action-change debounce: a new desired action must
-        # persist for action_confirm_seconds before it is published and
-        # written to the grid setpoint. This absorbs transient flips of
-        # the decision engine (e.g. a single noisy SOC reading) without
-        # delaying genuine schedule transitions, since those persist.
         action = self._resolve_published_action(live_action)
         setpoint = self._compute_setpoint(action, is_reduced=is_reduced)
+        return current_price_ct, is_reduced, action, setpoint
 
-        # Apply setpoint (only when not OFF)
+    async def _step_apply_setpoint(self, action: str, setpoint: float) -> None:
+        """Write the computed setpoint (or reset to idle when turning OFF)."""
         if self.control_mode != MODE_OFF:
             await self._apply_setpoint(setpoint, action=action)
         elif self._last_applied_setpoint != self.idle_setpoint:
-            # When turning off, reset to idle
+            # When turning off, reset to idle so the ESS does not stay
+            # pinned at a stale charge/discharge setpoint.
             await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE)
 
-        # Current price
+    def _step_load_epex_view(self) -> EpexPriceView:
+        """Read the EPEX state and assemble the today/tomorrow price lists."""
         epex_state = self.hass.states.get(self._epex_spot_entity)
-        current_price = None
-        current_price_eur_per_kwh = None
+        current_price: float | None = None
+        current_price_eur_per_kwh: float | None = None
         epex_attributes: dict[str, Any] = {}
         prices_today: list[dict[str, Any]] = []
         prices_tomorrow: list[dict[str, Any]] = []
@@ -1572,8 +1222,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 pass
             epex_attributes = dict(epex_state.attributes)
             current_price_eur_per_kwh = self._normalize_price_eur_per_kwh(
-                epex_state.state,
-                epex_attributes,
+                epex_state.state, epex_attributes
             )
             raw_data = self._find_epex_data(epex_state.attributes)
             if raw_data:
@@ -1607,40 +1256,43 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 prices_today.sort(key=lambda x: x["hour"])
                 prices_tomorrow.sort(key=lambda x: x["hour"])
 
-        # Clean expired schedule slots
-        self._clean_expired_slots()
+        return EpexPriceView(
+            current_price=current_price,
+            eur_per_kwh=current_price_eur_per_kwh,
+            attributes=epex_attributes,
+            prices_today=prices_today,
+            prices_tomorrow=prices_tomorrow,
+        )
 
-        # Grid feed-in control (writes the ESS feed-in entity; uses the
-        # price already read at the top of this method).
-        feed_in_active, applied_feed_in = await self._apply_grid_feed_in(current_price_ct)
-
-        # Cost tracking from optional cumulative kWh meters
-        self._update_cost_tracking(current_price_eur_per_kwh)
-
-        # Serialize schedule slots to dicts for sensor consumption
-        charge_hours_data = [{"date": d, "hour": h} for d, h in self._charge_hours]
-        discharge_hours_data = [{"date": d, "hour": h} for d, h in self._discharge_hours]
-        pv_charge_hours_data = [{"date": d, "hour": h} for d, h in self._pv_charge_hours]
-
+    def _build_snapshot(
+        self,
+        *,
+        action: str,
+        setpoint: float,
+        price_view: EpexPriceView,
+        feed_in_active: bool,
+        applied_feed_in: float | None,
+    ) -> ChargeControlData:
+        """Assemble the per-tick ``ChargeControlData`` returned to entities."""
         return ChargeControlData(
             desired_action=action,
             target_setpoint=setpoint,
-            charge_hours=charge_hours_data,
-            discharge_hours=discharge_hours_data,
-            pv_charge_hours=pv_charge_hours_data,
+            charge_hours=[{"date": d, "hour": h} for d, h in self._charge_hours],
+            discharge_hours=[{"date": d, "hour": h} for d, h in self._discharge_hours],
+            pv_charge_hours=[{"date": d, "hour": h} for d, h in self._pv_charge_hours],
             blocked_charging_hours=list(self._blocked_charging_hours),
             blocked_discharging_hours=list(self._blocked_discharging_hours),
-            current_price=current_price,
-            epex_attributes=epex_attributes,
-            prices_today=prices_today,
-            prices_tomorrow=prices_tomorrow,
+            current_price=price_view.current_price,
+            epex_attributes=price_view.attributes,
+            prices_today=price_view.prices_today,
+            prices_tomorrow=price_view.prices_tomorrow,
             grid_feed_in_active=feed_in_active,
             applied_max_grid_feed_in=applied_feed_in,
             grid_energy_cost=self.grid_energy_cost,
             grid_energy_revenue=self.grid_energy_revenue,
             grid_energy_import=self.grid_energy_import,
             grid_energy_export=self.grid_energy_export,
-            current_price_eur_per_kwh=current_price_eur_per_kwh,
+            current_price_eur_per_kwh=price_view.eur_per_kwh,
             last_schedule_update=self._last_schedule_update,
             last_cost_update=self._last_cost_update,
             solar_surplus_mean=self._solar_surplus_mean,
