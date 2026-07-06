@@ -17,7 +17,9 @@ from custom_components.victron_charge_control.const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
+    DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
 )
 
@@ -135,6 +137,7 @@ class TestOptionsFlow:
         """Create an options flow with mocked config entry."""
         config_entry = MagicMock()
         config_entry.data = dict(MOCK_CONFIG_DATA)
+        config_entry.options = {}
         flow = VictronChargeControlOptionsFlow(config_entry)
         flow.hass = MagicMock()
         flow.hass.states.get = MagicMock(return_value=MockState("50"))
@@ -151,14 +154,24 @@ class TestOptionsFlow:
 
     @pytest.mark.asyncio
     async def test_update_entry_on_valid_input(self, options_flow):
-        new_data = {**MOCK_CONFIG_DATA, CONF_BATTERY_SOC_ENTITY: "sensor.new_soc"}
+        new_data = {
+            **MOCK_CONFIG_DATA,
+            CONF_BATTERY_SOC_ENTITY: "sensor.new_soc",
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+        }
         await options_flow.async_step_init(user_input=new_data)
         options_flow.hass.config_entries.async_update_entry.assert_called_once()
         options_flow.async_create_entry.assert_called_once()
+        _, kwargs = options_flow.async_create_entry.call_args
+        assert kwargs["data"][CONF_SAFETY_STARTUP_GRACE_SECONDS] == DEFAULT_SAFETY_STARTUP_GRACE_SECONDS
 
     @pytest.mark.asyncio
     async def test_update_entry_with_optional_cost_entities(self, options_flow):
-        await options_flow.async_step_init(user_input=dict(MOCK_CONFIG_DATA_WITH_COST))
+        user_input = {
+            **MOCK_CONFIG_DATA_WITH_COST,
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+        }
+        await options_flow.async_step_init(user_input=user_input)
         options_flow.hass.config_entries.async_update_entry.assert_called_once()
         _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
         assert kwargs["data"][CONF_GRID_CONSUMPTION_ENTITY] == "sensor.grid_consumption_kwh"
@@ -166,7 +179,11 @@ class TestOptionsFlow:
 
     @pytest.mark.asyncio
     async def test_update_entry_with_solar_entity(self, options_flow):
-        await options_flow.async_step_init(user_input=dict(MOCK_CONFIG_DATA_WITH_SOLAR))
+        user_input = {
+            **MOCK_CONFIG_DATA_WITH_SOLAR,
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+        }
+        await options_flow.async_step_init(user_input=user_input)
         _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
         assert kwargs["data"][CONF_SOLAR_SURPLUS_ENTITY] == "sensor.solar_surplus"
 
@@ -177,6 +194,7 @@ class TestOptionsFlow:
             **MOCK_CONFIG_DATA,
             CONF_GRID_CONSUMPTION_ENTITY: "",
             CONF_GRID_FEED_IN_ENERGY_ENTITY: "",
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
         }
 
         await options_flow.async_step_init(user_input=user_input)
@@ -184,6 +202,23 @@ class TestOptionsFlow:
         _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
         assert CONF_GRID_CONSUMPTION_ENTITY not in kwargs["data"]
         assert CONF_GRID_FEED_IN_ENERGY_ENTITY not in kwargs["data"]
+
+    @pytest.mark.asyncio
+    async def test_grace_period_value_is_persisted_to_options(self, options_flow):
+        """User-chosen grace period lands in entry.options (not entry.data)."""
+        user_input = {
+            **MOCK_CONFIG_DATA,
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
+        }
+
+        await options_flow.async_step_init(user_input=user_input)
+
+        # The grace period must be in options (the create_entry return value),
+        # never in data (the entity reference store).
+        _, update_kwargs = options_flow.hass.config_entries.async_update_entry.call_args
+        assert CONF_SAFETY_STARTUP_GRACE_SECONDS not in update_kwargs["data"]
+        _, create_kwargs = options_flow.async_create_entry.call_args
+        assert create_kwargs["data"][CONF_SAFETY_STARTUP_GRACE_SECONDS] == 45
 
     @pytest.mark.asyncio
     async def test_error_on_missing_entity(self, options_flow):

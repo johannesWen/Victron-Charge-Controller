@@ -42,7 +42,6 @@ body:
     placeholder: |
       - Home Assistant version:
       - Home Assistant hardware:
-      - Heat pump model:
       - Integration version:
   validations:
     required: false

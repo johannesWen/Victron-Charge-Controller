@@ -18,6 +18,7 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -33,6 +34,7 @@ from .const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_ACTION_CONFIRM_SECONDS,
     DEFAULT_CHARGE_POWER,
@@ -52,6 +54,7 @@ from .const import (
     DEFAULT_PV_CHARGE_SHARE,
     DEFAULT_REDUCED_GRID_FEED_IN,
     DEFAULT_REPLAN_HOURS,
+    DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
     EPEX_ATTR_DATA,
@@ -63,6 +66,8 @@ from .const import (
     MODE_FORCE_DISCHARGE,
     MODE_MANUAL,
     MODE_OFF,
+    STORAGE_KEY_PREFIX,
+    STORAGE_VERSION,
     UPDATE_INTERVAL_SECONDS,
 )
 
@@ -210,6 +215,55 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._last_published_action: str | None = None
         self._pending_action: str | None = None
         self._pending_action_since: datetime | None = None
+
+        # --- Safety watchdog startup grace period ---
+        # On HA startup the first coordinator refresh typically runs before
+        # the upstream Victron / EPEX integrations have published a real
+        # state. Without a grace window the safety watchdog would see
+        # ``"unavailable"`` and spuriously switch the system to OFF on
+        # every restart. The deadline is cleared early on the first tick
+        # where all critical entities report a real state, so a healthy
+        # startup exits the grace period almost immediately. The grace
+        # period length is user-configurable via the options flow.
+        grace_seconds: int = int(
+            entry.options.get(
+                CONF_SAFETY_STARTUP_GRACE_SECONDS,
+                DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+            )
+        )
+        self.safety_startup_grace_seconds: int = grace_seconds
+        self._safety_startup_deadline: datetime | None = (
+            dt_util.now() + timedelta(seconds=grace_seconds)
+        ) if grace_seconds > 0 else None
+
+        # --- Persistent plan storage ---
+        # The charge/discharge/pv_charge slots and the blocked-hour lists
+        # are persisted to a Home Assistant ``Store`` so they survive
+        # restarts. The Store is keyed by config entry id so multiple
+        # entries would not collide (today only one is allowed by the
+        # config flow, but the per-entry key keeps the code future-proof).
+        # ``_schedule_loaded_from_store`` tracks whether async_setup()
+        # actually applied a payload from disk; it is used to keep the
+        # post-load save decision sensible (no point writing back an
+        # empty default state on every restart).
+        self._store: Store = Store(
+            hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}.{entry.entry_id}"
+        )
+        self._schedule_loaded_from_store: bool = False
+        # ``_suspend_save`` blocks fire-and-forget Store writes for the
+        # entire ``async_setup`` window. Without it, the three text
+        # entities (``BlockedChargingHoursText``,
+        # ``BlockedDischargingHoursText``, ``ReplanHoursText``) call
+        # their setters from ``async_added_to_hass`` during
+        # ``forward_entry_setups`` and schedule a save. The first
+        # ``await`` inside ``async_setup`` then lets the event loop run
+        # those pending saves — which write the (still empty) charge
+        # / discharge / pv_charge slots to the Store, overwriting the
+        # user's persisted plan before ``_async_load_schedule`` ever
+        # gets to read it. The flag is cleared at the very end of
+        # ``async_setup`` so the first real user mutation after startup
+        # is persisted.
+        self._suspend_save: bool = True
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -433,6 +487,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             [s for s in slots if self._valid_slot(s[0], s[1])]
         )
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_discharge_hours(self, slots: list[ScheduleSlot]) -> None:
@@ -441,18 +496,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             [s for s in slots if self._valid_slot(s[0], s[1])]
         )
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_charging_hours(self, hours: list[int]) -> None:
         """Set blocked charging hours (recurring daily) and trigger update."""
         self._blocked_charging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_blocked_discharging_hours(self, hours: list[int]) -> None:
         """Set blocked discharging hours (recurring daily) and trigger update."""
         self._blocked_discharging_hours = sorted(set(h for h in hours if 0 <= h <= 23))
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_replan_hours(self, hours: list[int]) -> None:
@@ -473,6 +531,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             )
         else:
             _LOGGER.info("Replan hours updated to %s", normalized)
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def _install_replan_listener(self) -> None:
@@ -507,6 +566,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._charge_hours = []
             self._discharge_hours = []
             _LOGGER.info("Daily schedule reset (manual mode)")
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def toggle_hour(self, hour: int, date_str: str | None = None) -> None:
@@ -553,10 +613,19 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             # idle → charge
             self._charge_hours = self._sort_slots(self._charge_hours + [slot])
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_hour_action(self, hour: int, action: str, date_str: str | None = None) -> None:
         """Set a specific hour to charge, discharge, blocked, or idle.
+
+        The recurring ``blocked_charging_hours`` / ``blocked_discharging_hours``
+        lists are preserved across non-blocked actions so that a per-day
+        override (e.g. picked from the plan card for a blocked bar) only
+        applies to ``(date_str, hour)`` while the same hour on future days
+        stays blocked. To remove the block entirely, use the dedicated
+        ``set_blocked_charging_hours`` / ``set_blocked_discharging_hours``
+        services.
 
         Args:
             hour: Hour of day (0-23).
@@ -572,13 +641,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         slot: ScheduleSlot = (date_str, hour)
 
-        # Remove from charge/discharge/pv_charge lists (date-specific)
+        # Remove from charge/discharge/pv_charge lists (date-specific).
+        # The recurring blocked_*_hours lists are intentionally left intact
+        # for non-BLOCKED actions; the override lives only in the per-day
+        # slot and the decision engine treats a per-day slot for a blocked
+        # hour as a user override.
         self._charge_hours = [s for s in self._charge_hours if s != slot]
         self._discharge_hours = [s for s in self._discharge_hours if s != slot]
         self._pv_charge_hours = [s for s in self._pv_charge_hours if s != slot]
-        # Remove from blocked lists (recurring)
-        self._blocked_charging_hours = [h for h in self._blocked_charging_hours if h != hour]
-        self._blocked_discharging_hours = [h for h in self._blocked_discharging_hours if h != hour]
 
         # Add to correct list
         if action == ACTION_CHARGE:
@@ -588,9 +658,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         elif action == ACTION_DISCHARGE:
             self._discharge_hours = self._sort_slots(self._discharge_hours + [slot])
         elif action == ACTION_BLOCKED:
-            self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
-            self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
+            if hour not in self._blocked_charging_hours:
+                self._blocked_charging_hours = sorted(self._blocked_charging_hours + [hour])
+            if hour not in self._blocked_discharging_hours:
+                self._blocked_discharging_hours = sorted(self._blocked_discharging_hours + [hour])
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def clear_schedule(self) -> None:
@@ -601,7 +674,153 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._blocked_charging_hours = []
         self._blocked_discharging_hours = []
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
+
+    # ------------------------------------------------------------------
+    # Plan persistence
+    # ------------------------------------------------------------------
+    #
+    # The charge/discharge/pv_charge plan and the blocked-hour lists are
+    # written to a Home Assistant ``Store`` on every change and reloaded
+    # on startup. The Store payload is intentionally minimal: slot lists
+    # are serialized as ``[[date, hour], ...]`` and the schedule update
+    # timestamp as an ISO string (or ``None``). Malformed entries are
+    # silently dropped at load time so a corrupted Store can never wedge
+    # the integration; the user can always press the **Recalculate
+    # Schedule** button to rebuild the plan.
+    #
+    # On startup, if the Store is empty the coordinator's in-memory state
+    # is left untouched. This is important for two reasons:
+    #   1. A fresh install must not auto-replan (the user has explicitly
+    #      asked for that behavior).
+    #   2. Migrating from a version that did not write to the Store
+    #      leaves the RestoreEntity-restored state on the coordinator
+    #      intact, so blocked hours / replan hours / control mode are
+    #      still recovered.
+    #
+    # Once the user changes anything, the next save populates the Store
+    # and the migration path is no longer needed.
+
+    @staticmethod
+    def _serialize_slots(slots: list[ScheduleSlot]) -> list[list[Any]]:
+        """Serialize schedule slots for JSON storage."""
+        return [[d, h] for d, h in slots]
+
+    @staticmethod
+    def _deserialize_slots(raw: Any) -> list[ScheduleSlot]:
+        """Deserialize slot list from JSON, dropping any malformed entry.
+
+        Each valid slot becomes a ``(date_str, hour)`` tuple; everything
+        else is silently discarded. Returns an empty list on any
+        structural error so a corrupt Store cannot crash the integration.
+        """
+        if not isinstance(raw, list):
+            return []
+        result: list[ScheduleSlot] = []
+        for item in raw:
+            if (
+                isinstance(item, (list, tuple))
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and isinstance(item[1], int)
+            ):
+                date_str, hour = item[0], item[1]
+                if VictronChargeControlCoordinator._valid_slot(date_str, hour):
+                    result.append((date_str, hour))
+        return result
+
+    @staticmethod
+    def _deserialize_hours(raw: Any) -> list[int]:
+        """Deserialize an hour-of-day list, dropping any out-of-range value."""
+        if not isinstance(raw, list):
+            return []
+        return sorted({int(h) for h in raw if isinstance(h, int) and 0 <= h <= 23})
+
+    async def _async_save_schedule(self) -> None:
+        """Persist the current plan to the Home Assistant Store."""
+        payload = {
+            "charge_hours": self._serialize_slots(self._charge_hours),
+            "discharge_hours": self._serialize_slots(self._discharge_hours),
+            "pv_charge_hours": self._serialize_slots(self._pv_charge_hours),
+            "blocked_charging_hours": list(self._blocked_charging_hours),
+            "blocked_discharging_hours": list(self._blocked_discharging_hours),
+            "last_schedule_update": (
+                self._last_schedule_update.isoformat()
+                if self._last_schedule_update is not None
+                else None
+            ),
+        }
+        try:
+            await self._store.async_save(payload)
+        except Exception:  # noqa: BLE001
+            # Persistence is best-effort. A failed write must not break
+            # the running integration; the next change will retry.
+            _LOGGER.warning("Failed to persist charge plan to Store", exc_info=True)
+
+    def _async_schedule_save(self) -> None:
+        """Schedule a fire-and-forget save of the current plan.
+
+        Used by the public mutators (``set_charge_hours``,
+        ``toggle_hour``, ...) so the call site stays sync and the
+        disk write does not block the caller.
+
+        No-op while ``_suspend_save`` is True (the entire
+        ``async_setup`` window). This is what prevents the text
+        entities' ``async_added_to_hass`` from clobbering the
+        persisted plan during HA startup — see the comment on the
+        ``_suspend_save`` attribute in ``__init__``.
+        """
+        if self._suspend_save:
+            return
+        self.hass.async_create_task(self._async_save_schedule())
+
+    async def _async_load_schedule(self) -> None:
+        """Load the plan from the Store and apply it to the coordinator.
+
+        If the Store is empty (fresh install, first ever start, or a
+        migration from a pre-persistence version), the coordinator's
+        in-memory state is left untouched. This is the desired behavior
+        because:
+
+        * A fresh install must not auto-replan (the user explicitly
+          requested no replan on HA restart).
+        * On a migration, the RestoreEntity callbacks on
+          ``text.py``/``select.py`` have already restored blocked hours,
+          replan hours and the control mode into the coordinator; the
+          Store load must not wipe them.
+        """
+        try:
+            data = await self._store.async_load()
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Failed to load charge plan from Store", exc_info=True)
+            return
+
+        if not isinstance(data, dict):
+            # Empty Store or unsupported payload shape: keep whatever the
+            # RestoreEntity callbacks already populated.
+            return
+
+        self._charge_hours = self._deserialize_slots(data.get("charge_hours"))
+        self._discharge_hours = self._deserialize_slots(data.get("discharge_hours"))
+        self._pv_charge_hours = self._deserialize_slots(data.get("pv_charge_hours"))
+        self._blocked_charging_hours = self._deserialize_hours(
+            data.get("blocked_charging_hours")
+        )
+        self._blocked_discharging_hours = self._deserialize_hours(
+            data.get("blocked_discharging_hours")
+        )
+        ts_raw = data.get("last_schedule_update")
+        if isinstance(ts_raw, str):
+            parsed = dt_util.parse_datetime(ts_raw)
+            self._last_schedule_update = parsed
+        self._schedule_loaded_from_store = True
+        _LOGGER.info(
+            "Loaded charge plan from Store: %d charge, %d discharge, %d pv_charge slots",
+            len(self._charge_hours),
+            len(self._discharge_hours),
+            len(self._pv_charge_hours),
+        )
 
     # ------------------------------------------------------------------
     # EPEX data extraction helpers
@@ -742,6 +961,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._charge_hours = self._sort_slots(charge_slots)
         self._discharge_hours = self._sort_slots(discharge_slots)
         self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
 
         _LOGGER.info(
             "Auto schedule calculated — Charge: %s, Discharge: %s (%d hours evaluated)",
@@ -781,6 +1001,24 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if "ct" in unit or "cent" in unit or unit.startswith("c/") or " c/" in unit:
             return price / 100.0
         return price
+
+    def _get_current_price_ct(self) -> float | None:
+        """Read the EPEX spot price in the same unit as ``grid_feed_in_price_threshold``.
+
+        Returns ``None`` when the EPEX sensor is unavailable or unparseable.
+        Used to determine the reduced-mode status before computing the
+        setpoint, so the PV-Charge/Discharge setpoints can be clamped to
+        the active feed-in limit in the same tick.
+        """
+        state = self.hass.states.get(self._epex_spot_entity)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return None
+        price_eur_kwh = self._normalize_price_eur_per_kwh(
+            state.state, dict(state.attributes)
+        )
+        if price_eur_kwh is None:
+            return None
+        return price_eur_kwh * 100.0
 
     def _get_entity_float(self, entity_id: str | None) -> float | None:
         """Read a numeric entity state, returning None when unavailable or invalid."""
@@ -976,11 +1214,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             ):
                 return ACTION_PV_CHARGE
             if current_slot in self._charge_hours and self.charge_allowed and not self._charge_blocked_by_soc:
-                if hour not in self._blocked_charging_hours:
-                    return ACTION_CHARGE
+                # A per-day charge slot for a blocked hour is a user override
+                # (set_hour_action leaves blocked_charging_hours intact and
+                # the auto-scheduler skips blocked hours, so the slot can
+                # only have been placed explicitly). Honor it.
+                return ACTION_CHARGE
             if current_slot in self._discharge_hours and self.discharge_allowed and not self._discharge_blocked_by_soc:
-                if hour not in self._blocked_discharging_hours:
-                    return ACTION_DISCHARGE
+                return ACTION_DISCHARGE
             return ACTION_IDLE
 
         # Priority 5: Fallback
@@ -1043,8 +1283,17 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         return self._last_published_action
 
-    def _compute_setpoint(self, action: str) -> float:
-        """Compute the clamped grid setpoint for the given action."""
+    def _compute_setpoint(self, action: str, *, is_reduced: bool = False) -> float:
+        """Compute the clamped grid setpoint for the given action.
+
+        ``is_reduced`` is True when the reduced grid feed-in mode is active
+        (the ESS ``max_grid_feed_in`` entity has been pulled down to
+        ``reduced_max_grid_feed_in`` because the spot price is below
+        ``grid_feed_in_price_threshold``). In that case the PV-Charge and
+        Discharge setpoints are clamped on the export side so the
+        integration never asks the ESS to feed more into the grid than
+        the active feed-in limit allows.
+        """
         if action == ACTION_CHARGE:
             raw = self.charge_power  # positive = import
         elif action == ACTION_PV_CHARGE:
@@ -1058,6 +1307,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 surplus = self._solar_surplus_mean or 0.0
                 f = max(0.0, min(1.0, self.pv_charge_share / 100.0))
                 raw = (1.0 - f) * (-surplus) + f * self.idle_setpoint
+            if is_reduced:
+                # Don't ask the ESS to feed in more than the reduced mode
+                # allows. raw is negative when exporting; the limit is
+                # positive (W), so the most negative allowed setpoint is
+                # -reduced_max_grid_feed_in.
+                raw = max(raw, -self.reduced_max_grid_feed_in)
         elif action == ACTION_DISCHARGE:
             surplus = self._solar_surplus_mean or 0.0
             if self._discharge_solar_only:
@@ -1066,6 +1321,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             else:
                 # Normal discharge: discharge power + solar surplus
                 raw = -(self.discharge_power + surplus)
+            if is_reduced:
+                raw = max(raw, -self.reduced_max_grid_feed_in)
         else:
             raw = self.idle_setpoint
 
@@ -1075,8 +1332,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Setpoint application
     # ------------------------------------------------------------------
 
-    async def _apply_setpoint(self, target_setpoint: float) -> None:
-        """Write the target setpoint to the Victron grid setpoint entity."""
+    async def _apply_setpoint(
+        self, target_setpoint: float, action: str | None = None
+    ) -> None:
+        """Write the target setpoint to the Victron grid setpoint entity.
+
+        When ``action`` is ``ACTION_IDLE`` the deadband is bypassed so the
+        grid setpoint is always reset to ``idle_setpoint``, regardless of
+        how close the previous value is. Without this, a transition from
+        PV-Charging (or any other state) to Idle could leave the entity
+        holding the old setpoint whenever the difference falls within
+        ``setpoint_deadband``.
+        """
         # Check entity availability
         state = self.hass.states.get(self._grid_setpoint_entity)
         if state is None or state.state in ("unavailable", "unknown"):
@@ -1093,7 +1360,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             current = 0.0
 
         if (
-            self._last_applied_setpoint is not None
+            action != ACTION_IDLE
+            and self._last_applied_setpoint is not None
             and abs(target_setpoint - current) <= self.setpoint_deadband
         ):
             return
@@ -1118,11 +1386,27 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Grid feed-in control
     # ------------------------------------------------------------------
 
+    def _is_reduced_feed_in_mode(self, current_price: float | None) -> bool:
+        """Return whether the reduced grid feed-in mode should be active.
+
+        Used by both ``_compute_setpoint`` (to clamp the export side of the
+        PV-Charge and Discharge setpoints) and ``_apply_grid_feed_in`` (to
+        decide which limit to push to the ESS). The two paths must agree so
+        the setpoint and the ESS feed-in limit never contradict each other.
+        """
+        if not self.grid_feed_in_control_enabled:
+            return False
+        if current_price is None:
+            return False
+        return current_price < self.grid_feed_in_price_threshold
+
     async def _apply_grid_feed_in(self, current_price: float | None) -> tuple[bool, float | None]:
         """Control max grid feed-in based on spot price.
 
         Returns (is_reduced, applied_value).
         """
+        is_reduced = self._is_reduced_feed_in_mode(current_price)
+
         if not self.grid_feed_in_control_enabled:
             # Reset to default when feature is disabled
             if self._last_applied_feed_in is not None and self._last_applied_feed_in != self.default_max_grid_feed_in:
@@ -1146,12 +1430,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return False, None
 
         # Determine target feed-in value
-        if current_price < self.grid_feed_in_price_threshold:
-            target_feed_in = self.reduced_max_grid_feed_in
-            is_reduced = True
-        else:
-            target_feed_in = self.default_max_grid_feed_in
-            is_reduced = False
+        target_feed_in = self.reduced_max_grid_feed_in if is_reduced else self.default_max_grid_feed_in
 
         # Check entity availability
         state = self.hass.states.get(self._max_grid_feed_in_entity)
@@ -1212,11 +1491,28 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._sample_solar_surplus()
 
         # Safety check
-        if self.control_mode != MODE_OFF and not self._check_safety():
+        now = dt_util.now()
+        in_startup_grace = (
+            self._safety_startup_deadline is not None
+            and now < self._safety_startup_deadline
+        )
+        safe = self._check_safety()
+        if safe and self._safety_startup_deadline is not None:
+            # First tick with all critical entities reporting a real state
+            # ends the grace period early — the watchdog becomes fully
+            # active for the rest of the run.
+            self._safety_startup_deadline = None
+            _LOGGER.debug("Safety watchdog startup grace period cleared after first safe tick")
+        if (
+            self.control_mode != MODE_OFF
+            and not safe
+            and not in_startup_grace
+        ):
             _LOGGER.warning(
                 "Safety watchdog: critical entity unavailable — switching to OFF"
             )
             self.control_mode = MODE_OFF
+            self._safety_startup_deadline = None
             await self.hass.services.async_call(
                 "persistent_notification",
                 "create",
@@ -1227,6 +1523,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 },
                 blocking=False,
             )
+        elif not safe and in_startup_grace:
+            remaining = (self._safety_startup_deadline - now).total_seconds()
+            _LOGGER.debug(
+                "Safety watchdog: critical entity unavailable during startup "
+                "grace (%.0fs remaining) — tolerating",
+                remaining,
+            )
+
+        # Current price (ct/kWh). Read here so the reduced-mode status
+        # is available to the setpoint calculation in the same tick —
+        # _apply_grid_feed_in runs later but only writes the ESS entity,
+        # the decision must be made now.
+        current_price_ct = self._get_current_price_ct()
+        is_reduced = self._is_reduced_feed_in_mode(current_price_ct)
 
         # Decision engine
         live_action = self._determine_action()
@@ -1236,14 +1546,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # the decision engine (e.g. a single noisy SOC reading) without
         # delaying genuine schedule transitions, since those persist.
         action = self._resolve_published_action(live_action)
-        setpoint = self._compute_setpoint(action)
+        setpoint = self._compute_setpoint(action, is_reduced=is_reduced)
 
         # Apply setpoint (only when not OFF)
         if self.control_mode != MODE_OFF:
-            await self._apply_setpoint(setpoint)
+            await self._apply_setpoint(setpoint, action=action)
         elif self._last_applied_setpoint != self.idle_setpoint:
             # When turning off, reset to idle
-            await self._apply_setpoint(self.idle_setpoint)
+            await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE)
 
         # Current price
         epex_state = self.hass.states.get(self._epex_spot_entity)
@@ -1300,8 +1610,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Clean expired schedule slots
         self._clean_expired_slots()
 
-        # Grid feed-in control
-        current_price_ct = current_price_eur_per_kwh * 100 if current_price_eur_per_kwh is not None else None
+        # Grid feed-in control (writes the ESS feed-in entity; uses the
+        # price already read at the top of this method).
         feed_in_active, applied_feed_in = await self._apply_grid_feed_in(current_price_ct)
 
         # Cost tracking from optional cumulative kWh meters
@@ -1386,11 +1696,33 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Initial data
         self.data = ChargeControlData()
 
-        # Initial schedule calculation if already in auto mode (e.g. after restart)
-        if self.control_mode == MODE_AUTO:
-            self.calculate_auto_schedule()
+        # Restore the previous charge plan from the persistent Store. If
+        # the Store is empty (fresh install, first ever start, or a
+        # migration from a pre-persistence version) the coordinator's
+        # in-memory state is left untouched — in particular we
+        # deliberately do NOT call calculate_auto_schedule() here so the
+        # user's previous plan is not silently overwritten on a Home
+        # Assistant restart. The user can still trigger a fresh plan via
+        # the **Recalculate Schedule** button or by waiting for the next
+        # configured replan hour.
+        #
+        # The load is the very first ``await`` in this method on
+        # purpose: it runs before any other code that could yield, and
+        # combined with ``_suspend_save`` (still True at this point) it
+        # guarantees the text entities' ``async_added_to_hass``
+        # restore-setters, which ran earlier during
+        # ``forward_entry_setups``, did not write a stale empty plan
+        # over the user's persisted one.
+        await self._async_load_schedule()
 
         await self.async_request_refresh()
+
+        # From this point on, public mutators are allowed to write to
+        # the Store again. Set last so a race between any
+        # ``hass.async_create_task`` save scheduled during
+        # ``forward_entry_setups`` and the load above cannot clobber
+        # the restored state.
+        self._suspend_save = False
 
     async def async_shutdown(self) -> None:
         """Remove all listeners."""
@@ -1400,3 +1732,4 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         for unsub in self._unsub_listeners:
             unsub()
         self._unsub_listeners.clear()
+        self._safety_startup_deadline = None

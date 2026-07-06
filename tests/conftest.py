@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import datetime, timezone
 from typing import Any
@@ -154,8 +155,104 @@ def mock_hass() -> MagicMock:
     hass.config_entries.async_forward_entry_setups = AsyncMock()
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
     hass.config_entries.async_reload = AsyncMock()
-    hass.async_create_task = MagicMock()
+    # ``hass.async_create_task`` schedules coroutines on the running
+    # event loop when one is active (async tests) and runs them
+    # synchronously via a fresh event loop otherwise (sync tests).
+    # Both paths actually await the coroutine, which prevents
+    # ``coroutine ... was never awaited`` warnings from fire-and-forget
+    # store saves scheduled by the public mutators.
+    def _async_create_task(coro: Any) -> Any:
+        if not asyncio.iscoroutine(coro):
+            return MagicMock()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — run synchronously in a private loop.
+            asyncio.run(coro)
+            return MagicMock()
+        return asyncio.ensure_future(coro)
+
+    # Track scheduled tasks so tests can drain them and drive
+    # fire-and-forget coroutines to completion (essential for the
+    # persistence race tests that need to observe the actual
+    # ``Store.async_save`` call before the next ``Store.async_load``).
+    hass._scheduled_tasks = []
+
+    def _async_create_task(coro: Any) -> Any:
+        if not asyncio.iscoroutine(coro):
+            return MagicMock()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — run synchronously in a private loop.
+            asyncio.run(coro)
+            return MagicMock()
+        task = asyncio.ensure_future(coro)
+        hass._scheduled_tasks.append(task)
+        return task
+
+    hass.async_create_task = MagicMock(side_effect=_async_create_task)
     return hass
+
+
+class _FakeStore:
+    """In-memory fake of ``homeassistant.helpers.storage.Store``.
+
+    Unlike a plain ``MagicMock`` with a hard-coded ``async_load``
+    return value, this fake actually persists the data passed to
+    ``async_save`` so subsequent ``async_load`` calls see the latest
+    write. That is what makes it possible to reproduce the startup
+    race in tests: a text entity's setter triggers a save that
+    overwrites the pre-populated plan, and the next load must observe
+    that overwrite (the bug) — or not, when the suppression is in
+    place (the fix).
+
+    Tests that just want to inspect the latest write can read
+    ``mock_store.save_calls[-1]``; tests that want to pre-populate
+    the Store set ``mock_store._data = {...]``; tests that need
+    AsyncMock-style assertions can replace ``async_load`` or
+    ``async_save`` with a custom ``AsyncMock`` and re-attach the
+    persistence side effect manually.
+    """
+
+    def __init__(self) -> None:
+        self._data: Any = None
+        self.save_calls: list[Any] = []
+
+    async def async_load(self) -> Any:
+        return self._data
+
+    async def async_save(self, data: Any) -> None:
+        self._data = data
+        self.save_calls.append(data)
+
+
+@pytest.fixture
+def mock_store() -> _FakeStore:
+    """In-memory fake ``Store`` shared by all tests in the session.
+
+    The coordinator owns a ``Store`` for persisting the charge plan.
+    Tests do not need real disk I/O, so the Store is replaced with
+    this fake whose ``async_load`` returns ``None`` (empty Store) by
+    default and whose ``async_save`` records calls AND updates the
+    data so subsequent loads see the latest write.
+    """
+    return _FakeStore()
+
+
+@pytest.fixture(autouse=True)
+def patch_store(mock_store: _FakeStore):
+    """Patch ``Store`` in the coordinator module so every coordinator
+    instance created in the test suite gets the shared fake ``mock_store``.
+
+    ``autouse=True`` keeps existing tests working without changes —
+    they get an empty Store by default and never assert on save calls.
+    """
+    with patch(
+        "custom_components.victron_charge_control.coordinator.Store",
+        return_value=mock_store,
+    ):
+        yield mock_store
 
 
 @pytest.fixture

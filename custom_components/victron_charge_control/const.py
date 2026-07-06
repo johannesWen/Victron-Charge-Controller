@@ -4,6 +4,15 @@ from __future__ import annotations
 
 DOMAIN = "victron_charge_control"
 
+# --- Persistent storage ---
+# Used to save the charge/discharge plan so it survives Home Assistant
+# restarts. The actual Store key is unique per config entry and is
+# constructed as ``f"{STORAGE_KEY_PREFIX}.{entry_id}"``. Bump
+# ``STORAGE_VERSION`` whenever the persisted shape changes; Home Assistant
+# will then ignore previously written data and start fresh.
+STORAGE_VERSION = 1
+STORAGE_KEY_PREFIX = f"{DOMAIN}_schedule"
+
 # --- Config entry keys (from config flow) ---
 CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_GRID_SETPOINT_ENTITY = "grid_setpoint_entity"
@@ -12,6 +21,9 @@ CONF_MAX_GRID_FEED_IN_ENTITY = "max_grid_feed_in_entity"
 CONF_GRID_CONSUMPTION_ENTITY = "grid_consumption_entity"
 CONF_GRID_FEED_IN_ENERGY_ENTITY = "grid_feed_in_energy_entity"
 CONF_SOLAR_SURPLUS_ENTITY = "solar_surplus_entity"
+
+# --- Config options keys (from options flow) ---
+CONF_SAFETY_STARTUP_GRACE_SECONDS = "safety_startup_grace_seconds"
 
 # --- Control modes ---
 MODE_OFF = "off"
@@ -64,6 +76,16 @@ DEFAULT_PV_CHARGE_SHARE = 100.0
 # 60s-coordinator-cadence flap and short enough that a genuine schedule
 # transition (cheap hour starting, etc.) feels instant to the user.
 DEFAULT_ACTION_CONFIRM_SECONDS = 30.0
+
+# Grace period (seconds) after HA startup during which the safety watchdog
+# tolerates unavailable critical entities. The first coordinator refresh
+# typically runs before all upstream integrations (Victron Venus, etc.) have
+# published a real state, so without a grace window the watchdog would
+# spuriously switch the system to OFF on every Home Assistant restart.
+# The deadline is cleared early on the first tick where all critical entities
+# report a real state, so a healthy startup exits the grace period almost
+# immediately.
+DEFAULT_SAFETY_STARTUP_GRACE_SECONDS = 90
 
 # --- Update interval ---
 UPDATE_INTERVAL_SECONDS = 60
