@@ -14,6 +14,7 @@ from custom_components.victron_charge_control.const import (
     ACTION_DISCHARGE,
     ACTION_IDLE,
     ACTION_PV_CHARGE,
+    CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_CHARGE_POWER,
@@ -39,6 +40,7 @@ from custom_components.victron_charge_control.coordinator import (
 from .conftest import (
     MOCK_CONFIG_DATA,
     MOCK_CONFIG_DATA_WITH_COST,
+    MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
     MOCK_CONFIG_DATA_WITH_SOLAR,
     MockConfigEntry,
     MockState,
@@ -115,6 +117,18 @@ class TestCoordinatorInit:
         )
         assert coord.grid_consumption_entity == "sensor.grid_consumption_kwh"
         assert coord.grid_feed_in_energy_entity == "sensor.grid_feed_in_kwh"
+
+    def test_dc_feed_in_entity_references(self, mock_hass):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_DC_FEED_IN)),
+        )
+        assert coord.dc_coupled_pv_feed_in_entity == "switch.dc_pv_feed_in"
+        assert coord.control_dc_coupled_feed_in is False
+        assert coord._last_applied_dc_feed_in_state is None
+
+    def test_dc_feed_in_entity_absent_by_default(self, coordinator):
+        assert coordinator.dc_coupled_pv_feed_in_entity is None
 
 
 # ======================================================================
@@ -2092,6 +2106,133 @@ class TestGridFeedInControl:
 
         assert is_reduced is False
         assert applied == 5000.0
+
+
+# ======================================================================
+# DC coupled PV feed-in control
+# ======================================================================
+
+
+class TestDcCoupledFeedInControl:
+    """Tests for the linked DC-coupled PV feed-in switch actuation."""
+
+    @pytest.fixture
+    def dc_coord(self, mock_hass):
+        """Coordinator with the DC feed-in entity configured."""
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_DC_FEED_IN)),
+        )
+        coord.data = ChargeControlData()
+        coord.async_request_refresh = MagicMock()
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_inert_when_feature_off(self, dc_coord):
+        """No switch call when control_dc_coupled_feed_in is False."""
+        dc_coord.control_dc_coupled_feed_in = False
+        dc_coord.grid_feed_in_control_enabled = True
+        dc_coord.control_mode = MODE_AUTO
+        await dc_coord._apply_dc_coupled_feed_in(is_reduced=True)
+        dc_coord.hass.services.async_call.assert_not_called()
+        assert dc_coord._last_applied_dc_feed_in_state is None
+
+    @pytest.mark.asyncio
+    async def test_inert_when_grid_feed_in_control_off(self, dc_coord):
+        """No switch call when grid_feed_in_control_enabled is False."""
+        dc_coord.control_dc_coupled_feed_in = True
+        dc_coord.grid_feed_in_control_enabled = False
+        dc_coord.control_mode = MODE_AUTO
+        await dc_coord._apply_dc_coupled_feed_in(is_reduced=True)
+        dc_coord.hass.services.async_call.assert_not_called()
+        assert dc_coord._last_applied_dc_feed_in_state is None
+
+    @pytest.mark.asyncio
+    async def test_inert_when_mode_off(self, dc_coord):
+        """No switch call when control_mode is OFF."""
+        dc_coord.control_dc_coupled_feed_in = True
+        dc_coord.grid_feed_in_control_enabled = True
+        dc_coord.control_mode = MODE_OFF
+        await dc_coord._apply_dc_coupled_feed_in(is_reduced=True)
+        dc_coord.hass.services.async_call.assert_not_called()
+        assert dc_coord._last_applied_dc_feed_in_state is None
+
+    @pytest.mark.asyncio
+    async def test_inert_when_no_linked_entity(self, coordinator):
+        """No switch call when no linked entity is configured."""
+        coordinator.control_dc_coupled_feed_in = True
+        coordinator.grid_feed_in_control_enabled = True
+        coordinator.control_mode = MODE_AUTO
+        assert coordinator.dc_coupled_pv_feed_in_entity is None
+        await coordinator._apply_dc_coupled_feed_in(is_reduced=True)
+        coordinator.hass.services.async_call.assert_not_called()
+        assert coordinator._last_applied_dc_feed_in_state is None
+
+    @pytest.mark.asyncio
+    async def test_reduced_turns_off(self, dc_coord):
+        """Reduced mode → switch.turn_off called once."""
+        dc_coord.control_dc_coupled_feed_in = True
+        dc_coord.grid_feed_in_control_enabled = True
+        dc_coord.control_mode = MODE_AUTO
+        dc_coord._last_applied_dc_feed_in_state = None
+        dc_coord.hass.states.get.return_value = MockState("on")
+
+        await dc_coord._apply_dc_coupled_feed_in(is_reduced=True)
+
+        dc_coord.hass.services.async_call.assert_called_once_with(
+            "switch",
+            "turn_off",
+            {"entity_id": "switch.dc_pv_feed_in"},
+            blocking=True,
+        )
+        assert dc_coord._last_applied_dc_feed_in_state is False
+
+    @pytest.mark.asyncio
+    async def test_normal_turns_on(self, dc_coord):
+        """Normal mode → switch.turn_on called once."""
+        dc_coord.control_dc_coupled_feed_in = True
+        dc_coord.grid_feed_in_control_enabled = True
+        dc_coord.control_mode = MODE_AUTO
+        dc_coord._last_applied_dc_feed_in_state = None
+        dc_coord.hass.states.get.return_value = MockState("off")
+
+        await dc_coord._apply_dc_coupled_feed_in(is_reduced=False)
+
+        dc_coord.hass.services.async_call.assert_called_once_with(
+            "switch",
+            "turn_on",
+            {"entity_id": "switch.dc_pv_feed_in"},
+            blocking=True,
+        )
+        assert dc_coord._last_applied_dc_feed_in_state is True
+
+    @pytest.mark.asyncio
+    async def test_dedup_skips_redundant_call(self, dc_coord):
+        """Same desired state as last applied → no service call."""
+        dc_coord.control_dc_coupled_feed_in = True
+        dc_coord.grid_feed_in_control_enabled = True
+        dc_coord.control_mode = MODE_AUTO
+        dc_coord._last_applied_dc_feed_in_state = False
+        dc_coord.hass.states.get.return_value = MockState("off")
+
+        await dc_coord._apply_dc_coupled_feed_in(is_reduced=True)
+
+        dc_coord.hass.services.async_call.assert_not_called()
+        assert dc_coord._last_applied_dc_feed_in_state is False
+
+    @pytest.mark.asyncio
+    async def test_unavailable_entity_skipped(self, dc_coord):
+        """Unavailable linked entity → warn + skip, state unchanged."""
+        dc_coord.control_dc_coupled_feed_in = True
+        dc_coord.grid_feed_in_control_enabled = True
+        dc_coord.control_mode = MODE_AUTO
+        dc_coord._last_applied_dc_feed_in_state = None
+        dc_coord.hass.states.get.return_value = MockState("unavailable")
+
+        await dc_coord._apply_dc_coupled_feed_in(is_reduced=True)
+
+        dc_coord.hass.services.async_call.assert_not_called()
+        assert dc_coord._last_applied_dc_feed_in_state is None
 
 
 # ======================================================================

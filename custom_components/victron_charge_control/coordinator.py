@@ -29,6 +29,7 @@ from .const import (
     ACTION_IDLE,
     ACTION_PV_CHARGE,
     CONF_BATTERY_SOC_ENTITY,
+    CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -110,6 +111,7 @@ from .decision import (
     update_soc_hysteresis as decision_update_soc_hysteresis,
 )
 from .actuation import (
+    apply_dc_coupled_feed_in as actuation_apply_dc_coupled_feed_in,
     apply_grid_feed_in as actuation_apply_grid_feed_in,
     apply_setpoint as actuation_apply_setpoint,
     is_reduced_feed_in_mode as actuation_is_reduced_feed_in_mode,
@@ -196,6 +198,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._solar_surplus_entity: str | None = (
             entry.data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
         )
+        self._dc_coupled_pv_feed_in_entity: str | None = (
+            entry.data.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY) or None
+        )
 
         # --- Configurable parameters (modified by number/select/switch entities) ---
         self.control_mode: str = MODE_OFF
@@ -224,6 +229,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.default_max_grid_feed_in: float = DEFAULT_MAX_GRID_FEED_IN
         self.reduced_max_grid_feed_in: float = DEFAULT_REDUCED_GRID_FEED_IN
         self._last_applied_feed_in: float | None = None
+
+        # --- DC coupled PV feed-in control ---
+        # When enabled, the linked external switch is driven ON (normal
+        # mode) / OFF (reduced mode) in lock-step with the grid feed-in
+        # reduced-mode predicate. Inert unless both this feature and
+        # ``grid_feed_in_control_enabled`` are on, and the integration is
+        # not in MODE_OFF. ``_last_applied_dc_feed_in_state`` dedups
+        # redundant switch.turn_on/off calls across ticks.
+        self.control_dc_coupled_feed_in: bool = False
+        self._last_applied_dc_feed_in_state: bool | None = None
 
         # --- Cost tracking from cumulative kWh meters ---
         self._last_grid_consumption_kwh: float | None = None
@@ -360,6 +375,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return self._solar_surplus_entity
 
     @property
+    def dc_coupled_pv_feed_in_entity(self) -> str | None:
+        return self._dc_coupled_pv_feed_in_entity
+
+    @property
     def grid_energy_cost(self) -> float | None:
         if (
             self._grid_consumption_entity is None
@@ -422,6 +441,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             data.get(CONF_GRID_FEED_IN_ENERGY_ENTITY) or None
         )
         self._solar_surplus_entity = data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
+        self._dc_coupled_pv_feed_in_entity = (
+            data.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY) or None
+        )
 
     def restore_cost_state(
         self,
@@ -1086,6 +1108,26 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._last_applied_feed_in = new_last
         return is_reduced, applied_value
 
+    async def _apply_dc_coupled_feed_in(self, is_reduced: bool) -> None:
+        """Drive the linked external DC-coupled PV feed-in switch.
+
+        The ``is_reduced`` flag is the same predicate used by
+        ``_apply_grid_feed_in`` so the two actuators never disagree.
+        See ``actuation.apply_dc_coupled_feed_in`` for the inert-conditions
+        and dedup behavior.
+        """
+        self._last_applied_dc_feed_in_state = (
+            await actuation_apply_dc_coupled_feed_in(
+                self.hass,
+                entity_id=self._dc_coupled_pv_feed_in_entity,
+                control_dc_coupled_feed_in=self.control_dc_coupled_feed_in,
+                grid_feed_in_control_enabled=self.grid_feed_in_control_enabled,
+                control_mode=self.control_mode,
+                is_reduced=is_reduced,
+                last_applied_state=self._last_applied_dc_feed_in_state,
+            )
+        )
+
     # ------------------------------------------------------------------
     # Safety watchdog
     # ------------------------------------------------------------------
@@ -1128,6 +1170,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         feed_in_active, applied_feed_in = await self._apply_grid_feed_in(
             current_price_ct
         )
+        await self._apply_dc_coupled_feed_in(is_reduced=is_reduced)
         self._update_cost_tracking(price_view.eur_per_kwh)
         return self._build_snapshot(
             action=action,

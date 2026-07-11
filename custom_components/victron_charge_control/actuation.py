@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .const import ACTION_IDLE, DEFAULT_DEADBAND
+from .const import ACTION_IDLE, DEFAULT_DEADBAND, MODE_OFF
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -170,3 +170,72 @@ async def apply_grid_feed_in(
         grid_feed_in_price_threshold,
     )
     return is_reduced, target_feed_in, target_feed_in
+
+
+async def apply_dc_coupled_feed_in(
+    hass: Any,
+    *,
+    entity_id: str | None,
+    control_dc_coupled_feed_in: bool,
+    grid_feed_in_control_enabled: bool,
+    control_mode: str,
+    is_reduced: bool,
+    last_applied_state: bool | None,
+) -> bool | None:
+    """Drive the linked external DC-coupled PV feed-in switch.
+
+    Returns the new ``last_applied_state`` (``True`` = ON, ``False`` = OFF,
+    ``None`` = never written).
+
+    The switch is **inert** (left untouched, no service call) when any of
+    the following holds:
+
+    * the "Control DC Coupled Feed In" integration switch is off,
+    * the existing ``grid_feed_in_control_enabled`` switch is off (the
+      reduced mode predicate is never true in that case, so the feature
+      has no opinion),
+    * the integration ``control_mode`` is ``OFF`` (the whole ESS is
+      idle — suspend the feature entirely),
+    * no linked external switch entity is configured, or
+    * the linked entity is currently ``unavailable``/``unknown``.
+
+    Otherwise, in normal mode (price >= threshold) the linked switch is
+    turned **ON** (DC feed-in enabled); in reduced mode (price <
+    threshold) it is turned **OFF** (DC feed-in disabled). A
+    ``last_applied_state`` guard avoids redundant ``switch.turn_on``/
+    ``switch.turn_off`` calls on every 60s tick.
+    """
+    if (
+        not control_dc_coupled_feed_in
+        or not grid_feed_in_control_enabled
+        or control_mode == MODE_OFF
+        or not entity_id
+    ):
+        return last_applied_state
+
+    desired_on = not is_reduced  # normal → ON ; reduced → OFF
+    if last_applied_state is not None and desired_on == last_applied_state:
+        return last_applied_state
+
+    state = hass.states.get(entity_id)
+    if state is None or state.state in ("unavailable", "unknown"):
+        _LOGGER.warning(
+            "DC coupled PV feed-in switch %s is unavailable — skipping",
+            entity_id,
+        )
+        return last_applied_state
+
+    service = "turn_on" if desired_on else "turn_off"
+    await hass.services.async_call(
+        "switch",
+        service,
+        {"entity_id": entity_id},
+        blocking=True,
+    )
+    _LOGGER.info(
+        "DC coupled PV feed-in %s → %s (reduced=%s)",
+        entity_id,
+        "ON" if desired_on else "OFF",
+        is_reduced,
+    )
+    return desired_on
