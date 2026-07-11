@@ -47,6 +47,13 @@ SWITCHES: tuple[VictronCCSwitchDescription, ...] = (
         coordinator_attr="grid_feed_in_control_enabled",
         default_value=False,
     ),
+    VictronCCSwitchDescription(
+        key="control_dc_coupled_feed_in",
+        translation_key="control_dc_coupled_feed_in",
+        icon="mdi:solar-power-variant",
+        coordinator_attr="control_dc_coupled_feed_in",
+        default_value=False,
+    ),
 )
 
 

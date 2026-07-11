@@ -12,6 +12,7 @@ from custom_components.victron_charge_control.config_flow import (
 )
 from custom_components.victron_charge_control.const import (
     CONF_BATTERY_SOC_ENTITY,
+    CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -26,6 +27,7 @@ from custom_components.victron_charge_control.const import (
 from .conftest import (
     MOCK_CONFIG_DATA,
     MOCK_CONFIG_DATA_WITH_COST,
+    MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
     MOCK_CONFIG_DATA_WITH_SOLAR,
     MockState,
 )
@@ -77,12 +79,21 @@ class TestConfigFlow:
         )
 
     @pytest.mark.asyncio
+    async def test_create_entry_with_dc_feed_in_entity(self, flow):
+        await flow.async_step_user(user_input=dict(MOCK_CONFIG_DATA_WITH_DC_FEED_IN))
+        flow.async_create_entry.assert_called_once_with(
+            title="Victron Charge Control",
+            data=MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
+        )
+
+    @pytest.mark.asyncio
     async def test_blank_optional_entities_are_not_stored(self, flow):
         user_input = {
             **MOCK_CONFIG_DATA,
             CONF_GRID_CONSUMPTION_ENTITY: "",
             CONF_GRID_FEED_IN_ENERGY_ENTITY: "",
             CONF_SOLAR_SURPLUS_ENTITY: "",
+            CONF_DC_COUPLED_PV_FEED_IN_ENTITY: "",
         }
 
         await flow.async_step_user(user_input=user_input)
@@ -127,6 +138,24 @@ class TestConfigFlow:
         call_kwargs = flow.async_show_form.call_args
         errors = call_kwargs.kwargs.get("errors") or call_kwargs[1].get("errors", {})
         assert CONF_GRID_CONSUMPTION_ENTITY in errors
+
+    @pytest.mark.asyncio
+    async def test_error_on_missing_dc_feed_in_entity(self, flow):
+        """Show error if the configured optional DC feed-in switch doesn't exist."""
+
+        def side_effect(entity_id):
+            if entity_id == "switch.dc_pv_feed_in":
+                return None
+            return MockState("50")
+
+        flow.hass.states.get = MagicMock(side_effect=side_effect)
+
+        await flow.async_step_user(user_input=dict(MOCK_CONFIG_DATA_WITH_DC_FEED_IN))
+
+        flow.async_show_form.assert_called_once()
+        call_kwargs = flow.async_show_form.call_args
+        errors = call_kwargs.kwargs.get("errors") or call_kwargs[1].get("errors", {})
+        assert CONF_DC_COUPLED_PV_FEED_IN_ENTITY in errors
 
 
 class TestOptionsFlow:
@@ -188,6 +217,16 @@ class TestOptionsFlow:
         assert kwargs["data"][CONF_SOLAR_SURPLUS_ENTITY] == "sensor.solar_surplus"
 
     @pytest.mark.asyncio
+    async def test_update_entry_with_dc_feed_in_entity(self, options_flow):
+        user_input = {
+            **MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+        }
+        await options_flow.async_step_init(user_input=user_input)
+        _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
+        assert kwargs["data"][CONF_DC_COUPLED_PV_FEED_IN_ENTITY] == "switch.dc_pv_feed_in"
+
+    @pytest.mark.asyncio
     async def test_clears_optional_cost_entities(self, options_flow):
         options_flow._config_entry.data = dict(MOCK_CONFIG_DATA_WITH_COST)
         user_input = {
@@ -202,6 +241,20 @@ class TestOptionsFlow:
         _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
         assert CONF_GRID_CONSUMPTION_ENTITY not in kwargs["data"]
         assert CONF_GRID_FEED_IN_ENERGY_ENTITY not in kwargs["data"]
+
+    @pytest.mark.asyncio
+    async def test_clears_dc_feed_in_entity(self, options_flow):
+        options_flow._config_entry.data = dict(MOCK_CONFIG_DATA_WITH_DC_FEED_IN)
+        user_input = {
+            **MOCK_CONFIG_DATA,
+            CONF_DC_COUPLED_PV_FEED_IN_ENTITY: "",
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+        }
+
+        await options_flow.async_step_init(user_input=user_input)
+
+        _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
+        assert CONF_DC_COUPLED_PV_FEED_IN_ENTITY not in kwargs["data"]
 
     @pytest.mark.asyncio
     async def test_grace_period_value_is_persisted_to_options(self, options_flow):

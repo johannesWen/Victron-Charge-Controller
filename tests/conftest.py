@@ -75,6 +75,7 @@ _patch_ha_compat()
 # Now safe to import project modules
 from custom_components.victron_charge_control.const import (  # noqa: E402
     CONF_BATTERY_SOC_ENTITY,
+    CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -106,6 +107,11 @@ MOCK_CONFIG_DATA_WITH_COST = {
 MOCK_CONFIG_DATA_WITH_SOLAR = {
     **MOCK_CONFIG_DATA,
     CONF_SOLAR_SURPLUS_ENTITY: "sensor.solar_surplus",
+}
+
+MOCK_CONFIG_DATA_WITH_DC_FEED_IN = {
+    **MOCK_CONFIG_DATA,
+    CONF_DC_COUPLED_PV_FEED_IN_ENTITY: "switch.dc_pv_feed_in",
 }
 
 

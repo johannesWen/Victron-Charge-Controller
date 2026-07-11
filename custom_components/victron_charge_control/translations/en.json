@@ -11,7 +11,8 @@
           "max_grid_feed_in_entity": "Max grid feed-in entity (writable)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional)",
           "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)",
-          "solar_surplus_entity": "Solar surplus sensor (optional, watts)"
+          "solar_surplus_entity": "Solar surplus sensor (optional, watts)",
+          "dc_coupled_pv_feed_in_entity": "DC coupled PV feed in switch (optional)"
         }
       }
     },
@@ -35,6 +36,7 @@
           "grid_consumption_entity": "Grid consumption energy sensor (optional)",
           "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional)",
           "solar_surplus_entity": "Solar surplus sensor (optional, watts)",
+          "dc_coupled_pv_feed_in_entity": "DC coupled PV feed in switch (optional)",
           "safety_startup_grace_seconds": "Safety watchdog grace period (seconds, 0–600)"
         }
       }
@@ -181,6 +183,9 @@
       },
       "grid_feed_in_control_enabled": {
         "name": "Grid Feed-in Control"
+      },
+      "control_dc_coupled_feed_in": {
+        "name": "Control DC Coupled Feed In"
       }
     },
     "text": {
