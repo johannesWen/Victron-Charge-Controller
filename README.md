@@ -77,8 +77,6 @@ view: settings
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `title` | string | `Victron Charge Control` | Card title shown in the header. |
-| `entity_prefix` | string | `victron_charge_control` | Prefix used by the backend integration entities. |
 | `view` | string | `settings` | Card view: `settings`, `plan`, or `history`. |
 
 | Settings | Plan |
@@ -93,7 +91,7 @@ view: settings
 > the card as a separate HACS "Dashboard" repository
 > (`Victron-Charge-Controller-Dashboard`). That repository is now deprecated.
 > Remove the old `/local/victron-charge-controller-card.js` Lovelace resource
-> and update this integration to `>= 1.3.0` — the card comes bundled.
+> and update this integration to `>= 2.0.0` — the card comes bundled.
 
 ## Requirements
 
