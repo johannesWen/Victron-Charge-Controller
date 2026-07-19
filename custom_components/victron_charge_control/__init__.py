@@ -6,12 +6,16 @@ Automates Victron ESS battery charge/discharge based on EPEX Spot prices.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
+from .const import CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN
 from .coordinator import VictronChargeControlCoordinator
 from .services import async_setup_services, async_unload_services
 
@@ -27,6 +31,58 @@ PLATFORMS = [
 ]
 
 
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up the Victron Charge Control integration.
+
+    Registers the bundled Lovelace card once per HA boot, independent of
+    any config entry. This lets users add the card to a dashboard before
+    they have completed the integration's config flow.
+    """
+    hass.data.setdefault(DOMAIN, {})
+    await _async_register_card(hass)
+    return True
+
+
+async def _async_register_card(hass: HomeAssistant) -> None:
+    """Register and auto-load the bundled Lovelace card.
+
+    The card is built from ``frontend/`` at release time and shipped inside
+    the integration directory under ``static/``. HACS installs it together
+    with the Python code, so users do not need a separate Lovelace resource
+    entry. Registration is idempotent and only runs once per HA boot.
+    """
+    if hass.data[DOMAIN].get(CARD_REGISTERED_KEY):
+        return
+
+    card_path = Path(__file__).parent / "static" / CARD_FILE_NAME
+    if not card_path.is_file():
+        _LOGGER.warning(
+            "Bundled Lovelace card not found at %s; the card will not be "
+            "auto-loaded. Build it with `npm run build` in the frontend/ "
+            "directory. The integration itself remains functional.",
+            card_path,
+        )
+        return
+
+    # The frontend integration populates the URL manager used by
+    # ``add_extra_js_url``. If it is not loaded (e.g. a user disabled it),
+    # skip auto-loading the card rather than crashing setup.
+    try:
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(CARD_URL_PATH, str(card_path), cache_headers=True)]
+        )
+        add_extra_js_url(hass, CARD_URL_PATH)
+    except KeyError:
+        _LOGGER.warning(
+            "Frontend integration is not loaded; the bundled Lovelace card "
+            "will not be auto-loaded. Enable the frontend integration to use "
+            "the card."
+        )
+        return
+    hass.data[DOMAIN][CARD_REGISTERED_KEY] = True
+    _LOGGER.info("Bundled Lovelace card registered at %s", CARD_URL_PATH)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Victron Charge Control from a config entry."""
     coordinator = VictronChargeControlCoordinator(hass, entry)
@@ -37,9 +93,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await coordinator.async_setup()
 
-    # Register services (only once)
-    if len(hass.data[DOMAIN]) == 1:
+    # Register services once, when the first config entry is set up.
+    # Count only config-entry keys (the card_registered flag also lives in
+    # hass.data[DOMAIN] but is not a config entry).
+    config_entry_count = sum(
+        1
+        for key in hass.data[DOMAIN]
+        if key != CARD_REGISTERED_KEY
+    )
+    if config_entry_count == 1:
         await async_setup_services(hass)
+
+    # Register the bundled card (idempotent: skips if already registered,
+    # e.g. by ``async_setup`` for YAML setups or a previous config entry).
+    await _async_register_card(hass)
 
     # Reload integration when config entry data changes (options flow)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -63,9 +130,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await coordinator.async_shutdown()
 
-        # Unregister services if no entries left
-        if not hass.data[DOMAIN]:
+        # Unregister services if no config entries are left (the
+        # card_registered flag remains in hass.data[DOMAIN] for the
+        # lifetime of the HA boot, so count only config-entry keys).
+        config_entry_count = sum(
+            1
+            for key in hass.data[DOMAIN]
+            if key != CARD_REGISTERED_KEY
+        )
+        if config_entry_count == 0:
             await async_unload_services(hass)
-            hass.data.pop(DOMAIN)
 
     return unload_ok

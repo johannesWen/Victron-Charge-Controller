@@ -1,2 +1,6 @@
 __pycache__
 *.pyc
+
+# Frontend build artifacts (built at release time; not committed)
+frontend/node_modules/
+custom_components/victron_charge_control/static/

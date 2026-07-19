@@ -88,6 +88,14 @@ DEFAULT_ACTION_CONFIRM_SECONDS = 30.0
 # immediately.
 DEFAULT_SAFETY_STARTUP_GRACE_SECONDS = 90
 
+# --- Bundled Lovelace card ---
+# Served under /api/<domain>/... which is the established namespace for
+# integration-served static assets (used by esphome, assist_satellite, HACS,
+# etc.). /static/ is reserved for Home Assistant's own frontend assets.
+CARD_FILE_NAME = "victron-charge-controller-card.js"
+CARD_URL_PATH = f"/api/{DOMAIN}/{CARD_FILE_NAME}"
+CARD_REGISTERED_KEY = "card_registered"
+
 # --- Update interval ---
 UPDATE_INTERVAL_SECONDS = 60
 

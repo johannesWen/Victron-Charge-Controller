@@ -6,10 +6,13 @@ services:
     ports:
       - "8123:8123"
     volumes:
-      # Mount the integration under development
+      # Mount the integration under development (includes the built card
+      # under custom_components/victron_charge_control/static/ produced by
+      # `npm run build` in frontend/).
       - ./custom_components/victron_charge_control:/config/custom_components/victron_charge_control
       # Mount dev HA configuration with dummy sensors
       - ./dev/configuration.yaml:/config/configuration.yaml
+      - ./dev/ui-lovelace.yaml:/config/ui-lovelace.yaml
       - ./dev/automations.yaml:/config/automations.yaml
       - ./dev/scripts.yaml:/config/scripts.yaml
       - ./dev/scenes.yaml:/config/scenes.yaml
