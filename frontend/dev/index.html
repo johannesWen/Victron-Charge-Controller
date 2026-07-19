@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Victron Charge Controller Card – Dev Preview</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: Roboto, sans-serif;
+      background: #f5f5f5;
+      /* HA-like CSS custom properties */
+      --primary-color: #03a9f4;
+      --primary-text-color: #212121;
+      --secondary-text-color: #757575;
+      --card-background-color: #fff;
+      --divider-color: #e0e0e0;
+      --success-color: #4caf50;
+      --warning-color: #ff9800;
+      --error-color: #f44336;
+      --info-color: #2196f3;
+      --disabled-color: #bdbdbd;
+    }
+    body.dark {
+      background: #1c1c1c;
+      --primary-text-color: #e0e0e0;
+      --secondary-text-color: #9e9e9e;
+      --card-background-color: #2c2c2c;
+      --divider-color: #444;
+      --disabled-color: #666;
+    }
+    .toolbar {
+      display: flex; gap: 8px; margin-bottom: 16px; align-items: center;
+    }
+    .toolbar button {
+      padding: 6px 14px; border: 1px solid #ccc; border-radius: 6px;
+      background: #fff; cursor: pointer; font-size: 13px;
+    }
+    .toolbar button:hover { background: #eee; }
+    .toolbar select {
+      padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px;
+      font-size: 13px;
+    }
+    .card-container { max-width: 500px; }
+    .log { margin-top: 16px; padding: 12px; background: #263238; color: #80cbc4;
+      border-radius: 8px; font-family: monospace; font-size: 12px;
+      max-height: 200px; overflow-y: auto; }
+    .log .entry { margin: 2px 0; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="toggleTheme">Toggle Dark/Light</button>
+    <label>Mode:
+      <select id="modeSelect">
+        <option value="off">Off</option>
+        <option value="auto" selected>Auto</option>
+        <option value="manual">Manual</option>
+        <option value="force_charge">Force Charge</option>
+        <option value="force_discharge">Force Discharge</option>
+      </select>
+    </label>
+    <label>Action:
+      <select id="actionSelect">
+        <option value="idle">Idle</option>
+        <option value="charge" selected>Charge</option>
+        <option value="discharge">Discharge</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="card-container" id="cardContainer"></div>
+  <div class="log" id="log"><strong>Service call log:</strong></div>
+
+  <!-- HA component stubs -->
+  <script>
+    // Minimal stubs for Home Assistant web components
+    class HaCard extends HTMLElement {
+      connectedCallback() {
+        if (!this.shadowRoot) {
+          this.attachShadow({ mode: 'open' });
+          this.shadowRoot.innerHTML = `
+            <style>
+              :host { display: block; background: var(--card-background-color, #fff);
+                border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+                overflow: hidden; }
+            </style>
+            <slot></slot>`;
+        }
+      }
+    }
+
+    class HaIcon extends HTMLElement {
+      static get observedAttributes() { return ['icon']; }
+      connectedCallback() { this._render(); }
+      attributeChangedCallback() { this._render(); }
+      _render() {
+        const icon = this.icon || this.getAttribute('icon') || '';
+        const name = icon.replace('mdi:', '');
+        if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+        this.shadowRoot.innerHTML = `
+          <style>
+            :host { display: inline-flex; align-items: center; justify-content: center;
+              width: var(--mdc-icon-size, 24px); height: var(--mdc-icon-size, 24px); }
+            span { font-size: 10px; color: currentColor; text-align: center;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+              max-width: 100%; }
+          </style>
+          <span title="${icon}">⬡</span>`;
+      }
+      set icon(v) { this._icon = v; this._render(); }
+      get icon() { return this._icon || this.getAttribute('icon'); }
+    }
+
+    class HaSwitch extends HTMLElement {
+      static get observedAttributes() { return ['checked']; }
+      connectedCallback() { this._render(); }
+      attributeChangedCallback() { this._render(); }
+      _render() {
+        if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+        const checked = this.checked;
+        this.shadowRoot.innerHTML = `
+          <style>
+            :host { display: inline-block; cursor: pointer; }
+            .track { width: 36px; height: 20px; border-radius: 10px;
+              background: ${checked ? 'var(--primary-color, #03a9f4)' : '#ccc'};
+              position: relative; transition: background 0.2s; }
+            .thumb { width: 16px; height: 16px; border-radius: 50%;
+              background: #fff; position: absolute; top: 2px;
+              left: ${checked ? '18px' : '2px'};
+              transition: left 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+          </style>
+          <div class="track"><div class="thumb"></div></div>`;
+        this.shadowRoot.querySelector('.track').addEventListener('click', () => {
+          this.checked = !this.checked;
+          this.dispatchEvent(new Event('change'));
+        });
+      }
+      get checked() { return this._checked || false; }
+      set checked(v) { this._checked = Boolean(v); this._render(); }
+    }
+
+    customElements.define('ha-card', HaCard);
+    customElements.define('ha-icon', HaIcon);
+    customElements.define('ha-switch', HaSwitch);
+  </script>
+
+  <!-- Load the built card bundle -->
+  <script type="module">
+    import '../../custom_components/victron_charge_control/static/victron-charge-controller-card.js';
+
+    const P = 'victron_charge_control';
+    const e = (domain, key) => `${domain}.${P}_${key}`;
+    const fmtDate = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const today = new Date();
+    const tomorrow = new Date();
+    tomorrow.setDate(today.getDate() + 1);
+    const todayDate = fmtDate(today);
+    const tomorrowDate = fmtDate(tomorrow);
+    const mockPrice = (hour) => Math.round((8 + Math.sin(hour / 2.5) * 7 + hour * 0.45) * 10) / 10;
+    const mockPlanForDate = (date) => Array.from({ length: 24 }, (_, hour) => {
+      let action = 'idle';
+      if (hour === 6) action = 'charge';
+      if (hour === 7) action = 'discharge';
+      if (hour === 8) action = 'blocked_discharging';
+      if (hour === 9) action = 'blocked_charging';
+      if (hour === 10) action = 'blocked';
+      return { date, hour, action, price: mockPrice(hour) };
+    });
+
+    // ── Mock entity states ──────────────────────
+    const states = {
+      // select
+      [e('select','control_mode')]:            { state: 'auto', attributes: { options: ['off','auto','manual','force_charge','force_discharge'] } },
+      // sensors
+      [e('sensor','desired_action')]:           { state: 'charge', attributes: {} },
+      [e('sensor','target_setpoint')]:          { state: '1500', attributes: {} },
+      [e('sensor','current_price')]:             { state: '0.142', attributes: {} },
+      [e('sensor','charge_hours')]:              { state: `${todayDate}:6,8|${tomorrowDate}:6,8`, attributes: {} },
+      [e('sensor','discharge_hours')]:           { state: `${todayDate}:7,9|${tomorrowDate}:7,9`, attributes: {} },
+      [e('sensor','charge_plan')]:               { state: '4 charge, 4 discharge', attributes: { plan: [...mockPlanForDate(todayDate), ...mockPlanForDate(tomorrowDate)] } },
+      [e('sensor','last_schedule_update')]:      { state: new Date().toISOString(), attributes: {} },
+      // switches
+      [e('switch','charge_allowed')]:           { state: 'on', attributes: {} },
+      [e('switch','discharge_allowed')]:        { state: 'on', attributes: {} },
+      [e('switch','grid_feed_in_control')]:     { state: 'on', attributes: {} },
+      // numbers – charge/discharge
+      [e('number','charge_power')]:             { state: '2500', attributes: { min: 0, max: 5000, step: 100 } },
+      [e('number','discharge_power')]:          { state: '1500', attributes: { min: 0, max: 5000, step: 100 } },
+      // numbers – battery
+      [e('number','min_soc')]:                  { state: '20', attributes: { min: 0, max: 100, step: 1 } },
+      [e('number','max_soc')]:                  { state: '90', attributes: { min: 0, max: 100, step: 1 } },
+      // numbers – grid
+      [e('number','idle_setpoint')]:            { state: '50', attributes: { min: -5000, max: 5000, step: 10 } },
+      [e('number','min_grid_setpoint')]:        { state: '-3000', attributes: { min: -5000, max: 0, step: 100 } },
+      [e('number','max_grid_setpoint')]:        { state: '3000', attributes: { min: 0, max: 5000, step: 100 } },
+      // numbers – auto mode
+      [e('number','cheapest_hours_auto_charge')]:     { state: '4', attributes: { min: 0, max: 24, step: 1 } },
+      [e('number','expensive_hours_auto_discharge')]: { state: '4', attributes: { min: 0, max: 24, step: 1 } },
+      [e('number','charge_price_threshold')]:         { state: '15', attributes: { min: -50, max: 100, step: 0.5 } },
+      [e('number','discharge_price_threshold')]:      { state: '25', attributes: { min: -50, max: 100, step: 0.5 } },
+      // numbers – feed-in
+      [e('number','grid_feed_in_price_threshold')]:   { state: '10', attributes: { min: -50, max: 100, step: 0.5 } },
+      [e('number','default_max_grid_feed_in')]:       { state: '5000', attributes: { min: 0, max: 10000, step: 100 } },
+      [e('number','reduced_max_grid_feed_in')]:       { state: '2000', attributes: { min: 0, max: 10000, step: 100 } },
+      // text – blocked hours
+      [e('text','blocked_charging_hours')]:     { state: '9, 10', attributes: {} },
+      [e('text','blocked_discharging_hours')]:  { state: '8, 10', attributes: {} },
+    };
+
+    // ── Logging helper ──────────────────────────
+    const logEl = document.getElementById('log');
+    function log(msg) {
+      const div = document.createElement('div');
+      div.className = 'entry';
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // ── Mock hass object ────────────────────────
+    const hass = {
+      states,
+      callService(domain, service, data) {
+        log(`${domain}.${service}  ${JSON.stringify(data)}`);
+        // Apply state changes so the card reflects them on next update
+        const eid = data.entity_id;
+        if (eid && states[eid]) {
+          if (service === 'set_value') states[eid].state = String(data.value);
+          if (service === 'turn_on')  states[eid].state = 'on';
+          if (service === 'turn_off') states[eid].state = 'off';
+          if (service === 'select_option') states[eid].state = data.option;
+          if (service === 'set_value' && domain === 'text') states[eid].state = data.value;
+        }
+        // Trigger re-render
+        card.hass = { ...hass };
+      },
+    };
+
+    // ── Create card ─────────────────────────────
+    const card = document.createElement('victron-charge-controller-card');
+    card.setConfig({ entity_prefix: P, title: 'Victron Charge Control', view: 'plan' });
+    card.hass = hass;
+    document.getElementById('cardContainer').appendChild(card);
+
+    // ── Toolbar controls ────────────────────────
+    document.getElementById('toggleTheme').addEventListener('click', () => {
+      document.body.classList.toggle('dark');
+    });
+    document.getElementById('modeSelect').addEventListener('change', (ev) => {
+      states[e('select','control_mode')].state = ev.target.value;
+      card.hass = { ...hass };
+    });
+    document.getElementById('actionSelect').addEventListener('change', (ev) => {
+      states[e('sensor','desired_action')].state = ev.target.value;
+      card.hass = { ...hass };
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+title: Victron Dashboard Dev
+views:
+  - title: Victron Charge Controller
+    path: victron
+    icon: mdi:solar-power-variant
+    cards:
+      - type: custom:victron-charge-controller-card
+        entity_prefix: victron_charge_control
+        title: Victron Charge Control
+
+      # Helper cards to adjust dummy sensor values
+      - type: entities
+        title: Dev Controls
+        show_header_toggle: false
+        entities:
+          - entity: input_number.battery_soc_value
+            name: Battery SOC
+          - entity: input_number.grid_setpoint_store
+            name: Grid Setpoint
+          - entity: input_number.max_grid_feed_in_store
+            name: Max Grid Feed-in
+          - entity: input_number.grid_consumption_kwh_value
+            name: Grid Consumption kWh
+          - entity: input_number.grid_feed_in_kwh_value
+            name: Grid Feed-in kWh
+
+      - type: sensor
+        entity: sensor.epex_spot_price
+        name: EPEX Spot Price
+        graph: line
+        hours_to_show: 24

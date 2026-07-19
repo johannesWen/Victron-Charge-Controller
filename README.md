@@ -35,6 +35,7 @@ the system from dashboards or automations.
 - [Setpoint Convention](#setpoint-convention)
 - [Cost And Energy Tracking](#cost-and-energy-tracking)
 - [Home Assistant Entities](#home-assistant-entities)
+- [Development](#development)
 
 ## Capabilities
 
@@ -51,17 +52,48 @@ the system from dashboards or automations.
 
 ## Dashboard Card
 
-The companion Lovelace card is available in the
-[Victron Charge Controller Dashboard](https://github.com/johannesWen/Victron-Charge-Controller-Dashboard)
-repository.
+The integration ships a bundled Lovelace card for monitoring and steering the
+controller. The card source lives under [`frontend/`](frontend/) in this
+repository and is built into `custom_components/victron_charge_control/static/`
+at release time. Once the integration is set up, the card is
+**auto-registered** with Home Assistant (via `add_extra_js_url`) — no manual
+Lovelace `resources:` entry is required.
+
+Add the card from the Lovelace UI (**Add Card** → search for
+**Victron Charge Controller**) or configure it directly:
+
+```yaml
+type: custom:victron-charge-controller-card
+title: Victron Charge Control
+entity_prefix: victron_charge_control
+view: settings
+```
+
+| View | Purpose |
+| --- | --- |
+| `settings` | Operate the controller, adjust limits, configure price thresholds, tune grid feed-in behavior, and recalculate schedules. |
+| `plan` | Inspect the EPEX Spot based plan for today and tomorrow, view blocked hours, and set manual actions for future hours. |
+| `history` | Review grid cost, revenue, import, and export statistics by day, week, month, or year. |
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `title` | string | `Victron Charge Control` | Card title shown in the header. |
+| `entity_prefix` | string | `victron_charge_control` | Prefix used by the backend integration entities. |
+| `view` | string | `settings` | Card view: `settings`, `plan`, or `history`. |
 
 | Settings | Plan |
 | :---: | :---: |
-| <img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/settings_card.png" width="420" alt="Settings card screenshot"> | <img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/plan_card.png" width="420" alt="Plan card screenshot"> |
+| <img src="assets/screenshots/settings_card.png" width="420" alt="Settings card screenshot"> | <img src="assets/screenshots/plan_card.png" width="420" alt="Plan card screenshot"> |
 
 | History |
 | :---: |
-| <img src="https://raw.githubusercontent.com/johannesWen/Victron-Charge-Controller-Dashboard/main/assets/screenshots/costs_card.png" width="420" alt="History card screenshot"> |
+| <img src="assets/screenshots/costs_card.png" width="420" alt="History card screenshot"> |
+
+> **Upgrading from the standalone dashboard repo?** Earlier releases shipped
+> the card as a separate HACS "Dashboard" repository
+> (`Victron-Charge-Controller-Dashboard`). That repository is now deprecated.
+> Remove the old `/local/victron-charge-controller-card.js` Lovelace resource
+> and update this integration to `>= 1.3.0` — the card comes bundled.
 
 ## Requirements
 
@@ -406,3 +438,41 @@ Cost tracking is optional and requires cumulative grid import and grid export en
 ```
 
 </details>
+
+## Development
+
+### Build the bundled card
+
+The Lovelace card is a Lit + Rollup project under [`frontend/`](frontend/). The
+build writes the bundled module into the integration's `static/` directory, which
+the integration serves and auto-loads.
+
+```bash
+cd frontend
+npm install
+npm run build     # -> ../custom_components/victron_charge_control/static/victron-charge-controller-card.js
+```
+
+For iterative development with rebuild-on-save:
+
+```bash
+npm run watch
+```
+
+The `static/` directory is gitignored — the built card is produced at release
+time by CI and included in the HACS release zip (`victron_charge_control.zip`).
+
+### Local Home Assistant
+
+A Docker Compose stack is provided for testing the integration together with the
+bundled card against dummy Victron/EPEX entities.
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+docker compose up -d
+```
+
+Then open <http://localhost:8123>. Because the card is auto-loaded by the
+integration, no manual Lovelace resource entry is required. See
+[`dev/README.md`](dev/README.md) for backfilling cost statistics and the dummy
+sensor configuration.
