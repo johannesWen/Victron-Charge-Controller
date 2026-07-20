@@ -17,6 +17,26 @@ from custom_components.victron_charge_control.const import (
 CARD_PATH_TARGET = "custom_components.victron_charge_control.Path"
 ADD_JS_URL_TARGET = "custom_components.victron_charge_control.add_extra_js_url"
 STATIC_PATH_CONFIG_TARGET = "custom_components.victron_charge_control.StaticPathConfig"
+GET_INTEGRATION_TARGET = (
+    "custom_components.victron_charge_control.async_get_integration"
+)
+
+TEST_VERSION = "2.0.0"
+CARD_URL_VERSIONED = f"{CARD_URL_PATH}?v={TEST_VERSION}"
+
+
+def _patch_integration_version(monkeypatch, version: str | None) -> None:
+    """Patch ``async_get_integration`` to report a controllable version.
+
+    The production code appends the integration version to the injected card
+    URL as a cache-busting token; this lets tests exercise that behavior
+    without a real Home Assistant integration manifest.
+    """
+    integration = MagicMock()
+    integration.version = version
+    monkeypatch.setattr(
+        GET_INTEGRATION_TARGET, AsyncMock(return_value=integration)
+    )
 
 
 def _patch_card_path(monkeypatch, *, is_file: bool) -> MagicMock:
@@ -72,6 +92,7 @@ class TestAsyncRegisterCard:
         """When the card file exists, register a static path and auto-load it."""
         mock_hass.data = {DOMAIN: {}}
         card_path = _patch_card_path(monkeypatch, is_file=True)
+        _patch_integration_version(monkeypatch, TEST_VERSION)
         mock_hass.http.async_register_static_paths = AsyncMock()
 
         with patch(ADD_JS_URL_TARGET) as mock_add_url, patch(
@@ -80,12 +101,15 @@ class TestAsyncRegisterCard:
             await _async_register_card(mock_hass)
 
         mock_hass.http.async_register_static_paths.assert_awaited_once()
-        # The static path config should be built with the public URL and the
-        # resolved card path, with caching disabled during development.
+        # The static path is registered at the bare (unversioned) URL: aiohttp
+        # routes on the path and ignores the query string used for cache
+        # busting. Long-term caching stays enabled for unchanged versions.
         mock_spc.assert_called_once_with(
             CARD_URL_PATH, str(card_path), cache_headers=True
         )
-        mock_add_url.assert_called_once_with(mock_hass, CARD_URL_PATH)
+        # The URL injected into the frontend carries the version query so the
+        # companion apps' persistent WebView cache is busted on each release.
+        mock_add_url.assert_called_once_with(mock_hass, CARD_URL_VERSIONED)
         assert mock_hass.data[DOMAIN][CARD_REGISTERED_KEY] is True
 
     @pytest.mark.asyncio
@@ -93,6 +117,7 @@ class TestAsyncRegisterCard:
         """If the frontend integration is not loaded (KeyError), skip gracefully."""
         mock_hass.data = {DOMAIN: {}}
         _patch_card_path(monkeypatch, is_file=True)
+        _patch_integration_version(monkeypatch, TEST_VERSION)
         mock_hass.http.async_register_static_paths = AsyncMock()
 
         with patch(ADD_JS_URL_TARGET, side_effect=KeyError) as mock_add_url, patch(
@@ -101,7 +126,7 @@ class TestAsyncRegisterCard:
             await _async_register_card(mock_hass)
 
         mock_hass.http.async_register_static_paths.assert_awaited_once()
-        mock_add_url.assert_called_once_with(mock_hass, CARD_URL_PATH)
+        mock_add_url.assert_called_once_with(mock_hass, CARD_URL_VERSIONED)
         # Registration is not marked as complete, so a later setup can retry.
         assert CARD_REGISTERED_KEY not in mock_hass.data[DOMAIN]
 
@@ -110,6 +135,7 @@ class TestAsyncRegisterCard:
         """A second call after a successful registration is a no-op."""
         mock_hass.data = {DOMAIN: {}}
         _patch_card_path(monkeypatch, is_file=True)
+        _patch_integration_version(monkeypatch, TEST_VERSION)
         mock_hass.http.async_register_static_paths = AsyncMock()
 
         with patch(ADD_JS_URL_TARGET) as mock_add_url, patch(
@@ -119,5 +145,47 @@ class TestAsyncRegisterCard:
             await _async_register_card(mock_hass)
 
         mock_hass.http.async_register_static_paths.assert_awaited_once()
+        mock_add_url.assert_called_once_with(mock_hass, CARD_URL_VERSIONED)
+        assert mock_hass.data[DOMAIN][CARD_REGISTERED_KEY] is True
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_bare_url_without_version(
+        self, mock_hass, monkeypatch
+    ):
+        """If the manifest has no version, inject the unversioned URL."""
+        mock_hass.data = {DOMAIN: {}}
+        _patch_card_path(monkeypatch, is_file=True)
+        _patch_integration_version(monkeypatch, None)
+        mock_hass.http.async_register_static_paths = AsyncMock()
+
+        with patch(ADD_JS_URL_TARGET) as mock_add_url, patch(
+            STATIC_PATH_CONFIG_TARGET
+        ):
+            await _async_register_card(mock_hass)
+
+        mock_add_url.assert_called_once_with(mock_hass, CARD_URL_PATH)
+        assert mock_hass.data[DOMAIN][CARD_REGISTERED_KEY] is True
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_bare_url_when_version_lookup_fails(
+        self, mock_hass, monkeypatch
+    ):
+        """A failure resolving the integration version must not break setup.
+
+        Cache-busting is best-effort: if the version cannot be resolved the
+        card is still registered, just at its unversioned URL.
+        """
+        mock_hass.data = {DOMAIN: {}}
+        _patch_card_path(monkeypatch, is_file=True)
+        monkeypatch.setattr(
+            GET_INTEGRATION_TARGET, AsyncMock(side_effect=RuntimeError("boom"))
+        )
+        mock_hass.http.async_register_static_paths = AsyncMock()
+
+        with patch(ADD_JS_URL_TARGET) as mock_add_url, patch(
+            STATIC_PATH_CONFIG_TARGET
+        ):
+            await _async_register_card(mock_hass)
+
         mock_add_url.assert_called_once_with(mock_hass, CARD_URL_PATH)
         assert mock_hass.data[DOMAIN][CARD_REGISTERED_KEY] is True

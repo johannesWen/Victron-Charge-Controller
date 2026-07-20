@@ -14,6 +14,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .const import CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN
 from .coordinator import VictronChargeControlCoordinator
@@ -64,6 +65,30 @@ async def _async_register_card(hass: HomeAssistant) -> None:
         )
         return
 
+    # Home Assistant serves static paths with a one-month ``Cache-Control:
+    # public, max-age`` header and the card lives at a fixed, unversioned URL.
+    # Desktop browsers revalidate (or get hard-refreshed during development),
+    # but the Android/iOS companion apps keep a persistent WebView HTTP cache
+    # that honors that max-age across app and HA restarts. Without a
+    # cache-busting token they keep serving a stale build -- or a 404 cached
+    # from a boot where the card was not yet registered -- so the card shows up
+    # in the browser but is "not available" in the app. Appending the
+    # integration version to the injected URL changes it on every release,
+    # which invalidates the cached copy, while unchanged versions still cache
+    # long-term. The static path itself stays unversioned because aiohttp
+    # routes on the path and ignores the query string.
+    card_url = CARD_URL_PATH
+    try:
+        integration = await async_get_integration(hass, DOMAIN)
+        if integration.version is not None:
+            card_url = f"{CARD_URL_PATH}?v={integration.version}"
+    except Exception:  # noqa: BLE001 - version is best-effort cache-busting only
+        _LOGGER.debug(
+            "Could not resolve integration version for card cache-busting; "
+            "serving the card at its unversioned URL.",
+            exc_info=True,
+        )
+
     # The frontend integration populates the URL manager used by
     # ``add_extra_js_url``. If it is not loaded (e.g. a user disabled it),
     # skip auto-loading the card rather than crashing setup.
@@ -71,7 +96,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
         await hass.http.async_register_static_paths(
             [StaticPathConfig(CARD_URL_PATH, str(card_path), cache_headers=True)]
         )
-        add_extra_js_url(hass, CARD_URL_PATH)
+        add_extra_js_url(hass, card_url)
     except KeyError:
         _LOGGER.warning(
             "Frontend integration is not loaded; the bundled Lovelace card "
@@ -80,7 +105,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
         )
         return
     hass.data[DOMAIN][CARD_REGISTERED_KEY] = True
-    _LOGGER.info("Bundled Lovelace card registered at %s", CARD_URL_PATH)
+    _LOGGER.info("Bundled Lovelace card registered at %s", card_url)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
