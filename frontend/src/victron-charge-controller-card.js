@@ -32,12 +32,54 @@ const FEED_IN_META = {
 };
 
 const HELP_TEXT = {
-  settings:
-    'Choose a control mode, then adjust charge/discharge power, battery limits and price thresholds. Hold a slider to unlock continuous adjustment. In Auto mode the controller decides automatically.',
-  plan:
-    "Today and tomorrow show the scheduled action for each hour. Tap a bar for price details. Press and hold a bar (or right-click) to set a custom action (Idle, Charge, Discharge or PV Charge) for that hour. Edit recurring Blocked Hours under Settings.",
-  history:
-    'Aggregated cost and energy statistics. Use Day / Week / Month / Year to switch the period; use the arrows to step through time.',
+  settings: [
+    { heading: 'Mode',
+      items: [
+        'Pick a control mode: Off, Auto, Manual, Force Charge or Force Discharge.',
+        'In Auto mode the controller decides based on price, PV surplus and SOC.',
+      ] },
+    { heading: 'Tuning',
+      items: [
+        'Adjust charge / discharge power, battery limits, grid setpoints and price thresholds.',
+        'Hold a slider knob to unlock continuous adjustment.',
+      ] },
+    { heading: 'Blocked hours',
+      items: [
+        'Tap an hour chip to toggle it on or off.',
+        'Changes apply every day until you clear them.',
+      ] },
+  ],
+  plan: [
+    { heading: 'Reading the chart',
+      items: [
+        'Each bar shows the scheduled action for one hour (today + tomorrow).',
+        'Tap a bar to see price details for that hour.',
+      ] },
+    { heading: 'Override an hour',
+      items: [
+        [
+          { text: 'Press and hold', bold: true },
+          { text: ' a bar (or right-click) to open the action picker.' },
+        ],
+        'Choose Idle, Charge, Discharge or PV Charge — your choice overrides the schedule.',
+        'Use the Recalculate button to restore the automatic plan.',
+      ] },
+    { heading: 'Recurring blocks',
+      items: [
+        'Edit blocked charging / discharging hours under Settings to apply every day.',
+      ] },
+  ],
+  history: [
+    { heading: 'What it shows',
+      items: [
+        'Aggregated cost and energy statistics for the selected period.',
+      ] },
+    { heading: 'Navigation',
+      items: [
+        'Switch period with Day / Week / Month / Year.',
+        'Use the arrow buttons to step through time.',
+      ] },
+  ],
 };
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -2056,7 +2098,7 @@ class VictronChargeControllerCard extends LitElement {
   _renderHelpDialog(viewTitle) {
     if (!this._helpOpen) return nothing;
     const view = this.config.view || 'settings';
-    const body = HELP_TEXT[view] || '';
+    const sections = HELP_TEXT[view] || [];
     return html`
       <div
         class="vcc-help-overlay"
@@ -2075,7 +2117,21 @@ class VictronChargeControllerCard extends LitElement {
               <ha-icon icon="mdi:close"></ha-icon>
             </button>
           </div>
-          <div class="vcc-help-body">${body}</div>
+          <div class="vcc-help-body">
+            ${sections.map(section => html`
+              <section class="vcc-help-section">
+                <h4 class="vcc-help-heading">${section.heading}</h4>
+                <ul class="vcc-help-list">
+                  ${section.items.map(item => {
+                    if (Array.isArray(item)) {
+                      return html`<li>${item.map(t => t.bold ? html`<strong>${t.text}</strong>` : t.text)}</li>`;
+                    }
+                    return html`<li>${item}</li>`;
+                  })}
+                </ul>
+              </section>
+            `)}
+          </div>
         </div>
       </div>
     `;
@@ -2188,7 +2244,23 @@ class VictronChargeControllerCard extends LitElement {
       .vcc-help-body {
         font-size: 0.88em; line-height: 1.45;
         color: var(--vcc-text);
+        display: flex; flex-direction: column; gap: 12px;
       }
+      .vcc-help-section { display: flex; flex-direction: column; gap: 6px; }
+      .vcc-help-heading {
+        margin: 0;
+        font-size: 0.78em; font-weight: 600;
+        color: var(--vcc-accent);
+        text-transform: uppercase; letter-spacing: 0.5px;
+        border-bottom: 1px solid var(--vcc-border);
+        padding-bottom: 4px;
+      }
+      .vcc-help-list {
+        margin: 0; padding-left: 18px;
+        display: flex; flex-direction: column; gap: 4px;
+      }
+      .vcc-help-list li { font-size: 0.92em; }
+      .vcc-help-list li::marker { color: var(--vcc-text2); }
       @keyframes vcc-help-fade { from { opacity: 0; } to { opacity: 1; } }
       @keyframes vcc-help-pop  { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
