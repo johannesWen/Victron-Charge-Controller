@@ -31,6 +31,57 @@ const FEED_IN_META = {
   reduced: { icon: 'mdi:transmission-tower-off',      label: 'Reduced' },
 };
 
+const HELP_TEXT = {
+  settings: [
+    { heading: 'Mode',
+      items: [
+        'Pick a control mode: Off, Auto, Manual, Force Charge or Force Discharge.',
+        'In Auto mode the controller decides based on price, PV surplus and SOC.',
+      ] },
+    { heading: 'Tuning',
+      items: [
+        'Adjust charge / discharge power, battery limits, grid setpoints and price thresholds.',
+        'Hold a slider knob to unlock continuous adjustment.',
+      ] },
+    { heading: 'Blocked hours',
+      items: [
+        'Tap an hour chip to toggle it on or off.',
+        'Changes apply every day until you clear them.',
+      ] },
+  ],
+  plan: [
+    { heading: 'Reading the chart',
+      items: [
+        'Each bar shows the scheduled action for one hour (today + tomorrow).',
+        'Tap a bar to see price details for that hour.',
+      ] },
+    { heading: 'Override an hour',
+      items: [
+        [
+          { text: 'Press and hold', bold: true },
+          { text: ' a bar (or right-click) to open the action picker.' },
+        ],
+        'Choose Idle, Charge, Discharge or PV Charge — your choice overrides the schedule.',
+        'Use the Recalculate button to restore the automatic plan.',
+      ] },
+    { heading: 'Recurring blocks',
+      items: [
+        'Edit blocked charging / discharging hours under Settings to apply every day.',
+      ] },
+  ],
+  history: [
+    { heading: 'What it shows',
+      items: [
+        'Aggregated cost and energy statistics for the selected period.',
+      ] },
+    { heading: 'Navigation',
+      items: [
+        'Switch period with Day / Week / Month / Year.',
+        'Use the arrow buttons to step through time.',
+      ] },
+  ],
+};
+
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
 const COST_RANGES = {
@@ -78,6 +129,9 @@ class VictronChargeControllerCard extends LitElement {
     this._barHoldStart = null;
     this._barLongPressFired = false;
     this._onDocumentPointerDownBound = this._onDocumentPointerDown.bind(this);
+    // Help dialog state
+    this._helpOpen = false;
+    this._onHelpKeyDownBound = this._onHelpKeyDown.bind(this);
   }
 
   disconnectedCallback() {
@@ -90,6 +144,7 @@ class VictronChargeControllerCard extends LitElement {
       this._barHoldTimer = null;
     }
     document.removeEventListener('pointerdown', this._onDocumentPointerDownBound, true);
+    window.removeEventListener('keydown', this._onHelpKeyDownBound);
   }
 
   // ── Lovelace lifecycle ──────────────────────────────────
@@ -1229,6 +1284,37 @@ class VictronChargeControllerCard extends LitElement {
     this._closePicker();
   }
 
+  // ── Help dialog handlers ───────────────────────────────
+
+  _openHelp() {
+    if (this._helpOpen) return;
+    this._helpOpen = true;
+    window.addEventListener('keydown', this._onHelpKeyDownBound);
+    this.updateComplete.then(() => {
+      const closeBtn = this.renderRoot?.querySelector?.('.vcc-help-close');
+      if (closeBtn) closeBtn.focus();
+    });
+    this.requestUpdate();
+  }
+
+  _closeHelp() {
+    if (!this._helpOpen) return;
+    this._helpOpen = false;
+    window.removeEventListener('keydown', this._onHelpKeyDownBound);
+    this.requestUpdate();
+    this.updateComplete.then(() => {
+      const helpBtn = this.renderRoot?.querySelector?.('.help-btn');
+      if (helpBtn) helpBtn.focus();
+    });
+  }
+
+  _onHelpKeyDown(e) {
+    if (e.key === 'Escape' || e.key === 'Esc') {
+      e.preventDefault();
+      this._closeHelp();
+    }
+  }
+
   // ── Cost statistics view ─────────────────────────────────
 
   _startOfDay(date) {
@@ -1975,15 +2061,28 @@ class VictronChargeControllerCard extends LitElement {
             <ha-icon .icon=${viewIcon}></ha-icon>
             <span>${viewTitle}</span>
           </div>
-          <div class="header-badges">
-            <div class="header-badge" data-feed-in=${feedInStatus}>
-              <ha-icon .icon=${feedInMeta.icon}></ha-icon>
-              <span>${feedInMeta.label}</span>
+          <div class="header-center">
+            <div class="header-badges">
+              <div class="header-badge" data-feed-in=${feedInStatus}>
+                <ha-icon .icon=${feedInMeta.icon}></ha-icon>
+                <span>${feedInMeta.label}</span>
+              </div>
+              <div class="header-badge" data-action=${action}>
+                <ha-icon .icon=${actMeta.icon}></ha-icon>
+                <span>${actMeta.label}</span>
+              </div>
             </div>
-            <div class="header-badge" data-action=${action}>
-              <ha-icon .icon=${actMeta.icon}></ha-icon>
-              <span>${actMeta.label}</span>
-            </div>
+          </div>
+          <div class="header-help">
+            <button
+              class="help-btn"
+              type="button"
+              aria-label="Show help"
+              title="Show help"
+              @click=${() => this._openHelp()}
+            >
+              <ha-icon icon="mdi:help-circle-outline"></ha-icon>
+            </button>
           </div>
         </div>
         <div class="card-content">
@@ -1991,7 +2090,51 @@ class VictronChargeControllerCard extends LitElement {
             ? this._renderPlanView()
             : (view === 'history' ? this._renderHistoryView() : this._renderControlsView())}
         </div>
-      </ha-card>`;
+      </ha-card>
+      ${this._renderHelpDialog(viewTitle)}
+    `;
+  }
+
+  _renderHelpDialog(viewTitle) {
+    if (!this._helpOpen) return nothing;
+    const view = this.config.view || 'settings';
+    const sections = HELP_TEXT[view] || [];
+    return html`
+      <div
+        class="vcc-help-overlay"
+        role="presentation"
+        @click=${(e) => { if (e.target === e.currentTarget) this._closeHelp(); }}
+      >
+        <div class="vcc-help-dialog" role="dialog" aria-modal="true" aria-label="Help">
+          <div class="vcc-help-header">
+            <span class="vcc-help-title">Help – ${viewTitle}</span>
+            <button
+              class="vcc-help-close"
+              type="button"
+              aria-label="Close help"
+              @click=${() => this._closeHelp()}
+            >
+              <ha-icon icon="mdi:close"></ha-icon>
+            </button>
+          </div>
+          <div class="vcc-help-body">
+            ${sections.map(section => html`
+              <section class="vcc-help-section">
+                <h4 class="vcc-help-heading">${section.heading}</h4>
+                <ul class="vcc-help-list">
+                  ${section.items.map(item => {
+                    if (Array.isArray(item)) {
+                      return html`<li>${item.map(t => t.bold ? html`<strong>${t.text}</strong>` : t.text)}</li>`;
+                    }
+                    return html`<li>${item}</li>`;
+                  })}
+                </ul>
+              </section>
+            `)}
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   // ── Styles ──────────────────────────────────────────────
@@ -2022,21 +2165,29 @@ class VictronChargeControllerCard extends LitElement {
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 8px;
         padding: 16px 16px 0;
       }
       .header-title {
         display: flex; align-items: center; gap: 8px;
         font-size: 1.0em; font-weight: 500; color: var(--vcc-text);
+        flex: 0 0 auto;
       }
       .header-title ha-icon { color: var(--vcc-accent); --mdc-icon-size: 22px; }
 
+      .header-center {
+        flex: 1 1 auto;
+        display: flex; align-items: center; justify-content: center;
+        min-width: 0;
+      }
       .header-badges {
-        display: flex; align-items: center; gap: 6px;
+        display: flex; align-items: center; gap: 4px;
+        flex-wrap: wrap; justify-content: center;
       }
       .header-badge {
         display: flex; align-items: center; gap: 3px;
-        padding: 2px 8px; border-radius: 12px;
-        font-size: 0.72em; font-weight: 600;
+        padding: 2px 6px; border-radius: 12px;
+        font-size: 0.65em; font-weight: 600;
         background: rgba(158,158,158,0.12); color: var(--vcc-disabled);
       }
       .header-badge[data-action="charge"]    { background: rgba(76,175,80,0.12);  color: var(--vcc-success); }
@@ -2044,7 +2195,74 @@ class VictronChargeControllerCard extends LitElement {
       .header-badge[data-action="discharge"] { background: rgba(255,152,0,0.12);  color: var(--vcc-warning); }
       .header-badge[data-feed-in="default"]  { background: rgba(76,175,80,0.12);  color: var(--vcc-success); }
       .header-badge[data-feed-in="reduced"]  { background: rgba(255,152,0,0.12);  color: var(--vcc-warning); }
-      .header-badge ha-icon { --mdc-icon-size: 13px; }
+      .header-badge ha-icon { --mdc-icon-size: 11px; }
+
+      .header-help {
+        flex: 0 0 auto;
+        display: flex; align-items: center;
+      }
+      .help-btn {
+        background: none; border: 0; padding: 4px; cursor: pointer;
+        color: var(--vcc-text2); border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .help-btn:hover { color: var(--vcc-accent); background: rgba(0,0,0,0.06); }
+      .help-btn ha-icon { --mdc-icon-size: 20px; }
+
+      /* ── Help dialog ─────────────────────────── */
+      .vcc-help-overlay {
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.35);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 9999;
+        animation: vcc-help-fade .15s ease-out;
+      }
+      .vcc-help-dialog {
+        background: var(--vcc-bg);
+        color: var(--vcc-text);
+        border-radius: 10px;
+        width: min(420px, calc(100vw - 32px));
+        max-height: 80vh;
+        overflow: auto;
+        padding: 16px;
+        display: flex; flex-direction: column; gap: 12px;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        animation: vcc-help-pop .15s ease-out;
+      }
+      .vcc-help-header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 8px;
+      }
+      .vcc-help-title { font-weight: 600; font-size: 0.95em; }
+      .vcc-help-close {
+        background: none; border: 0; cursor: pointer;
+        color: var(--vcc-text2); padding: 4px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .vcc-help-close:hover { background: rgba(0,0,0,0.08); color: var(--vcc-text); }
+      .vcc-help-close ha-icon { --mdc-icon-size: 20px; }
+      .vcc-help-body {
+        font-size: 0.88em; line-height: 1.45;
+        color: var(--vcc-text);
+        display: flex; flex-direction: column; gap: 12px;
+      }
+      .vcc-help-section { display: flex; flex-direction: column; gap: 6px; }
+      .vcc-help-heading {
+        margin: 0;
+        font-size: 0.78em; font-weight: 600;
+        color: var(--vcc-accent);
+        text-transform: uppercase; letter-spacing: 0.5px;
+        border-bottom: 1px solid var(--vcc-border);
+        padding-bottom: 4px;
+      }
+      .vcc-help-list {
+        margin: 0; padding-left: 18px;
+        display: flex; flex-direction: column; gap: 4px;
+      }
+      .vcc-help-list li { font-size: 0.92em; }
+      .vcc-help-list li::marker { color: var(--vcc-text2); }
+      @keyframes vcc-help-fade { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes vcc-help-pop  { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
       /* ── Content ───────────────────────────────── */
       .card-content { padding: 12px 16px 16px; }
