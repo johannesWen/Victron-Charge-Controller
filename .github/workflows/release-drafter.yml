@@ -34,6 +34,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - id: release_drafter
         uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9 # v7
         env:
@@ -41,6 +43,49 @@ jobs:
         with:
           commitish: main
           prerelease: false
+
+      - name: Verify manifest version advanced when frontend changed
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -e
+          git fetch --tags --quiet
+
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+
+          # Previous full release tag (skip rc tags and the one being built).
+          PREVIOUS_TAG=$(git tag --sort=-version:refname --list 'v*' \
+            | grep -v -- "-rc" \
+            | grep -v "^${CURRENT_TAG}$" \
+            | head -1 || true)
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "No previous full release tag found; skipping cache-bust check."
+            exit 0
+          fi
+
+          echo "Comparing HEAD against previous release ${PREVIOUS_TAG}"
+
+          if git diff --quiet "${PREVIOUS_TAG}..HEAD" -- frontend/; then
+            FRONTEND_CHANGED="false"
+            echo "frontend/ unchanged from ${PREVIOUS_TAG}"
+          else
+            FRONTEND_CHANGED="true"
+            echo "frontend/ differs from ${PREVIOUS_TAG}"
+          fi
+
+          NEW_VERSION=$(jq -r .version custom_components/victron_charge_control/manifest.json)
+          OLD_VERSION=$(git show "${PREVIOUS_TAG}:custom_components/victron_charge_control/manifest.json" \
+            | jq -r .version)
+
+          echo "Manifest version at HEAD:               ${NEW_VERSION}"
+          echo "Manifest version at ${PREVIOUS_TAG}: ${OLD_VERSION}"
+
+          if [ "$FRONTEND_CHANGED" = "true" ] && [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
+            echo "::error::frontend/ changed since ${PREVIOUS_TAG} but manifest.json version did not advance. The bundled Lovelace card is served at ?v=<manifest.version> for cache-busting on companion apps; an un-bumped version means the new card will be served from a stale WebView cache. Bump custom_components/victron_charge_control/manifest.json:version and re-tag."
+            exit 1
+          fi
+
+          echo "Cache-bust check passed."
 
       - name: Set up Node
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -83,6 +128,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Compute pre-release version
         id: pre_version
         env:
@@ -114,6 +161,49 @@ jobs:
           version: ${{ steps.pre_version.outputs.version }}
           prerelease: true
           prerelease-identifier: "rc"
+
+      - name: Verify manifest version advanced when frontend changed
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -e
+          git fetch --tags --quiet
+
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+
+          # Previous full release tag (skip rc tags and the one being built).
+          PREVIOUS_TAG=$(git tag --sort=-version:refname --list 'v*' \
+            | grep -v -- "-rc" \
+            | grep -v "^${CURRENT_TAG}$" \
+            | head -1 || true)
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "No previous full release tag found; skipping cache-bust check."
+            exit 0
+          fi
+
+          echo "Comparing HEAD against previous release ${PREVIOUS_TAG}"
+
+          if git diff --quiet "${PREVIOUS_TAG}..HEAD" -- frontend/; then
+            FRONTEND_CHANGED="false"
+            echo "frontend/ unchanged from ${PREVIOUS_TAG}"
+          else
+            FRONTEND_CHANGED="true"
+            echo "frontend/ differs from ${PREVIOUS_TAG}"
+          fi
+
+          NEW_VERSION=$(jq -r .version custom_components/victron_charge_control/manifest.json)
+          OLD_VERSION=$(git show "${PREVIOUS_TAG}:custom_components/victron_charge_control/manifest.json" \
+            | jq -r .version)
+
+          echo "Manifest version at HEAD:               ${NEW_VERSION}"
+          echo "Manifest version at ${PREVIOUS_TAG}: ${OLD_VERSION}"
+
+          if [ "$FRONTEND_CHANGED" = "true" ] && [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
+            echo "::error::frontend/ changed since ${PREVIOUS_TAG} but manifest.json version did not advance. The bundled Lovelace card is served at ?v=<manifest.version> for cache-busting on companion apps; an un-bumped version means the new card will be served from a stale WebView cache. Bump custom_components/victron_charge_control/manifest.json:version and re-tag."
+            exit 1
+          fi
+
+          echo "Cache-bust check passed."
 
       - name: Set up Node
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
