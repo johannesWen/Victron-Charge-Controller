@@ -1,10 +1,10 @@
 import { LitElement, html, svg, css, nothing } from 'lit';
+import { CARD_VERSION } from 'virtual:integration-version';
 
 // ────────────────────────────────────────────────────────────
 // Constants
 // ────────────────────────────────────────────────────────────
 
-const CARD_VERSION = '0.1.0';
 const CARD_TAG = 'victron-charge-controller-card';
 const EDITOR_TAG = 'victron-charge-controller-card-editor';
 const DEFAULT_PREFIX = 'victron_charge_control';

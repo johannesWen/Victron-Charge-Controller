@@ -35,7 +35,9 @@ jobs:
       - name: Build card
         run: npm run build
         working-directory: frontend
-      - name: Verify artifact
+      - name: Package and validate release artifact
         run: |
-          test -f custom_components/victron_charge_control/static/victron-charge-controller-card.js
-          echo "Built card size: $(stat -c%s custom_components/victron_charge_control/static/victron-charge-controller-card.js) bytes"
+          MANIFEST_VERSION=$(jq -r .version custom_components/victron_charge_control/manifest.json)
+          python3 .github/scripts/package_release.py \
+            --tag "v${MANIFEST_VERSION}" \
+            --archive "${RUNNER_TEMP}/victron_charge_control.zip"
