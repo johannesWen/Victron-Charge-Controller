@@ -1,5 +1,6 @@
 import { LitElement, html, svg, css, nothing } from 'lit';
 import { CARD_VERSION } from 'virtual:integration-version';
+import { normalizeView } from './view.mjs';
 
 // ────────────────────────────────────────────────────────────
 // Constants
@@ -151,9 +152,9 @@ class VictronChargeControllerCard extends LitElement {
 
   setConfig(config) {
     this.config = {
-      view: 'settings',
       entity_prefix: DEFAULT_PREFIX,
       ...config,
+      view: normalizeView(config.view),
     };
   }
 
@@ -2048,7 +2049,7 @@ class VictronChargeControllerCard extends LitElement {
     const actMeta = ACTION_META[action] || ACTION_META.idle;
     const feedInStatus = this._val('sensor', 'grid_feed_in_status') || 'default';
     const feedInMeta = FEED_IN_META[feedInStatus] || FEED_IN_META.default;
-    const view = this.config.view || 'settings';
+    const view = normalizeView(this.config.view);
     const viewTitle = view === 'plan' ? 'Plan' : (view === 'history' ? 'History' : 'Settings');
     const viewIcon = view === 'plan'
       ? 'mdi:calendar'
@@ -2091,14 +2092,13 @@ class VictronChargeControllerCard extends LitElement {
             : (view === 'history' ? this._renderHistoryView() : this._renderControlsView())}
         </div>
       </ha-card>
-      ${this._renderHelpDialog(viewTitle)}
+      ${this._renderHelpDialog(view, viewTitle)}
     `;
   }
 
-  _renderHelpDialog(viewTitle) {
+  _renderHelpDialog(view, viewTitle) {
     if (!this._helpOpen) return nothing;
-    const view = this.config.view || 'settings';
-    const sections = HELP_TEXT[view] || [];
+    const sections = HELP_TEXT[view];
     return html`
       <div
         class="vcc-help-overlay"
