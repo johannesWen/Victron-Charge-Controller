@@ -102,11 +102,12 @@ jobs:
           npm run build
         working-directory: frontend
 
-      - name: Create Home Assistant release archive
+      - name: Package and validate Home Assistant release archive
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: |
-            cd custom_components/victron_charge_control
-            zip -r ${{ github.workspace }}/victron_charge_control.zip ./  
+          python3 .github/scripts/package_release.py \
+            --tag "${GITHUB_REF_NAME}" \
+            --archive "${GITHUB_WORKSPACE}/victron_charge_control.zip"
 
       - name: Upload release asset (replace if exists)
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -220,11 +221,12 @@ jobs:
           npm run build
         working-directory: frontend
 
-      - name: Create Home Assistant release archive
+      - name: Package and validate Home Assistant release archive
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: |
-            cd custom_components/victron_charge_control
-            zip -r ${{ github.workspace }}/victron_charge_control.zip ./  
+          python3 .github/scripts/package_release.py \
+            --tag "${GITHUB_REF_NAME}" \
+            --archive "${GITHUB_WORKSPACE}/victron_charge_control.zip"
 
       - name: Upload release asset (replace if exists)
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
