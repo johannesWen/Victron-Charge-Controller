@@ -21,7 +21,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up select entities."""
     coordinator: VictronChargeControlCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([ControlModeSelect(coordinator, entry)])
+    async_add_entities([ControlModeSelect(coordinator, entry), ActiveFixedPlanSelect(coordinator, entry)])
 
 
 class ControlModeSelect(CoordinatorEntity[VictronChargeControlCoordinator], SelectEntity, RestoreEntity):
@@ -70,3 +70,55 @@ class ControlModeSelect(CoordinatorEntity[VictronChargeControlCoordinator], Sele
             and last_state.state in CONTROL_MODES
         ):
             self.coordinator.control_mode = last_state.state
+
+
+class ActiveFixedPlanSelect(CoordinatorEntity[VictronChargeControlCoordinator], SelectEntity):
+    """Select entity choosing which fixed plan is active (or none).
+
+    Options mirror the defined fixed plans (numbered) plus ``off``. The
+    activation itself is persisted in the plan Store, so the select
+    entity intentionally does not restore a state on its own — it only
+    reflects the coordinator.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "active_fixed_plan"
+    _attr_icon = "mdi:calendar-star"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_active_fixed_plan"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Victron Charge Control",
+            manufacturer="Victron Energy",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    @property
+    def options(self) -> list[str]:
+        return ["off", *(str(plan) for plan in sorted(self.coordinator.fixed_plans))]
+
+    @property
+    def current_option(self) -> str:
+        active = self.coordinator.active_fixed_plan
+        return "off" if active is None else str(active)
+
+    async def async_select_option(self, option: str) -> None:
+        """Activate the chosen fixed plan (or none for ``off``)."""
+        if option == "off":
+            plan: int | None = None
+        else:
+            try:
+                plan = int(option)
+            except ValueError:
+                return
+            if plan not in self.coordinator.fixed_plans:
+                return
+        self.coordinator.set_active_fixed_plan(plan)
+        await self.coordinator.async_request_refresh()
+        self.async_write_ha_state()

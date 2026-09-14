@@ -179,6 +179,62 @@ set_blocked_discharging_hours:
             - label: "23:00"
               value: "23"
 
+set_fixed_plan_hour:
+  name: Set Fixed Plan Hour
+  description: "Set one hour of a fixed plan to charge, discharge, PV charge, or idle (creating the plan if needed)"
+  fields:
+    plan:
+      name: Plan
+      description: "Fixed plan number"
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+    hour:
+      name: Hour
+      description: "Hour of day (0-23)"
+      required: true
+      example: 14
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+    action:
+      name: Action
+      description: "Action for this hour in the fixed plan"
+      required: true
+      example: "charge"
+      selector:
+        select:
+          options:
+            - "idle"
+            - "charge"
+            - "pv_charge"
+            - "discharge"
+
+add_fixed_plan:
+  name: Add Fixed Plan
+  description: "Create a new empty fixed plan and return its number"
+
+remove_fixed_plan:
+  name: Remove Fixed Plan
+  description: "Delete a fixed plan (deactivates it first when active)"
+  fields:
+    plan:
+      name: Plan
+      description: "Fixed plan number to remove"
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+
 calculate_schedule:
   name: Calculate Schedule
   description: "Recalculate charge/discharge hours from EPEX Spot prices"

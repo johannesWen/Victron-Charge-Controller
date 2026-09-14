@@ -68,6 +68,7 @@
         <option value="discharge">Discharge</option>
       </select>
     </label>
+    <button id="showFixed">Show Fixed Plan</button>
   </div>
 
   <div class="card-container" id="cardContainer"></div>
@@ -179,6 +180,7 @@
       [e('sensor','current_price')]:             { state: '0.142', attributes: {} },
       [e('sensor','charge_hours')]:              { state: `${todayDate}:6,8|${tomorrowDate}:6,8`, attributes: {} },
       [e('sensor','discharge_hours')]:           { state: `${todayDate}:7,9|${tomorrowDate}:7,9`, attributes: {} },
+      [e('sensor','pv_charge_hours')]:           { state: `${todayDate}:13|${tomorrowDate}:13`, attributes: {} },
       [e('sensor','charge_plan')]:               { state: '4 charge, 4 discharge', attributes: { plan: [...mockPlanForDate(todayDate), ...mockPlanForDate(tomorrowDate)] } },
       [e('sensor','last_schedule_update')]:      { state: new Date().toISOString(), attributes: {} },
       // switches
@@ -207,6 +209,12 @@
       // text – blocked hours
       [e('text','blocked_charging_hours')]:     { state: '9, 10', attributes: {} },
       [e('text','blocked_discharging_hours')]:  { state: '8, 10', attributes: {} },
+      // fixed plans
+      [e('sensor','fixed_plans')]:              { state: '2', attributes: { plans: {
+        1: { charge_hours: [1, 2], discharge_hours: [20, 21], pv_charge_hours: [11, 12, 13] },
+        2: { charge_hours: [], discharge_hours: [], pv_charge_hours: [] },
+      }, active: 1 } },
+      [e('select','active_fixed_plan')]:        { state: '1', attributes: { options: ['off', '1', '2'] } },
     };
 
     // ── Logging helper ──────────────────────────
@@ -220,21 +228,88 @@
     }
 
     // ── Mock hass object ────────────────────────
+    // With '#slow' in the URL, state changes are applied with a 5 s delay
+    // to simulate HA's (previously slow) coordinator confirmation path —
+    // useful to verify the card's optimistic pending-state rendering.
+    const SLOW = window.location.hash.includes('slow');
+    const mockApply = (domain, service, data) => {
+      // Apply state changes so the card reflects them on next update
+      const eid = data.entity_id;
+      if (eid && states[eid]) {
+        if (service === 'set_value') states[eid].state = String(data.value);
+        if (service === 'turn_on')  states[eid].state = 'on';
+        if (service === 'turn_off') states[eid].state = 'off';
+        if (service === 'select_option') states[eid].state = data.option;
+        if (service === 'set_value' && domain === 'text') states[eid].state = data.value;
+      }
+      if (domain === 'victron_charge_control') {
+        const plansAttr = states[e('sensor','fixed_plans')].attributes.plans;
+        if (service === 'set_fixed_plan_hour') {
+          const plan = plansAttr[data.plan] || (plansAttr[data.plan] = { charge_hours: [], discharge_hours: [], pv_charge_hours: [] });
+          for (const key of ['charge_hours', 'discharge_hours', 'pv_charge_hours']) {
+            plan[key] = plan[key].filter(h => h !== data.hour);
+          }
+          if (data.action === 'charge') plan.charge_hours.push(data.hour);
+          if (data.action === 'pv_charge') plan.pv_charge_hours.push(data.hour);
+          if (data.action === 'discharge') plan.discharge_hours.push(data.hour);
+          states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);
+        }
+        if (service === 'remove_fixed_plan') {
+          delete plansAttr[data.plan];
+          states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);
+          if (String(data.plan) === states[e('select','active_fixed_plan')].state) {
+            states[e('select','active_fixed_plan')].state = 'off';
+            states[e('sensor','fixed_plans')].attributes.active = null;
+          }
+        }
+        if (service === 'set_hour_action') {
+          // Update the schedule-slot sensor states for the picked (date, hour).
+          const date = data.date || todayDate;
+          const parse = (stateStr) => {
+            const groups = new Map();
+            for (const group of String(stateStr).split('|')) {
+              if (!group) continue;
+              const [d, h] = group.split(':');
+              groups.set(d, new Set(h.split(',').map(Number).filter(n => !isNaN(n))));
+            }
+            if (!groups.has(date)) groups.set(date, new Set());
+            return groups;
+          };
+          const encode = (groups) => [...groups.entries()]
+            .map(([d, set]) => `${d}:${[...set].sort((a, b) => a - b).join(',')}`)
+            .join('|');
+          for (const key of ['charge_hours', 'pv_charge_hours', 'discharge_hours']) {
+            const sid = e('sensor', key);
+            const groups = parse(states[sid].state);
+            groups.get(date).delete(data.hour);
+            if (key === 'charge_hours' && data.action === 'charge') groups.get(date).add(data.hour);
+            if (key === 'pv_charge_hours' && data.action === 'pv_charge') groups.get(date).add(data.hour);
+            if (key === 'discharge_hours' && data.action === 'discharge') groups.get(date).add(data.hour);
+            states[sid].state = encode(groups);
+          }
+        }
+        states[e('sensor','fixed_plans')].attributes.active =
+          states[e('select','active_fixed_plan')].state === 'off' ? null : Number(states[e('select','active_fixed_plan')].state);
+      }
+      if (domain === 'select' && eid === e('select', 'active_fixed_plan')) {
+        states[e('sensor','fixed_plans')].attributes.active = data.option === 'off' ? null : Number(data.option);
+      }
+      if (domain === 'victron_charge_control' && service !== 'toggle_hour') {
+        // Backend bumps the schedule timestamp on every schedule mutation
+        states[e('sensor','last_schedule_update')].state = new Date().toISOString();
+      }
+      // Trigger re-render
+      card.hass = { ...hass };
+    };
     const hass = {
       states,
       callService(domain, service, data) {
         log(`${domain}.${service}  ${JSON.stringify(data)}`);
-        // Apply state changes so the card reflects them on next update
-        const eid = data.entity_id;
-        if (eid && states[eid]) {
-          if (service === 'set_value') states[eid].state = String(data.value);
-          if (service === 'turn_on')  states[eid].state = 'on';
-          if (service === 'turn_off') states[eid].state = 'off';
-          if (service === 'select_option') states[eid].state = data.option;
-          if (service === 'set_value' && domain === 'text') states[eid].state = data.value;
+        if (SLOW) {
+          setTimeout(() => mockApply(domain, service, data), 5000);
+        } else {
+          mockApply(domain, service, data);
         }
-        // Trigger re-render
-        card.hass = { ...hass };
       },
     };
 
@@ -256,6 +331,15 @@
       states[e('sensor','desired_action')].state = ev.target.value;
       card.hass = { ...hass };
     });
+    document.getElementById('showFixed').addEventListener('click', () => {
+      card._planPage = 1;
+      card._fixedPlanNumber = 1;
+      card.hass = { ...hass };
+    });
+    if (window.location.hash.includes('fixed')) {
+      card._planPage = 1;
+      card._fixedPlanNumber = 1;
+    }
   </script>
 </body>
 </html>

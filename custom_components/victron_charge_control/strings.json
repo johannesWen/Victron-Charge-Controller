@@ -74,6 +74,9 @@
       "charge_plan": {
         "name": "Charge Plan"
       },
+      "fixed_plans": {
+        "name": "Fixed Plans"
+      },
       "last_schedule_update": {
         "name": "Last Schedule Update"
       },
@@ -172,6 +175,9 @@
           "force_charge": "Force Charge",
           "force_discharge": "Force Discharge"
         }
+      },
+      "active_fixed_plan": {
+        "name": "Active Fixed Plan"
       }
     },
     "switch": {
