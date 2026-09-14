@@ -224,6 +224,94 @@ def clear_all() -> tuple[
     return [], [], [], [], []
 
 
+FIXED_PLAN_BUCKETS = ("charge_hours", "discharge_hours", "pv_charge_hours")
+
+MAX_FIXED_PLAN_NAME_LENGTH = 10
+
+
+def normalize_fixed_plan_name(name: Any) -> str:
+    """Validate a fixed-plan display name.
+
+    Non-strings are dropped (empty result); strings are trimmed and
+    truncated to ``MAX_FIXED_PLAN_NAME_LENGTH`` characters.
+    """
+    if not isinstance(name, str):
+        return ""
+    return name.strip()[:MAX_FIXED_PLAN_NAME_LENGTH]
+
+
+def normalize_fixed_plan(plan: Any) -> dict[str, Any]:
+    """Validate a fixed-plan dict, returning a normalized copy.
+
+    A fixed plan maps bucket names (``charge_hours``, ``discharge_hours``,
+    ``pv_charge_hours``) to lists of recurring hour-of-day values plus an
+    optional user-defined ``name``. Unknown buckets, out-of-range hours and
+    corrupt names are dropped so a corrupt store cannot produce invalid
+    state.
+    """
+    normalized: dict[str, Any] = {
+        "charge_hours": [],
+        "discharge_hours": [],
+        "pv_charge_hours": [],
+        "name": "",
+    }
+    if not isinstance(plan, dict):
+        return normalized
+    for key in FIXED_PLAN_BUCKETS:
+        raw = plan.get(key, [])
+        if not isinstance(raw, list):
+            continue
+        normalized[key] = sorted({h for h in raw if isinstance(h, int) and 0 <= h <= 23})
+    normalized["name"] = normalize_fixed_plan_name(plan.get("name"))
+    return normalized
+
+
+def apply_fixed_plan(
+    charge: list[ScheduleSlot],
+    discharge: list[ScheduleSlot],
+    pv_charge: list[ScheduleSlot],
+    fixed_plan: dict[str, Any] | None,
+    dates: list[str],
+) -> tuple[list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot]]:
+    """Merge fixed-plan hours on top of existing slot lists (fixed wins).
+
+    A fixed plan holds recurring hour-of-day values per action bucket.
+    Each bucket is expanded to ``(date, hour)`` slots for every date in
+    ``dates`` and merged into the matching list, where the fixed plan
+    wins: the hour is removed from the other two lists first (extend +
+    overwrite semantics). When the same hour appears in several buckets
+    of the fixed plan itself, precedence is pv_charge > charge >
+    discharge (matching the plan display and decision engine).
+
+    Returns ``(charge, discharge, pv_charge, applied)`` where ``applied``
+    is the sorted list of every ``(date, hour)`` slot written by this
+    call — the caller keeps it to retract the merge cleanly later.
+    """
+    normalized = normalize_fixed_plan(fixed_plan)
+
+    # One action per hour within the plan: build an action map so later
+    # (higher-precedence) buckets overwrite earlier ones.
+    action_map: dict[ScheduleSlot, str] = {}
+    for date_str in dates:
+        for hour in normalized["discharge_hours"]:
+            action_map[(date_str, hour)] = ACTION_DISCHARGE
+        for hour in normalized["charge_hours"]:
+            action_map[(date_str, hour)] = ACTION_CHARGE
+        for hour in normalized["pv_charge_hours"]:
+            action_map[(date_str, hour)] = ACTION_PV_CHARGE
+
+    applied = sorted(action_map)
+    applied_set = set(applied)
+    expanded_charge = sorted(s for s, a in action_map.items() if a == ACTION_CHARGE)
+    expanded_discharge = sorted(s for s, a in action_map.items() if a == ACTION_DISCHARGE)
+    expanded_pv = sorted(s for s, a in action_map.items() if a == ACTION_PV_CHARGE)
+
+    new_charge = sort_slots([s for s in charge if s not in applied_set] + expanded_charge)
+    new_discharge = sort_slots([s for s in discharge if s not in applied_set] + expanded_discharge)
+    new_pv_charge = sort_slots([s for s in pv_charge if s not in applied_set] + expanded_pv)
+    return new_charge, new_discharge, new_pv_charge, applied
+
+
 def _now() -> datetime:
     from homeassistant.util import dt as dt_util
 

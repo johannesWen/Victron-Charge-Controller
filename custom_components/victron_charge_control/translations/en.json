@@ -102,6 +102,9 @@
           "solar_only": "Solar Only",
           "off": "Off"
         }
+      },
+      "fixed_plans": {
+        "name": "Fixed Plans"
       }
     },
     "button": {
@@ -172,6 +175,9 @@
           "force_charge": "Force Charge",
           "force_discharge": "Force Discharge"
         }
+      },
+      "active_fixed_plan": {
+        "name": "Active Fixed Plan"
       }
     },
     "switch": {

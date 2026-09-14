@@ -14,6 +14,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
@@ -62,6 +63,7 @@ from .const import (
     EPEX_KEY_PRICE,
     EPEX_KEY_PRICE_EUR,
     EPEX_KEY_START_TIME,
+    MAX_FIXED_PLANS,
     MODE_AUTO,
     MODE_FORCE_CHARGE,
     MODE_FORCE_DISCHARGE,
@@ -82,9 +84,12 @@ from .epex import (
     normalize_price_eur_per_kwh,
 )
 from .schedule import (
+    apply_fixed_plan,
     clean_expired_slots,
     clear_all as schedule_clear_all,
     normalize_blocked_hours,
+    normalize_fixed_plan,
+    normalize_fixed_plan_name,
     set_charge_slots,
     set_discharge_slots,
     set_hour_action as schedule_set_hour_action,
@@ -152,6 +157,8 @@ class ChargeControlData:
     pv_charge_hours: list[dict[str, Any]] = field(default_factory=list)
     blocked_charging_hours: list[int] = field(default_factory=list)
     blocked_discharging_hours: list[int] = field(default_factory=list)
+    fixed_plans: dict[int, dict[str, Any]] = field(default_factory=dict)
+    active_fixed_plan: int | None = None
     current_price: float | None = None
     epex_attributes: dict[str, Any] = field(default_factory=dict)
     prices_today: list[dict[str, Any]] = field(default_factory=list)
@@ -182,6 +189,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             config_entry=entry,
             name=DOMAIN,
             update_interval=None,  # driven by events, not polling
+            # HA's default debouncer coalesces requests with a 10 s cooldown
+            # (first request immediate, everything else deferred to the
+            # trailing edge). Because tracked entities such as the battery
+            # SOC sensor keep that window hot, dashboard edits (plan bars,
+            # fixed-plan chips, activation, ...) could take up to 10 s to
+            # reach the entities. A short 1 s cooldown batches edit bursts
+            # while keeping the UI confirmation near-instant; actuation
+            # itself stays guarded by its own debounces and deadband.
+            request_refresh_debouncer=Debouncer(hass, _LOGGER, cooldown=1, immediate=True),
         )
 
         # --- Entity references from config ---
@@ -265,6 +281,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Replan hours are recurring (hour-of-day only)
         self._replan_hours: list[int] = list(DEFAULT_REPLAN_HOURS)
         self._replan_unsub: Any = None
+
+        # --- Fixed plans ---
+        # Numbered, user-defined recurring hour-of-day patterns that are
+        # merged on top of the auto-planned hours for today + tomorrow
+        # while activated. ``_fixed_plan_applied_slots`` tracks every
+        # (date, hour) slot the active plan wrote (in-memory only) and
+        # ``_fixed_plan_base_snapshot`` keeps the schedule state from
+        # just before the last merge, so deactivating or switching plans
+        # restores the pre-merge plan instead of leaving holes behind.
+        self._fixed_plans: dict[int, dict[str, Any]] = {}
+        self._active_fixed_plan: int | None = None
+        self._fixed_plan_applied_slots: list[ScheduleSlot] = []
+        self._fixed_plan_base_snapshot: tuple[
+            list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot]
+        ] | None = None
 
         # --- Listener removal callbacks ---
         self._unsub_listeners: list[Any] = []
@@ -523,6 +554,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def replan_hours(self) -> list[int]:
         return list(self._replan_hours)
 
+    @property
+    def fixed_plans(self) -> dict[int, dict[str, Any]]:
+        return {plan: normalize_fixed_plan(data) for plan, data in self._fixed_plans.items()}
+
+    @property
+    def active_fixed_plan(self) -> int | None:
+        return self._active_fixed_plan
+
     # ------------------------------------------------------------------
     # Schedule management
     # ------------------------------------------------------------------
@@ -596,6 +635,200 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
+    # ------------------------------------------------------------------
+    # Fixed plans
+    #
+    # Fixed plans are numbered, recurring hour-of-day patterns
+    # (charge / discharge / pv_charge) the user defines once and can
+    # activate at any time. While a plan is active its hours are merged
+    # into the regular charge/discharge/pv_charge slot lists for
+    # today + tomorrow after every planning step: fixed hours extend the
+    # auto plan and win over it in the same hour (one action per hour).
+    #
+    # Retraction bookkeeping (in-memory only):
+    #   _fixed_plan_applied_slots — every (date, hour) the last merge
+    #     wrote, used as a fallback to strip the merge again.
+    #   _fixed_plan_base_snapshot — the three slot lists from just
+    #     before the last merge, restored wholesale when the influence
+    #     of the active plan is undone (deactivate / switch / edit).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _empty_fixed_plan() -> dict[str, Any]:
+        return {
+            "charge_hours": [],
+            "discharge_hours": [],
+            "pv_charge_hours": [],
+            "name": "",
+        }
+
+    def set_fixed_plan_hour(self, plan: int, hour: int, action: str) -> None:
+        """Set one hour of a fixed plan to an action (creating the plan if needed).
+
+        ``action`` is one of charge, pv_charge, discharge or idle; an hour
+        can only hold one action, so setting a new action clears it from
+        the other buckets.
+
+        Editing a plan never re-plans on its own: the schedule lists keep
+        the previously merged hours until the next replan hour or
+        Recalculate click re-applies the plan.
+        """
+        if not (1 <= plan <= MAX_FIXED_PLANS):
+            _LOGGER.warning("Fixed plan number out of range: %s", plan)
+            return
+        if not (0 <= hour <= 23):
+            return
+        if action not in (ACTION_IDLE, ACTION_CHARGE, ACTION_PV_CHARGE, ACTION_DISCHARGE):
+            _LOGGER.warning("Unsupported fixed-plan action: %s", action)
+            return
+        if plan not in self._fixed_plans:
+            self._fixed_plans[plan] = self._empty_fixed_plan()
+        plan_data = self._fixed_plans[plan]
+        for key in ("charge_hours", "discharge_hours", "pv_charge_hours"):
+            plan_data[key] = [h for h in plan_data[key] if h != hour]
+        if action == ACTION_CHARGE:
+            plan_data["charge_hours"] = sorted(plan_data["charge_hours"] + [hour])
+        elif action == ACTION_PV_CHARGE:
+            plan_data["pv_charge_hours"] = sorted(plan_data["pv_charge_hours"] + [hour])
+        elif action == ACTION_DISCHARGE:
+            plan_data["discharge_hours"] = sorted(plan_data["discharge_hours"] + [hour])
+        self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def set_fixed_plan_name(self, plan: int, name: str) -> None:
+        """Set (or clear) a fixed plan's display name, creating the plan if needed.
+
+        The name is purely cosmetic (tab chip and detail view); it never
+        re-plans. An empty name clears the display name so the chip falls
+        back to the plan number.
+        """
+        if not (1 <= plan <= MAX_FIXED_PLANS):
+            _LOGGER.warning("Fixed plan number out of range: %s", plan)
+            return
+        if plan not in self._fixed_plans:
+            self._fixed_plans[plan] = self._empty_fixed_plan()
+        self._fixed_plans[plan]["name"] = normalize_fixed_plan_name(name)
+        self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def add_fixed_plan(self) -> int | None:
+        """Create a new empty fixed plan and return its number (None at cap)."""
+        if len(self._fixed_plans) >= MAX_FIXED_PLANS:
+            _LOGGER.warning("Fixed plan cap of %d reached", MAX_FIXED_PLANS)
+            return None
+        for number in range(1, MAX_FIXED_PLANS + 1):
+            if number not in self._fixed_plans:
+                self._fixed_plans[number] = self._empty_fixed_plan()
+                self._async_schedule_save()
+                self.hass.async_create_task(self.async_request_refresh())
+                return number
+        return None
+
+    def remove_fixed_plan(self, plan: int) -> None:
+        """Delete a fixed plan; deactivates it first when it was active."""
+        if plan not in self._fixed_plans:
+            return
+        if self._active_fixed_plan == plan:
+            self._active_fixed_plan = None
+            self._retract_fixed_plan()
+            if self.control_mode == MODE_AUTO:
+                self.calculate_auto_schedule()
+        del self._fixed_plans[plan]
+        self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def set_active_fixed_plan(self, plan: int | None) -> None:
+        """Activate one fixed plan, or deactivate when ``plan`` is None."""
+        if plan is not None and plan not in self._fixed_plans:
+            _LOGGER.warning("Cannot activate unknown fixed plan: %s", plan)
+            return
+        if plan == self._active_fixed_plan:
+            return
+        self._active_fixed_plan = plan
+        if plan is None:
+            self._retract_fixed_plan()
+            if self.control_mode == MODE_AUTO:
+                self.calculate_auto_schedule()
+        else:
+            self._apply_fixed_plan()
+        self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def _drop_applied_fixed_slots(self) -> None:
+        """Remove the slots written by the last fixed-plan merge from the lists."""
+        if not self._fixed_plan_applied_slots:
+            return
+        applied = set(self._fixed_plan_applied_slots)
+        self._charge_hours = [s for s in self._charge_hours if s not in applied]
+        self._discharge_hours = [s for s in self._discharge_hours if s not in applied]
+        self._pv_charge_hours = [s for s in self._pv_charge_hours if s not in applied]
+        self._fixed_plan_applied_slots = []
+
+    def _retract_fixed_plan(self) -> None:
+        """Undo the current fixed plan's influence on the schedule lists.
+
+        Restores the pre-merge snapshot when available (it also brings
+        back auto hours the merge had overwritten in its slots); falls
+        back to stripping the tracked applied slots when no snapshot
+        exists (e.g. right after a restart before the first merge).
+        """
+        if self._fixed_plan_base_snapshot is not None:
+            (
+                self._charge_hours,
+                self._discharge_hours,
+                self._pv_charge_hours,
+            ) = (
+                list(self._fixed_plan_base_snapshot[0]),
+                list(self._fixed_plan_base_snapshot[1]),
+                list(self._fixed_plan_base_snapshot[2]),
+            )
+        else:
+            self._drop_applied_fixed_slots()
+        self._fixed_plan_applied_slots = []
+        self._fixed_plan_base_snapshot = None
+
+    def _apply_fixed_plan(self, *, reset_base: bool = False) -> None:
+        """Merge the active fixed plan into the schedule lists (today + tomorrow).
+
+        Called after every planning step and whenever the active plan is
+        edited. ``reset_base`` discards the previous merge instead of
+        restoring its base snapshot — used where the surrounding step
+        has already replaced the plan wholesale (manual-mode replan,
+        clear_schedule).
+        """
+        plan = self._fixed_plans.get(self._active_fixed_plan)
+        if plan is None:
+            self._fixed_plan_applied_slots = []
+            self._fixed_plan_base_snapshot = None
+            return
+        if reset_base or self._fixed_plan_base_snapshot is None:
+            self._drop_applied_fixed_slots()
+        else:
+            self._retract_fixed_plan()
+        self._fixed_plan_base_snapshot = (
+            list(self._charge_hours),
+            list(self._discharge_hours),
+            list(self._pv_charge_hours),
+        )
+        now = dt_util.now()
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        (
+            self._charge_hours,
+            self._discharge_hours,
+            self._pv_charge_hours,
+            self._fixed_plan_applied_slots,
+        ) = apply_fixed_plan(
+            self._charge_hours,
+            self._discharge_hours,
+            self._pv_charge_hours,
+            plan,
+            [schedule_today_str(now), tomorrow],
+        )
+
     def _install_replan_listener(self) -> None:
         """(Re)install the time-change listener for replan hours.
 
@@ -625,8 +858,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if self.control_mode == MODE_AUTO:
             self.calculate_auto_schedule()
         elif self.control_mode == MODE_MANUAL:
+            # In manual mode the user-picked per-day hours are cleared so
+            # the next day starts fresh; an active fixed plan is re-applied
+            # on top of the cleared base so it keeps recurring daily.
             self._charge_hours = []
             self._discharge_hours = []
+            if self._active_fixed_plan is not None:
+                self._apply_fixed_plan(reset_base=True)
             _LOGGER.info("Daily schedule reset (manual mode)")
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -711,6 +949,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._blocked_charging_hours,
             self._blocked_discharging_hours,
         ) = schedule_clear_all()
+        if self._active_fixed_plan is not None:
+            # An active fixed plan keeps enforcing its hours, so re-apply
+            # it on the cleared base instead of leaving it dangling.
+            self._apply_fixed_plan(reset_base=True)
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -763,6 +1005,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             pv_charge_hours=self._pv_charge_hours,
             blocked_charging_hours=self._blocked_charging_hours,
             blocked_discharging_hours=self._blocked_discharging_hours,
+            fixed_plans=self._fixed_plans,
+            active_fixed_plan=self._active_fixed_plan,
             last_schedule_update=self._last_schedule_update,
         )
         try:
@@ -821,6 +1065,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._pv_charge_hours = applied["pv_charge_hours"]
         self._blocked_charging_hours = applied["blocked_charging_hours"]
         self._blocked_discharging_hours = applied["blocked_discharging_hours"]
+        self._fixed_plans = applied["fixed_plans"]
+        self._active_fixed_plan = applied["active_fixed_plan"]
         self._last_schedule_update = applied["last_schedule_update"]
         self._schedule_loaded_from_store = applied["loaded"]
         _LOGGER.info(
@@ -868,6 +1114,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         charge_slots, discharge_slots = result
         self._charge_hours = charge_slots
         self._discharge_hours = discharge_slots
+        if self._active_fixed_plan is not None:
+            # Merge the active fixed plan on top of the fresh auto plan.
+            self._apply_fixed_plan(reset_base=True)
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
 
@@ -1325,6 +1574,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             pv_charge_hours=[{"date": d, "hour": h} for d, h in self._pv_charge_hours],
             blocked_charging_hours=list(self._blocked_charging_hours),
             blocked_discharging_hours=list(self._blocked_discharging_hours),
+            fixed_plans={
+                plan: normalize_fixed_plan(data) for plan, data in self._fixed_plans.items()
+            },
+            active_fixed_plan=self._active_fixed_plan,
             current_price=price_view.current_price,
             epex_attributes=price_view.attributes,
             prices_today=price_view.prices_today,

@@ -40,6 +40,7 @@ async def async_setup_entry(
             ScheduleSensor(coordinator, entry, "blocked_charging"),
             ScheduleSensor(coordinator, entry, "blocked_discharging"),
             ChargePlanSensor(coordinator, entry),
+            FixedPlansSensor(coordinator, entry),
             LastScheduleUpdateSensor(coordinator, entry),
             GridFeedInStatusSensor(coordinator, entry),
             GridEnergyCostSensor(coordinator, entry, "grid_cost"),
@@ -605,6 +606,56 @@ class ChargePlanSensor(VictronCCBaseSensor):
         if data is None:
             return "unknown"
         return self._plan_summary(data)
+
+
+class FixedPlansSensor(VictronCCBaseSensor):
+    """Sensor exposing the defined fixed plans and which one is active.
+
+    State is the number of defined plans; the ``plans`` attribute holds
+    each plan's recurring hour-of-day lists (the card's data source for
+    the fixed-plan editor) and ``active`` the activated plan number.
+    """
+
+    _attr_translation_key = "fixed_plans"
+    _attr_icon = "mdi:calendar-multiple"
+
+    def __init__(
+        self,
+        coordinator: VictronChargeControlCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_fixed_plans"
+
+    @staticmethod
+    def _plan_attributes(data: ChargeControlData) -> dict:
+        return {
+            "plans": {str(plan): plan_data for plan, plan_data in sorted(data.fixed_plans.items())},
+            "active": data.active_fixed_plan,
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        data: ChargeControlData | None = self.coordinator.data
+        if data is None:
+            self._attr_native_value = "unknown"
+        else:
+            self._attr_native_value = len(data.fixed_plans)
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> str | int:
+        data = self.coordinator.data
+        if data is None:
+            return "unknown"
+        return len(data.fixed_plans)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data
+        if data is None:
+            return {"plans": {}, "active": None}
+        return self._plan_attributes(data)
 
 
 class LastScheduleUpdateSensor(VictronCCBaseSensor):

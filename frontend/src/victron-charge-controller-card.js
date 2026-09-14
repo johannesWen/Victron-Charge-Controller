@@ -69,6 +69,12 @@ const HELP_TEXT = {
       items: [
         'Edit blocked charging / discharging hours under Settings to apply every day.',
       ] },
+    { heading: 'Fixed plans',
+      items: [
+        'Switch to a numbered plan page (or press +) to define a recurring 24-hour pattern of charging, discharging and PV charging hours.',
+        'Activate a plan from its detailed view (check-mark button) — its hours extend the auto plan and win over it for today and tomorrow.',
+        'Only one plan can be active at a time.',
+      ] },
   ],
   history: [
     { heading: 'What it shows',
@@ -84,6 +90,10 @@ const HELP_TEXT = {
 };
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
+
+// How long an optimistic (pending) edit may linger without being
+// confirmed by the real entity state (e.g. failed service call).
+const PENDING_MAX_AGE_MS = 10000;
 
 const COST_RANGES = {
   day:   { label: 'Day',   period: 'hour',  icon: 'mdi:calendar-today' },
@@ -133,6 +143,21 @@ class VictronChargeControllerCard extends LitElement {
     // Help dialog state
     this._helpOpen = false;
     this._onHelpKeyDownBound = this._onHelpKeyDown.bind(this);
+    // Plan view pages: 'auto' = auto-planned chart, number = fixed plan editor
+    this._planPage = 'auto';
+    this._fixedPlanNumber = null;
+    // Optimistic pending state for service-based edits (mirror of the
+    // _pendingThresholds pattern). Rendered immediately; cleared once the
+    // real entity state catches up or the schedule is recalculated
+    // (last_schedule_update change clears everything).
+    this._pendingFixedPlanHours = {};   // plan -> { hour -> action }
+    this._pendingActiveFixedPlan = undefined; // number | null | undefined (= none)
+    this._pendingFixedPlanNames = {};   // plan -> { value, ts }
+    this._pendingPlanActions = {};      // 'date:hour' -> action
+    this._lastScheduleUpdateSeen = null;
+    // Inline plan-rename editor state (detail view only)
+    this._planNameEditing = false;
+    this._planNameDraft = '';
   }
 
   disconnectedCallback() {
@@ -226,7 +251,224 @@ class VictronChargeControllerCard extends LitElement {
   _setPlanHourAction(hour, action, date) {
     const data = { hour, action };
     if (date) data.date = date;
+    // Optimistically show the picked action until the schedule sensors
+    // confirm it (or the plan is recalculated and the pending is cleared).
+    if (date) {
+      this._pendingPlanActions[`${date}:${hour}`] = { action, ts: Date.now() };
+      this.requestUpdate();
+    }
     this._callService('victron_charge_control', 'set_hour_action', data);
+  }
+
+  // ── Fixed-plan helpers ──────────────────────────────────
+
+  _clearStalePendings() {
+    // A coordinator push is atomic: when last_schedule_update changes, the
+    // plan data in the same hass update already reflects it. Any schedule
+    // recalculation (Recalculate button, replan hour, service edit) bumps
+    // the timestamp, so a change here invalidates every optimistic value.
+    const stamp = this._val('sensor', 'last_schedule_update');
+    if (this._lastScheduleUpdateSeen === null) {
+      this._lastScheduleUpdateSeen = stamp;
+    } else if (stamp !== this._lastScheduleUpdateSeen) {
+      this._lastScheduleUpdateSeen = stamp;
+    this._pendingFixedPlanHours = {};
+    this._pendingActiveFixedPlan = undefined;
+    this._pendingFixedPlanNames = {};
+    this._pendingPlanActions = {};
+      return;
+    }
+    // Age-based fallback for pending values whose service call failed and
+    // will never be confirmed by a matching entity state.
+    const now = Date.now();
+    for (const [plan, pending] of Object.entries(this._pendingFixedPlanNames)) {
+      if (now - pending.ts > PENDING_MAX_AGE_MS) delete this._pendingFixedPlanNames[plan];
+    }
+    for (const [plan, hourActions] of Object.entries(this._pendingFixedPlanHours)) {
+      for (const [hour, pending] of Object.entries(hourActions)) {
+        if (now - pending.ts > PENDING_MAX_AGE_MS) delete hourActions[hour];
+      }
+      if (Object.keys(hourActions).length === 0) delete this._pendingFixedPlanHours[plan];
+    }
+    if (
+      this._pendingActiveFixedPlan !== undefined
+      && now - this._pendingActiveFixedPlan.ts > PENDING_MAX_AGE_MS
+    ) {
+      this._pendingActiveFixedPlan = undefined;
+    }
+    for (const [key, pending] of Object.entries(this._pendingPlanActions)) {
+      if (now - pending.ts > PENDING_MAX_AGE_MS) delete this._pendingPlanActions[key];
+    }
+  }
+
+  _getFixedPlans() {
+    const entity = this._state('sensor', 'fixed_plans');
+    const attrs = entity?.attributes || {};
+    const plans = {};
+    const raw = attrs.plans;
+    if (raw && typeof raw === 'object') {
+      for (const [num, planData] of Object.entries(raw)) {
+        const plan = Number.parseInt(num, 10);
+        if (Number.isNaN(plan)) continue;
+        const data = planData && typeof planData === 'object' ? planData : {};
+        plans[plan] = {
+          charge_hours: this._parseHours((data.charge_hours || []).join(', ')),
+          discharge_hours: this._parseHours((data.discharge_hours || []).join(', ')),
+          pv_charge_hours: this._parseHours((data.pv_charge_hours || []).join(', ')),
+          name: typeof data.name === 'string' ? data.name : '',
+        };
+      }
+    }
+    // Merge optimistic pending hour actions over the sensor state and
+    // prune entries the sensor has already confirmed.
+    for (const [plan, hourActions] of Object.entries(this._pendingFixedPlanHours)) {
+      const planNum = Number.parseInt(plan, 10);
+      if (Number.isNaN(planNum)) continue;
+      const planData = plans[planNum] || {
+        charge_hours: [], discharge_hours: [], pv_charge_hours: [],
+      };
+      const bucketFor = action => (
+        action === 'charge' ? 'charge_hours'
+          : (action === 'pv_charge' ? 'pv_charge_hours'
+            : (action === 'discharge' ? 'discharge_hours' : null))
+      );
+      for (const [hourText, pending] of Object.entries(hourActions)) {
+        const hour = Number.parseInt(hourText, 10);
+        if (Number.isNaN(hour)) continue;
+        const target = bucketFor(pending.action);
+        let settled = true;
+        for (const key of ['charge_hours', 'discharge_hours', 'pv_charge_hours']) {
+          const has = planData[key].includes(hour);
+          const expected = key === target;
+          if (has !== expected) {
+            settled = false;
+            // Still pending: update the plan copy for rendering.
+            planData[key] = expected
+              ? [...planData[key], hour].sort((a, b) => a - b)
+              : planData[key].filter(h => h !== hour);
+          }
+        }
+        // Real state caught up: drop the pending entry.
+        if (settled) delete hourActions[hour];
+      }
+      if (Object.keys(hourActions).length === 0) delete this._pendingFixedPlanHours[plan];
+      plans[planNum] = planData;
+    }
+    // Pending activation state overrides the sensor until it matches.
+    let active = attrs.active == null ? null : Number.parseInt(attrs.active, 10);
+    active = Number.isNaN(active) ? null : active;
+    if (this._pendingActiveFixedPlan !== undefined) {
+      if (this._pendingActiveFixedPlan.value === active) {
+        this._pendingActiveFixedPlan = undefined;
+      } else {
+        active = this._pendingActiveFixedPlan.value;
+      }
+    }
+    // Pending display names override the sensor until they match.
+    for (const [plan, pending] of Object.entries(this._pendingFixedPlanNames)) {
+      const planNum = Number.parseInt(plan, 10);
+      if (Number.isNaN(planNum)) continue;
+      const planData = plans[planNum] || {
+        charge_hours: [], discharge_hours: [], pv_charge_hours: [], name: '',
+      };
+      if (planData.name === pending.value) {
+        delete this._pendingFixedPlanNames[plan];
+      } else {
+        planData.name = pending.value;
+        plans[planNum] = planData;
+      }
+    }
+    return { plans, active };
+  }
+
+  _nextFixedPlanNumber(plans) {
+    for (let n = 1; n <= 8; n += 1) {
+      if (!plans[n]) return n;
+    }
+    return null;
+  }
+
+  _setFixedPlanHour(plan, hour, action) {
+    this._callService('victron_charge_control', 'set_fixed_plan_hour', {
+      plan, hour, action,
+    });
+  }
+
+  _toggleFixedPlanHour(plan, hour, action, hours) {
+    // Compute the resulting action from the *merged* (pending + sensor)
+    // state so rapid clicks toggle the visible selection correctly.
+    const { plans } = this._getFixedPlans();
+    const planData = plans[plan] || { charge_hours: [], discharge_hours: [], pv_charge_hours: [] };
+    const inClickedRow = hours.includes(hour);
+    const current = inClickedRow ? action
+      : (planData.charge_hours.includes(hour) ? 'charge'
+        : (planData.pv_charge_hours.includes(hour) ? 'pv_charge'
+          : (planData.discharge_hours.includes(hour) ? 'discharge' : 'idle')));
+    const next = inClickedRow ? 'idle' : action;
+    if (current === next) return;
+    const hourActions = this._pendingFixedPlanHours[plan] || {};
+    hourActions[hour] = { action: next, ts: Date.now() };
+    this._pendingFixedPlanHours[plan] = hourActions;
+    this._setFixedPlanHour(plan, hour, next);
+    this.requestUpdate();
+  }
+
+  _activateFixedPlan(plan, isActive) {
+    // Optimistically switch the visible activation state until the
+    // select entity catches up.
+    this._pendingActiveFixedPlan = { value: isActive ? null : plan, ts: Date.now() };
+    this._callService('select', 'select_option', {
+      entity_id: this._eid('select', 'active_fixed_plan'),
+      option: isActive ? 'off' : String(plan),
+    });
+    this.requestUpdate();
+  }
+
+  _fixedPlanDisplayName(planNumber, planData) {
+    const name = planData?.name || '';
+    return name || `Fixed Plan ${planNumber}`;
+  }
+
+  _beginFixedPlanRename(planNumber) {
+    const { plans } = this._getFixedPlans();
+    this._planNameEditing = true;
+    this._planNameDraft = plans[planNumber]?.name || '';
+    this.requestUpdate();
+    setTimeout(() => {
+      this.renderRoot?.querySelector('.plan-name-input')?.focus();
+    }, 0);
+  }
+
+  _cancelFixedPlanRename() {
+    this._planNameEditing = false;
+    this._planNameDraft = '';
+    this.requestUpdate();
+  }
+
+  _confirmFixedPlanRename(planNumber) {
+    const name = (this._planNameDraft || '').trim().slice(0, 10);
+    this._planNameEditing = false;
+    this._planNameDraft = '';
+    const { plans } = this._getFixedPlans();
+    const current = plans[planNumber]?.name || '';
+    if (name !== current) {
+      // Optimistically show the new name until the sensor catches up.
+      this._pendingFixedPlanNames[planNumber] = { value: name, ts: Date.now() };
+      this._callService('victron_charge_control', 'set_fixed_plan_name', {
+        plan: planNumber, name,
+      });
+    }
+    this.requestUpdate();
+  }
+
+  _removeFixedPlan(plan) {
+    this._callService('victron_charge_control', 'remove_fixed_plan', { plan });
+    this._planNameEditing = false;
+    this._planNameDraft = '';
+    if (this._fixedPlanNumber === plan) {
+      this._fixedPlanNumber = null;
+      this._planPage = 'auto';
+    }
   }
 
   // ── Blocked-hours helpers ───────────────────────────────
@@ -292,6 +534,17 @@ class VictronChargeControllerCard extends LitElement {
         else if (dischargeSlots.has(slotKey)) displayAction = 'discharge';
         else if (blockedCharging && blockedDischarging) displayAction = 'blocked';
         else displayAction = 'idle';
+      }
+
+      // Optimistic pending edit wins over the last known schedule state;
+      // cleared as soon as the schedule sensors reflect the picked action.
+      const pending = slotKey ? this._pendingPlanActions[slotKey] : undefined;
+      if (pending) {
+        if (pending.action === displayAction) {
+          delete this._pendingPlanActions[slotKey];
+        } else {
+          displayAction = pending.action;
+        }
       }
 
       return {
@@ -687,14 +940,14 @@ class VictronChargeControllerCard extends LitElement {
     this._finishThresholdDrag(true);
   }
 
-  _renderHourChips({ key, activeClass = 'blocked', onClick }) {
-    const selected = this._parseHours(this._val('text', key));
+  _renderHourChips({ key, selected, activeClass = 'blocked', onClick }) {
+    const hours = selected ?? this._parseHours(key ? this._val('text', key) : null);
     const toggle = onClick ?? (h => this._toggleHour(key, h));
     return html`
       <div class="hour-grid">
         ${HOURS.map(h => html`
           <button
-            class="hour-chip ${selected.includes(h) ? activeClass : ''}"
+            class="hour-chip ${hours.includes(h) ? activeClass : ''}"
             @click=${() => toggle(h)}
           >${String(h).padStart(2, '0')}</button>
         `)}
@@ -1827,6 +2080,180 @@ class VictronChargeControllerCard extends LitElement {
   // ── Plan view ────────────────────────────────────────────
 
   _renderPlanView() {
+    return html`
+      <div class="plan-container">
+        ${this._renderPlanTabs()}
+        ${this._planPage === 'auto'
+          ? this._renderAutoPlanPage()
+          : this._renderFixedPlanPage(this._fixedPlanNumber)}
+      </div>`;
+  }
+
+  _openPlanPage(page) {
+    this._planPage = page;
+    this._planNameEditing = false;
+    this._planNameDraft = '';
+    if (typeof page === 'number') this._fixedPlanNumber = page;
+    this.requestUpdate();
+  }
+
+  _openNewFixedPlan(plans) {
+    const next = this._nextFixedPlanNumber(plans);
+    if (next == null) return;
+    this._planPage = next;
+    this._fixedPlanNumber = next;
+    this._planNameEditing = false;
+    this._planNameDraft = '';
+    this.requestUpdate();
+  }
+
+  _renderPlanTabs() {
+    const { plans, active } = this._getFixedPlans();
+    const numbers = Object.keys(plans).map(Number).sort((a, b) => a - b);
+    const page = this._planPage;
+    return html`
+      <div class="plan-page-tabs">
+        <button
+          class="plan-page-btn ${page === 'auto' ? 'active' : ''}"
+          @click=${() => this._openPlanPage('auto')}
+          title="Auto-planned hours"
+        >
+          <ha-icon icon="mdi:auto-fix"></ha-icon>
+          <span>Auto</span>
+        </button>
+        ${numbers.map(n => html`
+          <div
+            class="plan-page-btn ${page === n ? 'active' : ''}"
+            role="button"
+            tabindex="0"
+            @click=${() => this._openPlanPage(n)}
+            @keydown=${(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._openPlanPage(n); } }}
+            title=${plans[n].name ? `Fixed plan ${n}: "${plans[n].name}"` : `Fixed plan ${n}`}
+          >
+            <span class="plan-tab-select">${plans[n].name || n}</span>
+            <span
+              class="plan-tab-check ${active === n ? 'checked' : ''}"
+              title=${active === n ? 'Plan is active' : 'Plan is inactive'}
+            >
+              <ha-icon .icon=${active === n ? 'mdi:check-circle' : 'mdi:check-circle-outline'}></ha-icon>
+            </span>
+          </div>
+        `)}
+        <button
+          class="plan-page-btn plan-tab-add"
+          @click=${() => this._openNewFixedPlan(plans)}
+          title="New fixed plan"
+        >+</button>
+      </div>`;
+  }
+
+  _renderFixedPlanPage(planNumber) {
+    const { plans, active } = this._getFixedPlans();
+    const planData = plans[planNumber] || {
+      charge_hours: [], discharge_hours: [], pv_charge_hours: [], name: '',
+    };
+    const isActive = active === planNumber;
+    const editing = this._planNameEditing;
+    const titleRow = editing ? html`
+      <div class="fixed-plan-title-row">
+        <input
+          class="plan-name-input"
+          type="text"
+          maxlength="10"
+          .value=${this._planNameDraft}
+          placeholder="Plan name"
+          @input=${(e) => { this._planNameDraft = e.target.value; }}
+          @keydown=${(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              this._confirmFixedPlanRename(planNumber);
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              this._cancelFixedPlanRename();
+            }
+          }}
+        >
+        <button
+          class="plan-name-confirm"
+          @click=${() => this._confirmFixedPlanRename(planNumber)}
+          title="Save name"
+        >
+          <ha-icon icon="mdi:check"></ha-icon>
+        </button>
+        <button
+          class="plan-name-cancel"
+          @click=${() => this._cancelFixedPlanRename()}
+          title="Cancel"
+        >
+          <ha-icon icon="mdi:close"></ha-icon>
+        </button>
+      </div>
+    ` : html`
+      <div class="fixed-plan-title-row">
+        <span class="fixed-plan-title">${this._fixedPlanDisplayName(planNumber, planData)}</span>
+        <button
+          class="plan-name-pen"
+          @click=${() => this._beginFixedPlanRename(planNumber)}
+          title="Rename plan"
+        >
+          <ha-icon icon="mdi:pencil-outline"></ha-icon>
+        </button>
+      </div>
+    `;
+    return html`
+      <div class="fixed-plan-editor">
+        <div class="fixed-plan-header">
+          ${titleRow}
+          <div class="fixed-plan-actions">
+            <button
+              class="fixed-plan-activate ${isActive ? 'checked' : ''}"
+              @click=${() => this._activateFixedPlan(planNumber, isActive)}
+              title=${isActive ? 'Deactivate plan' : 'Activate plan'}
+            >
+              <ha-icon .icon=${isActive ? 'mdi:check-circle' : 'mdi:check-circle-outline'}></ha-icon>
+              <span>${isActive ? 'Active' : 'Inactive'}</span>
+            </button>
+            <button
+              class="fixed-plan-remove"
+              @click=${() => this._removeFixedPlan(planNumber)}
+              title="Delete plan"
+            >
+              <ha-icon icon="mdi:trash-can-outline"></ha-icon>
+            </button>
+          </div>
+        </div>
+        <div class="fixed-plan-hint">
+          While active, these hours are added to the auto plan every day
+          (today + tomorrow) and win over it in the same hour.
+        </div>
+        <div class="blocked-group">
+          <span class="blocked-label">Charging</span>
+          ${this._renderHourChips({
+            selected: planData.charge_hours,
+            activeClass: 'charge',
+            onClick: h => this._toggleFixedPlanHour(planNumber, h, 'charge', planData.charge_hours),
+          })}
+        </div>
+        <div class="blocked-group">
+          <span class="blocked-label">PV Charging</span>
+          ${this._renderHourChips({
+            selected: planData.pv_charge_hours,
+            activeClass: 'pv',
+            onClick: h => this._toggleFixedPlanHour(planNumber, h, 'pv_charge', planData.pv_charge_hours),
+          })}
+        </div>
+        <div class="blocked-group">
+          <span class="blocked-label">Discharging</span>
+          ${this._renderHourChips({
+            selected: planData.discharge_hours,
+            activeClass: 'discharge',
+            onClick: h => this._toggleFixedPlanHour(planNumber, h, 'discharge', planData.discharge_hours),
+          })}
+        </div>
+      </div>`;
+  }
+
+  _renderAutoPlanPage() {
     const planEntity = this._state('sensor', 'charge_plan');
     const plan = planEntity?.attributes?.plan;
 
@@ -2028,6 +2455,7 @@ class VictronChargeControllerCard extends LitElement {
 
   render() {
     if (!this.hass || !this.config) return nothing;
+    this._clearStalePendings();
 
     const modeEntity = this._state('select', 'control_mode');
     if (!modeEntity) {
@@ -2460,8 +2888,122 @@ class VictronChargeControllerCard extends LitElement {
         background: rgba(33,150,243,0.12); border-color: var(--vcc-info);
         color: var(--vcc-info); font-weight: 600;
       }
+      .hour-chip.charge {
+        background: rgba(76,175,80,0.12); border-color: var(--vcc-success);
+        color: var(--vcc-success); font-weight: 600;
+      }
+      .hour-chip.pv {
+        background: rgba(255,183,77,0.15); border-color: var(--vcc-pv-charge);
+        color: var(--vcc-pv-charge); font-weight: 600;
+      }
+      .hour-chip.discharge {
+        background: rgba(255,102,0,0.12); border-color: var(--vcc-warning);
+        color: var(--vcc-warning); font-weight: 600;
+      }
       @media (max-width: 350px) {
         .hour-grid { grid-template-columns: repeat(8, 1fr); }
+      }
+
+      /* ── Plan page tabs ────────────────────────── */
+      .plan-container {
+        display: flex; flex-direction: column; gap: 12px;
+      }
+      .plan-page-tabs {
+        display: flex; gap: 4px; flex-wrap: wrap; align-items: stretch;
+      }
+      .plan-page-btn {
+        display: flex; align-items: center; gap: 1px;
+        padding: 4px 6px; border: 1px solid var(--vcc-border);
+        border-radius: 8px; background: none; color: var(--vcc-text2);
+        cursor: pointer; font-size: 0.78em; font-family: inherit;
+        transition: all 0.15s ease;
+      }
+      .plan-page-btn:hover { border-color: var(--vcc-accent); color: var(--vcc-accent); }
+      .plan-page-btn.active {
+        background: rgba(33,150,243,0.12);
+        border-color: var(--vcc-info);
+        color: var(--vcc-info);
+        font-weight: 600;
+      }
+      .plan-page-btn ha-icon { --mdc-icon-size: 14px; }
+      .plan-tab-select {
+        background: none; border: none; padding: 2px 4px;
+        cursor: pointer; font: inherit; font-weight: 600; color: inherit;
+        display: flex; align-items: center;
+        max-width: 90px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+      }
+      .plan-tab-check {
+        display: flex; align-items: center;
+        color: inherit; opacity: 0.55;
+      }
+      .plan-tab-check.checked { opacity: 1; color: var(--vcc-success); }
+      .plan-tab-add { font-weight: 700; }
+
+      /* ── Fixed plan editor ─────────────────────── */
+      .fixed-plan-editor {
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .fixed-plan-header {
+        display: flex; align-items: center; justify-content: space-between;
+      }
+      .fixed-plan-title-row {
+        display: flex; align-items: center; gap: 4px;
+        min-width: 0;
+      }
+      .fixed-plan-title {
+        font-size: 0.95em; font-weight: 600; color: var(--vcc-text);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .plan-name-pen,
+      .plan-name-confirm,
+      .plan-name-cancel {
+        display: flex; align-items: center;
+        padding: 2px; border: none; background: none;
+        color: var(--vcc-text2); cursor: pointer;
+      }
+      .plan-name-pen:hover { color: var(--vcc-accent); }
+      .plan-name-confirm:hover { color: var(--vcc-success); }
+      .plan-name-cancel:hover { color: var(--vcc-error); }
+      .plan-name-pen ha-icon,
+      .plan-name-confirm ha-icon,
+      .plan-name-cancel ha-icon { --mdc-icon-size: 16px; }
+      .plan-name-input {
+        font: inherit; font-size: 0.95em; font-weight: 600;
+        color: var(--vcc-text); background: none;
+        border: 1px solid var(--vcc-border); border-radius: 6px;
+        padding: 4px 8px; width: 130px; min-width: 0;
+      }
+      .plan-name-input:focus {
+        outline: none; border-color: var(--vcc-accent);
+      }
+      .fixed-plan-actions {
+        display: flex; gap: 6px; align-items: center;
+      }
+      .fixed-plan-activate {
+        display: flex; align-items: center; gap: 4px;
+        padding: 5px 10px; border: 1px solid var(--vcc-border);
+        border-radius: 8px; background: none; color: var(--vcc-text2);
+        cursor: pointer; font-size: 0.78em; font-family: inherit;
+        transition: all 0.15s ease;
+      }
+      .fixed-plan-activate ha-icon { --mdc-icon-size: 16px; }
+      .fixed-plan-activate:hover { border-color: var(--vcc-success); color: var(--vcc-success); }
+      .fixed-plan-activate.checked {
+        background: rgba(76,175,80,0.12); border-color: var(--vcc-success);
+        color: var(--vcc-success); font-weight: 600;
+      }
+      .fixed-plan-remove {
+        display: flex; align-items: center;
+        padding: 5px 8px; border: 1px solid var(--vcc-border);
+        border-radius: 8px; background: none; color: var(--vcc-text2);
+        cursor: pointer; font-family: inherit;
+        transition: all 0.15s ease;
+      }
+      .fixed-plan-remove ha-icon { --mdc-icon-size: 16px; }
+      .fixed-plan-remove:hover { border-color: var(--vcc-error); color: var(--vcc-error); }
+      .fixed-plan-hint {
+        font-size: 0.75em; color: var(--vcc-text2);
       }
 
       /* ── Action buttons ────────────────────────── */

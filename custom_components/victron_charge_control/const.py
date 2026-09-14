@@ -8,8 +8,12 @@ DOMAIN = "victron_charge_control"
 # Used to save the charge/discharge plan so it survives Home Assistant
 # restarts. The actual Store key is unique per config entry and is
 # constructed as ``f"{STORAGE_KEY_PREFIX}.{entry_id}"``. Bump
-# ``STORAGE_VERSION`` whenever the persisted shape changes; Home Assistant
-# will then ignore previously written data and start fresh.
+# ``STORAGE_VERSION`` whenever the persisted shape changes in a way that
+# is no longer backward-compatible; Home Assistant then calls the
+# (unimplemented) migrate function and previously written data is lost.
+# Purely additive keys are instead tolerated by the load path
+# (``persistence.apply_loaded_plan`` defaults absent keys), which keeps
+# existing plans intact across integration updates.
 STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = f"{DOMAIN}_schedule"
 
@@ -47,6 +51,13 @@ ACTION_CHARGE = "charge"
 ACTION_PV_CHARGE = "pv_charge"
 ACTION_DISCHARGE = "discharge"
 ACTION_BLOCKED = "blocked"
+
+# --- Fixed plans ---
+# User-defined recurring hour-of-day patterns (charge/discharge/pv_charge)
+# that extend and override the auto-planned hours for today + tomorrow.
+# Plans are numbered starting at 1; the cap keeps the select entity and
+# card UI bounded.
+MAX_FIXED_PLANS = 8
 
 # --- Defaults ---
 DEFAULT_MIN_SOC = 10.0

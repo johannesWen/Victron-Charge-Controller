@@ -33,6 +33,7 @@ the system from dashboards or automations.
 - [Services](#services)
 - [Defaults](#defaults)
 - [Setpoint Convention](#setpoint-convention)
+- [Fixed Plans](#fixed-plans)
 - [Cost And Energy Tracking](#cost-and-energy-tracking)
 - [Home Assistant Entities](#home-assistant-entities)
 - [Development](#development)
@@ -41,6 +42,7 @@ the system from dashboards or automations.
 
 - **Automatic scheduling** selects the cheapest hours for charging and the most expensive hours for discharging.
 - **Manual scheduling** allows individual hourly actions for today and tomorrow.
+- **Fixed plans** store one or more recurring 24-hour patterns of charge, discharge, and PV-charge hours. Activating a plan merges its hours into the auto-planned schedule every day (today + tomorrow): fixed hours are added and win over the auto plan in the same hour. Only one plan can be active at a time, and deactivating restores the previous plan.
 - **Force modes** immediately apply the configured charge or discharge power.
 - **SOC protection** respects minimum and maximum battery limits, including hysteresis.
 - **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
@@ -72,7 +74,7 @@ view: settings
 | View | Purpose |
 | --- | --- |
 | `settings` | Operate the controller, adjust limits, configure price thresholds, tune grid feed-in behavior, and recalculate schedules. |
-| `plan` | Inspect the EPEX Spot based plan for today and tomorrow, view blocked hours, and set manual actions for future hours. |
+| `plan` | Inspect the EPEX Spot based plan for today and tomorrow, view blocked hours, set manual actions for future hours, and manage fixed plans (recurring 24-hour charge/discharge/PV-charge patterns with a per-plan activate check mark). |
 | `history` | Review grid cost, revenue, import, and export statistics by day, week, month, or year. |
 
 | Option | Type | Default | Description |
@@ -157,6 +159,7 @@ You can change these entities later from the integration options flow.
 | Reduced Max Grid Feed-in | Number | Feed-in limit used when prices are low. While reduced feed-in mode is active, the PV-Charge and Discharge setpoints are clamped on the export side to this value (and to `Min Grid Setpoint` when lower), so the integration never asks the ESS to feed more into the grid than the active limit allows. |
 | Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
 | Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
+| Active Fixed Plan | Select | Which fixed plan is currently active (`off` or the plan number). Options update automatically as plans are created and removed. |
 | Recalculate Schedule | Button | Rebuilds the schedule from current price data. |
 | Desired Action | Sensor | Current computed action: charge, pv_charge, discharge, or idle. |
 | Target Setpoint | Sensor | Current computed grid setpoint in watts. |
@@ -167,6 +170,7 @@ You can change these entities later from the integration options flow.
 | Blocked Charging Hours | Sensor | Active charging block list. |
 | Blocked Discharging Hours | Sensor | Active discharging block list. |
 | Charge Plan | Sensor | Full hour-by-hour plan for today and tomorrow. |
+| Fixed Plans | Sensor | Number of defined fixed plans, plus a `plans` attribute with each plan's recurring hour lists and an `active` attribute with the activated plan number (or `null`). |
 | Last Schedule Update | Sensor | Timestamp of the last schedule calculation. |
 | Grid Feed-in Status | Sensor | Current feed-in mode: default or reduced. |
 | Grid Energy Cost | Sensor | Cumulative gross grid energy cost in EUR. |
@@ -184,6 +188,10 @@ You can change these entities later from the integration options flow.
 | `victron_charge_control.set_hour_action` | Set a specific hour to `idle`, `charge`, `discharge`, or `blocked`. |
 | `victron_charge_control.set_blocked_charging_hours` | Replace the list of charging-blocked hours. |
 | `victron_charge_control.set_blocked_discharging_hours` | Replace the list of discharging-blocked hours. |
+| `victron_charge_control.set_fixed_plan_hour` | Set one hour of a fixed plan to `charge`, `pv_charge`, `discharge`, or `idle` (creates the plan if needed). |
+| `victron_charge_control.set_fixed_plan_name` | Set the display name of a fixed plan (max 10 characters, creates the plan if needed; empty clears the name). |
+| `victron_charge_control.add_fixed_plan` | Create a new empty fixed plan. |
+| `victron_charge_control.remove_fixed_plan` | Delete a fixed plan (deactivates it first when active). |
 | `victron_charge_control.calculate_schedule` | Recalculate the automatic schedule from EPEX Spot prices. |
 | `victron_charge_control.clear_schedule` | Clear all scheduled charge and discharge hours. |
 
@@ -219,6 +227,35 @@ All controller parameters are adjustable at runtime through Home Assistant entit
 | Positive, for example `3000 W` | Import from grid and charge the battery. |
 | Negative, for example `-3000 W` | Export to grid and discharge the battery. |
 | `0 W` | Idle or self-consumption. |
+
+## Fixed Plans
+
+Fixed plans are user-defined, recurring hour-of-day patterns. They extend the
+scheduler with hours the user wants charged/discharged/PV-charged every day,
+independently of the price-based auto planning:
+
+1. **Auto planning** computes the base schedule from EPEX Spot prices as usual.
+2. **Activation** then merges the active fixed plan on top for **today and
+   tomorrow**: fixed hours are *added* to the plan and *win over* auto hours in
+   the same slot (one action per hour). The merge runs after every recalculation
+   (Recalculate button, replan hours, threshold changes) and after every plan
+   edit, so a fixed plan keeps enforcing its hours without further input.
+
+Key properties:
+
+- Plans are numbered (`1`, `2`, ...) and can optionally carry a display name
+  (up to 10 characters, set via the pen button in the plan's detail view);
+  the plan chips resolve the name. The Plan card's second page lets you
+  create, edit, activate, rename, and delete them. Each plan has an activate
+  check mark; activating another plan automatically deactivates the previous
+  one (the `Active Fixed Plan` select entity shows the state and can be used
+  in automations).
+- Deactivating a plan restores the schedule as it was before activation.
+- A plan applies in every control mode: in `manual` mode it also provides the
+  daily hours after the nightly schedule reset.
+- Per-day overrides made with `set_hour_action` are still honored until the
+  next recalculation, which re-applies the fixed plan.
+- Up to 8 plans can be defined; each is persisted across restarts.
 
 ## Cost And Energy Tracking
 
