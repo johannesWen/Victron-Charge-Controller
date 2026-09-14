@@ -56,6 +56,26 @@ const HELP_TEXT = {
         'Each bar shows the scheduled action for one hour (today + tomorrow).',
         'Tap a bar to see price details for that hour.',
       ] },
+    { heading: 'Charging modes',
+      items: [
+        [
+          { text: 'Charge', bold: true },
+          { text: ' imports power from the grid at the configured Charge Power to fill the battery. It only runs in planned charge hours while the Charge Allowed switch is on and the battery is below the Max SOC limit.' },
+        ],
+        [
+          { text: 'Discharge', bold: true },
+          { text: ' exports battery power to the grid at the configured Discharge Power. With the optional solar surplus sensor configured, the measured surplus is exported on top; close to the Min SOC limit discharge falls back to solar-only export.' },
+        ],
+        [
+          { text: 'PV Charge', bold: true },
+          { text: ' charges the battery from solar surplus without importing any grid power. It runs independently of the Charge Allowed switch and of blocked charging hours, and requires the optional solar surplus sensor to be configured.' },
+        ],
+        [
+          { text: 'PV Charging Battery Share', bold: true },
+          { text: ' (Settings card) splits the surplus between the battery and grid export during PV charge hours.' },
+        ],
+        'Outside planned hours the controller idles (grid setpoint 0 W).',
+      ] },
     { heading: 'Override an hour',
       items: [
         [
