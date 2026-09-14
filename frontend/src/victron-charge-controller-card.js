@@ -231,12 +231,16 @@ class VictronChargeControllerCard extends LitElement {
    * Resolve the entity id for a logical (domain, key) pair.
    *
    * The canonical id is `<domain>.<entity_prefix>_<key>`, but Home
-   * Assistant's entity registry can hand out a numeric suffix
-   * (e.g. `..._fixed_plans_2`) when the preferred id was already taken —
-   * e.g. by leftovers of a previous install. The card therefore falls
-   * back to a prefix-scoped suffix match so suffixed entities keep
-   * working. Results are memoized per canonical id and re-validated
-   * against the current hass states.
+   * Assistant can deviate from it in two situations:
+   *   1. the entity registry hands out a numeric suffix
+   *      (e.g. `..._fixed_plans_2`) when the preferred id was taken;
+   *   2. the device was renamed (e.g. to "Garage Victron Charge Control"),
+   *      so entities created after that get a device-name prefix
+   *      (e.g. `sensor.garage_victron_charge_control_fixed_plans`).
+   * The card therefore falls back to a suffix/substring match scoped to
+   * the integration prefix so renamed or suffixed entities keep working.
+   * Results are memoized per canonical id and re-validated against the
+   * current hass states.
    */
   _eid(domain, key) {
     const states = this.hass?.states;
@@ -255,20 +259,33 @@ class VictronChargeControllerCard extends LitElement {
     const wanted = VictronChargeControllerCard._escapeRegExp(
       `${this.config.entity_prefix}_${key}`,
     );
-    const re = new RegExp(`^${domain}\\.${wanted}(?:_\\d+)?$`);
+    // Layer 1: canonical prefix at the start, optionally with a numeric
+    // registry suffix. Layer 2: any device-name prefix in front of it
+    // (e.g. `sensor.garage_victron_charge_control_fixed_plans`).
+    const reStrict = new RegExp(`^${domain}\\.${wanted}(?:_\\d+)?$`);
+    const reLoose = new RegExp(`^${domain}\\..*${wanted}(?:_\\d+)?$`);
     let best = null;
-    let bestSuffix = null;
     for (const entityId of Object.keys(states)) {
-      const match = re.exec(entityId);
-      if (!match) continue;
-      const suffix = match[1] ? parseInt(match[1].slice(1), 10) : -1;
-      if (bestSuffix === null || suffix < bestSuffix) {
-        best = entityId;
-        bestSuffix = suffix;
+      const layer = reStrict.test(entityId) ? 0 : (reLoose.test(entityId) ? 1 : null);
+      if (layer === null) continue;
+      // Prefer canonical ids over device-prefixed ones, then the shortest
+      // id (fewest/lowest suffixes), then lexicographic order for a
+      // deterministic pick.
+      if (
+        best === null
+        || layer < best.layer
+        || (layer === best.layer
+          && (entityId.length < best.entityId.length
+            || (entityId.length === best.entityId.length && entityId < best.entityId)))
+      ) {
+        best = { entityId, layer };
       }
     }
-    if (best) alias[exact] = best;
-    return best ?? exact;
+    if (best) {
+      alias[exact] = best.entityId;
+      return best.entityId;
+    }
+    return exact;
   }
 
   _state(domain, key) {
@@ -2206,7 +2223,7 @@ class VictronChargeControllerCard extends LitElement {
     if (!this._warnedMissingFixedPlans) {
       this._warnedMissingFixedPlans = true;
       console.warn(
-        `[victron-charge-controller-card] ${this._eid('sensor', 'fixed_plans')} not found — `
+        `[victron-charge-controller-card] no entity matching ${this._eid('sensor', 'fixed_plans')} found — `
         + 'the integration may be older than the card, or the entity is missing. '
         + 'Update/restart Home Assistant so card and integration match.',
       );
@@ -2215,8 +2232,8 @@ class VictronChargeControllerCard extends LitElement {
       <div class="warning">
         <ha-icon icon="mdi:alert-outline"></ha-icon>
         <span>
-          Fixed-plan data not found (expected
-          <code>${this._eid('sensor', 'fixed_plans')}</code>).
+          Fixed-plan data not found — no entity matching
+          <code>*${this.config.entity_prefix}_fixed_plans</code>.
           Update or restart Home Assistant so the integration matches the card.
         </span>
       </div>`;

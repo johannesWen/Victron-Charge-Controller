@@ -152,7 +152,7 @@
     import '../../custom_components/victron_charge_control/static/victron-charge-controller-card.js';
 
     const P = 'victron_charge_control';
-    const e = (domain, key) => `${domain}.${P}_${key}`;
+    const e = (domain, key) => `${domain}.${DEVNAME ? 'garage_' : ''}${P}_${key}`;
     const fmtDate = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     const today = new Date();
     const tomorrow = new Date();
@@ -178,13 +178,16 @@
     //   missingentity — drop the fixed_plans sensor entirely (card must warn)
     //   failservice   — reject every service call (card must drop the
     //                   optimistic state instantly and show the banner)
+    //   devicename    — prefix all integration entities with a device name
+    //                   (sensor.garage_...; card must resolve via fallback)
     const MODES = window.location.hash.slice(1).split(',').filter(Boolean);
     const SLOW = MODES.includes('slow');
     const SUFFIXED = MODES.includes('suffixed');
     const MISSING_ENTITY = MODES.includes('missingentity');
     const FAIL_SERVICE = MODES.includes('failservice');
+    const DEVNAME = MODES.includes('devicename');
     const EID = (domain, key) => {
-      const base = `${domain}.${P}_${key}`;
+      const base = e(domain, key);
       if (SUFFIXED && (key === 'fixed_plans' || key === 'active_fixed_plan')) {
         return `${base}_2`;
       }
