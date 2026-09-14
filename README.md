@@ -189,6 +189,7 @@ You can change these entities later from the integration options flow.
 | `victron_charge_control.set_blocked_charging_hours` | Replace the list of charging-blocked hours. |
 | `victron_charge_control.set_blocked_discharging_hours` | Replace the list of discharging-blocked hours. |
 | `victron_charge_control.set_fixed_plan_hour` | Set one hour of a fixed plan to `charge`, `pv_charge`, `discharge`, or `idle` (creates the plan if needed). |
+| `victron_charge_control.set_fixed_plan_name` | Set the display name of a fixed plan (max 10 characters, creates the plan if needed; empty clears the name). |
 | `victron_charge_control.add_fixed_plan` | Create a new empty fixed plan. |
 | `victron_charge_control.remove_fixed_plan` | Delete a fixed plan (deactivates it first when active). |
 | `victron_charge_control.calculate_schedule` | Recalculate the automatic schedule from EPEX Spot prices. |
@@ -242,11 +243,13 @@ independently of the price-based auto planning:
 
 Key properties:
 
-- Plans are numbered (`1`, `2`, ...); the Plan card's second page lets you
-  create, edit, activate, and delete them. Each plan has an activate check
-  mark; activating another plan automatically deactivates the previous one
-  (the `Active Fixed Plan` select entity shows the state and can be used in
-  automations).
+- Plans are numbered (`1`, `2`, ...) and can optionally carry a display name
+  (up to 10 characters, set via the pen button in the plan's detail view);
+  the plan chips resolve the name. The Plan card's second page lets you
+  create, edit, activate, rename, and delete them. Each plan has an activate
+  check mark; activating another plan automatically deactivates the previous
+  one (the `Active Fixed Plan` select entity shows the state and can be used
+  in automations).
 - Deactivating a plan restores the schedule as it was before activation.
 - A plan applies in every control mode: in `manual` mode it also provides the
   daily hours after the nightly schedule reset.

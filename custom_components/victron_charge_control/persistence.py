@@ -51,8 +51,8 @@ def deserialize_hours(raw: Any) -> list[int]:
 
 
 def serialize_fixed_plans(
-    fixed_plans: dict[int, dict[str, list[int]]],
-) -> dict[str, dict[str, list[int]]]:
+    fixed_plans: dict[int, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     """Serialise the fixed-plan definitions for JSON storage.
 
     JSON requires string keys, so the plan numbers are stringified.
@@ -60,11 +60,11 @@ def serialize_fixed_plans(
     return {str(plan): normalize_fixed_plan(data) for plan, data in sorted(fixed_plans.items())}
 
 
-def deserialize_fixed_plans(raw: Any) -> dict[int, dict[str, list[int]]]:
+def deserialize_fixed_plans(raw: Any) -> dict[int, dict[str, Any]]:
     """Deserialise the fixed-plan definitions, dropping malformed plans."""
     if not isinstance(raw, dict):
         return {}
-    result: dict[int, dict[str, list[int]]] = {}
+    result: dict[int, dict[str, Any]] = {}
     for key, plan_data in raw.items():
         if not isinstance(plan_data, dict):
             continue
@@ -101,7 +101,7 @@ def build_plan_payload(
     pv_charge_hours: list[ScheduleSlot],
     blocked_charging_hours: list[int],
     blocked_discharging_hours: list[int],
-    fixed_plans: dict[int, dict[str, list[int]]] | None = None,
+    fixed_plans: dict[int, dict[str, Any]] | None = None,
     active_fixed_plan: int | None = None,
     last_schedule_update: datetime | None,
 ) -> dict[str, Any]:

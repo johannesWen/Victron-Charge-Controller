@@ -27,6 +27,7 @@ SERVICE_SET_HOUR_ACTION = "set_hour_action"
 SERVICE_SET_BLOCKED_CHARGING_HOURS = "set_blocked_charging_hours"
 SERVICE_SET_BLOCKED_DISCHARGING_HOURS = "set_blocked_discharging_hours"
 SERVICE_SET_FIXED_PLAN_HOUR = "set_fixed_plan_hour"
+SERVICE_SET_FIXED_PLAN_NAME = "set_fixed_plan_name"
 SERVICE_ADD_FIXED_PLAN = "add_fixed_plan"
 SERVICE_REMOVE_FIXED_PLAN = "remove_fixed_plan"
 SERVICE_CALCULATE_SCHEDULE = "calculate_schedule"
@@ -68,6 +69,13 @@ SCHEMA_SET_FIXED_PLAN_HOUR = vol.Schema(
         vol.Required("plan"): vol.All(vol.Coerce(int), vol.Range(min=1, max=MAX_FIXED_PLANS)),
         vol.Required("hour"): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
         vol.Required("action"): vol.In([ACTION_IDLE, ACTION_CHARGE, ACTION_PV_CHARGE, ACTION_DISCHARGE]),
+    }
+)
+
+SCHEMA_SET_FIXED_PLAN_NAME = vol.Schema(
+    {
+        vol.Required("plan"): vol.All(vol.Coerce(int), vol.Range(min=1, max=MAX_FIXED_PLANS)),
+        vol.Required("name"): vol.All(str, lambda v: v.strip()),
     }
 )
 
@@ -127,6 +135,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             call.data["plan"], call.data["hour"], call.data["action"]
         )
 
+    async def handle_set_fixed_plan_name(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass)
+        if coordinator is None:
+            _LOGGER.error("No Victron Charge Control instance found")
+            return
+        coordinator.set_fixed_plan_name(call.data["plan"], call.data["name"])
+
     async def handle_add_fixed_plan(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass)
         if coordinator is None:
@@ -184,6 +199,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         schema=SCHEMA_SET_FIXED_PLAN_HOUR,
     )
     hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_FIXED_PLAN_NAME,
+        handle_set_fixed_plan_name,
+        schema=SCHEMA_SET_FIXED_PLAN_NAME,
+    )
+    hass.services.async_register(
         DOMAIN, SERVICE_ADD_FIXED_PLAN, handle_add_fixed_plan
     )
     hass.services.async_register(
@@ -207,6 +228,7 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_SET_BLOCKED_CHARGING_HOURS)
     hass.services.async_remove(DOMAIN, SERVICE_SET_BLOCKED_DISCHARGING_HOURS)
     hass.services.async_remove(DOMAIN, SERVICE_SET_FIXED_PLAN_HOUR)
+    hass.services.async_remove(DOMAIN, SERVICE_SET_FIXED_PLAN_NAME)
     hass.services.async_remove(DOMAIN, SERVICE_ADD_FIXED_PLAN)
     hass.services.async_remove(DOMAIN, SERVICE_REMOVE_FIXED_PLAN)
     hass.services.async_remove(DOMAIN, SERVICE_CALCULATE_SCHEDULE)

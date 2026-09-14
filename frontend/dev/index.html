@@ -254,6 +254,11 @@
           if (data.action === 'discharge') plan.discharge_hours.push(data.hour);
           states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);
         }
+        if (service === 'set_fixed_plan_name') {
+          const plan = plansAttr[data.plan] || (plansAttr[data.plan] = { charge_hours: [], discharge_hours: [], pv_charge_hours: [], name: '' });
+          plan.name = String(data.name || '');
+          states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);
+        }
         if (service === 'remove_fixed_plan') {
           delete plansAttr[data.plan];
           states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);

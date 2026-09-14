@@ -89,6 +89,7 @@ from .schedule import (
     clear_all as schedule_clear_all,
     normalize_blocked_hours,
     normalize_fixed_plan,
+    normalize_fixed_plan_name,
     set_charge_slots,
     set_discharge_slots,
     set_hour_action as schedule_set_hour_action,
@@ -156,7 +157,7 @@ class ChargeControlData:
     pv_charge_hours: list[dict[str, Any]] = field(default_factory=list)
     blocked_charging_hours: list[int] = field(default_factory=list)
     blocked_discharging_hours: list[int] = field(default_factory=list)
-    fixed_plans: dict[int, dict[str, list[int]]] = field(default_factory=dict)
+    fixed_plans: dict[int, dict[str, Any]] = field(default_factory=dict)
     active_fixed_plan: int | None = None
     current_price: float | None = None
     epex_attributes: dict[str, Any] = field(default_factory=dict)
@@ -289,7 +290,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # ``_fixed_plan_base_snapshot`` keeps the schedule state from
         # just before the last merge, so deactivating or switching plans
         # restores the pre-merge plan instead of leaving holes behind.
-        self._fixed_plans: dict[int, dict[str, list[int]]] = {}
+        self._fixed_plans: dict[int, dict[str, Any]] = {}
         self._active_fixed_plan: int | None = None
         self._fixed_plan_applied_slots: list[ScheduleSlot] = []
         self._fixed_plan_base_snapshot: tuple[
@@ -554,7 +555,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return list(self._replan_hours)
 
     @property
-    def fixed_plans(self) -> dict[int, dict[str, list[int]]]:
+    def fixed_plans(self) -> dict[int, dict[str, Any]]:
         return {plan: normalize_fixed_plan(data) for plan, data in self._fixed_plans.items()}
 
     @property
@@ -652,6 +653,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     #     of the active plan is undone (deactivate / switch / edit).
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _empty_fixed_plan() -> dict[str, Any]:
+        return {
+            "charge_hours": [],
+            "discharge_hours": [],
+            "pv_charge_hours": [],
+            "name": "",
+        }
+
     def set_fixed_plan_hour(self, plan: int, hour: int, action: str) -> None:
         """Set one hour of a fixed plan to an action (creating the plan if needed).
 
@@ -672,11 +682,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             _LOGGER.warning("Unsupported fixed-plan action: %s", action)
             return
         if plan not in self._fixed_plans:
-            self._fixed_plans[plan] = {
-                "charge_hours": [],
-                "discharge_hours": [],
-                "pv_charge_hours": [],
-            }
+            self._fixed_plans[plan] = self._empty_fixed_plan()
         plan_data = self._fixed_plans[plan]
         for key in ("charge_hours", "discharge_hours", "pv_charge_hours"):
             plan_data[key] = [h for h in plan_data[key] if h != hour]
@@ -690,6 +696,23 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
+    def set_fixed_plan_name(self, plan: int, name: str) -> None:
+        """Set (or clear) a fixed plan's display name, creating the plan if needed.
+
+        The name is purely cosmetic (tab chip and detail view); it never
+        re-plans. An empty name clears the display name so the chip falls
+        back to the plan number.
+        """
+        if not (1 <= plan <= MAX_FIXED_PLANS):
+            _LOGGER.warning("Fixed plan number out of range: %s", plan)
+            return
+        if plan not in self._fixed_plans:
+            self._fixed_plans[plan] = self._empty_fixed_plan()
+        self._fixed_plans[plan]["name"] = normalize_fixed_plan_name(name)
+        self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
+        self.hass.async_create_task(self.async_request_refresh())
+
     def add_fixed_plan(self) -> int | None:
         """Create a new empty fixed plan and return its number (None at cap)."""
         if len(self._fixed_plans) >= MAX_FIXED_PLANS:
@@ -697,11 +720,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return None
         for number in range(1, MAX_FIXED_PLANS + 1):
             if number not in self._fixed_plans:
-                self._fixed_plans[number] = {
-                    "charge_hours": [],
-                    "discharge_hours": [],
-                    "pv_charge_hours": [],
-                }
+                self._fixed_plans[number] = self._empty_fixed_plan()
                 self._async_schedule_save()
                 self.hass.async_create_task(self.async_request_refresh())
                 return number

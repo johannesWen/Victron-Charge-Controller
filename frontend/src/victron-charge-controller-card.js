@@ -152,8 +152,12 @@ class VictronChargeControllerCard extends LitElement {
     // (last_schedule_update change clears everything).
     this._pendingFixedPlanHours = {};   // plan -> { hour -> action }
     this._pendingActiveFixedPlan = undefined; // number | null | undefined (= none)
+    this._pendingFixedPlanNames = {};   // plan -> { value, ts }
     this._pendingPlanActions = {};      // 'date:hour' -> action
     this._lastScheduleUpdateSeen = null;
+    // Inline plan-rename editor state (detail view only)
+    this._planNameEditing = false;
+    this._planNameDraft = '';
   }
 
   disconnectedCallback() {
@@ -268,14 +272,18 @@ class VictronChargeControllerCard extends LitElement {
       this._lastScheduleUpdateSeen = stamp;
     } else if (stamp !== this._lastScheduleUpdateSeen) {
       this._lastScheduleUpdateSeen = stamp;
-      this._pendingFixedPlanHours = {};
-      this._pendingActiveFixedPlan = undefined;
-      this._pendingPlanActions = {};
+    this._pendingFixedPlanHours = {};
+    this._pendingActiveFixedPlan = undefined;
+    this._pendingFixedPlanNames = {};
+    this._pendingPlanActions = {};
       return;
     }
     // Age-based fallback for pending values whose service call failed and
     // will never be confirmed by a matching entity state.
     const now = Date.now();
+    for (const [plan, pending] of Object.entries(this._pendingFixedPlanNames)) {
+      if (now - pending.ts > PENDING_MAX_AGE_MS) delete this._pendingFixedPlanNames[plan];
+    }
     for (const [plan, hourActions] of Object.entries(this._pendingFixedPlanHours)) {
       for (const [hour, pending] of Object.entries(hourActions)) {
         if (now - pending.ts > PENDING_MAX_AGE_MS) delete hourActions[hour];
@@ -307,6 +315,7 @@ class VictronChargeControllerCard extends LitElement {
           charge_hours: this._parseHours((data.charge_hours || []).join(', ')),
           discharge_hours: this._parseHours((data.discharge_hours || []).join(', ')),
           pv_charge_hours: this._parseHours((data.pv_charge_hours || []).join(', ')),
+          name: typeof data.name === 'string' ? data.name : '',
         };
       }
     }
@@ -355,6 +364,20 @@ class VictronChargeControllerCard extends LitElement {
         active = this._pendingActiveFixedPlan.value;
       }
     }
+    // Pending display names override the sensor until they match.
+    for (const [plan, pending] of Object.entries(this._pendingFixedPlanNames)) {
+      const planNum = Number.parseInt(plan, 10);
+      if (Number.isNaN(planNum)) continue;
+      const planData = plans[planNum] || {
+        charge_hours: [], discharge_hours: [], pv_charge_hours: [], name: '',
+      };
+      if (planData.name === pending.value) {
+        delete this._pendingFixedPlanNames[plan];
+      } else {
+        planData.name = pending.value;
+        plans[planNum] = planData;
+      }
+    }
     return { plans, active };
   }
 
@@ -401,8 +424,47 @@ class VictronChargeControllerCard extends LitElement {
     this.requestUpdate();
   }
 
+  _fixedPlanDisplayName(planNumber, planData) {
+    const name = planData?.name || '';
+    return name || `Fixed Plan ${planNumber}`;
+  }
+
+  _beginFixedPlanRename(planNumber) {
+    const { plans } = this._getFixedPlans();
+    this._planNameEditing = true;
+    this._planNameDraft = plans[planNumber]?.name || '';
+    this.requestUpdate();
+    setTimeout(() => {
+      this.renderRoot?.querySelector('.plan-name-input')?.focus();
+    }, 0);
+  }
+
+  _cancelFixedPlanRename() {
+    this._planNameEditing = false;
+    this._planNameDraft = '';
+    this.requestUpdate();
+  }
+
+  _confirmFixedPlanRename(planNumber) {
+    const name = (this._planNameDraft || '').trim().slice(0, 10);
+    this._planNameEditing = false;
+    this._planNameDraft = '';
+    const { plans } = this._getFixedPlans();
+    const current = plans[planNumber]?.name || '';
+    if (name !== current) {
+      // Optimistically show the new name until the sensor catches up.
+      this._pendingFixedPlanNames[planNumber] = { value: name, ts: Date.now() };
+      this._callService('victron_charge_control', 'set_fixed_plan_name', {
+        plan: planNumber, name,
+      });
+    }
+    this.requestUpdate();
+  }
+
   _removeFixedPlan(plan) {
     this._callService('victron_charge_control', 'remove_fixed_plan', { plan });
+    this._planNameEditing = false;
+    this._planNameDraft = '';
     if (this._fixedPlanNumber === plan) {
       this._fixedPlanNumber = null;
       this._planPage = 'auto';
@@ -2029,6 +2091,8 @@ class VictronChargeControllerCard extends LitElement {
 
   _openPlanPage(page) {
     this._planPage = page;
+    this._planNameEditing = false;
+    this._planNameDraft = '';
     if (typeof page === 'number') this._fixedPlanNumber = page;
     this.requestUpdate();
   }
@@ -2038,6 +2102,8 @@ class VictronChargeControllerCard extends LitElement {
     if (next == null) return;
     this._planPage = next;
     this._fixedPlanNumber = next;
+    this._planNameEditing = false;
+    this._planNameDraft = '';
     this.requestUpdate();
   }
 
@@ -2062,9 +2128,9 @@ class VictronChargeControllerCard extends LitElement {
             tabindex="0"
             @click=${() => this._openPlanPage(n)}
             @keydown=${(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._openPlanPage(n); } }}
-            title=${`Fixed plan ${n}`}
+            title=${plans[n].name ? `Fixed plan ${n}: "${plans[n].name}"` : `Fixed plan ${n}`}
           >
-            <span class="plan-tab-select">${n}</span>
+            <span class="plan-tab-select">${plans[n].name || n}</span>
             <span
               class="plan-tab-check ${active === n ? 'checked' : ''}"
               title=${active === n ? 'Plan is active' : 'Plan is inactive'}
@@ -2084,13 +2150,60 @@ class VictronChargeControllerCard extends LitElement {
   _renderFixedPlanPage(planNumber) {
     const { plans, active } = this._getFixedPlans();
     const planData = plans[planNumber] || {
-      charge_hours: [], discharge_hours: [], pv_charge_hours: [],
+      charge_hours: [], discharge_hours: [], pv_charge_hours: [], name: '',
     };
     const isActive = active === planNumber;
+    const editing = this._planNameEditing;
+    const titleRow = editing ? html`
+      <div class="fixed-plan-title-row">
+        <input
+          class="plan-name-input"
+          type="text"
+          maxlength="10"
+          .value=${this._planNameDraft}
+          placeholder="Plan name"
+          @input=${(e) => { this._planNameDraft = e.target.value; }}
+          @keydown=${(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              this._confirmFixedPlanRename(planNumber);
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              this._cancelFixedPlanRename();
+            }
+          }}
+        >
+        <button
+          class="plan-name-confirm"
+          @click=${() => this._confirmFixedPlanRename(planNumber)}
+          title="Save name"
+        >
+          <ha-icon icon="mdi:check"></ha-icon>
+        </button>
+        <button
+          class="plan-name-cancel"
+          @click=${() => this._cancelFixedPlanRename()}
+          title="Cancel"
+        >
+          <ha-icon icon="mdi:close"></ha-icon>
+        </button>
+      </div>
+    ` : html`
+      <div class="fixed-plan-title-row">
+        <span class="fixed-plan-title">${this._fixedPlanDisplayName(planNumber, planData)}</span>
+        <button
+          class="plan-name-pen"
+          @click=${() => this._beginFixedPlanRename(planNumber)}
+          title="Rename plan"
+        >
+          <ha-icon icon="mdi:pencil-outline"></ha-icon>
+        </button>
+      </div>
+    `;
     return html`
       <div class="fixed-plan-editor">
         <div class="fixed-plan-header">
-          <span class="fixed-plan-title">Fixed Plan ${planNumber}</span>
+          ${titleRow}
           <div class="fixed-plan-actions">
             <button
               class="fixed-plan-activate ${isActive ? 'checked' : ''}"
@@ -2817,6 +2930,8 @@ class VictronChargeControllerCard extends LitElement {
         background: none; border: none; padding: 2px 4px;
         cursor: pointer; font: inherit; font-weight: 600; color: inherit;
         display: flex; align-items: center;
+        max-width: 90px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
       }
       .plan-tab-check {
         display: flex; align-items: center;
@@ -2832,8 +2947,35 @@ class VictronChargeControllerCard extends LitElement {
       .fixed-plan-header {
         display: flex; align-items: center; justify-content: space-between;
       }
+      .fixed-plan-title-row {
+        display: flex; align-items: center; gap: 4px;
+        min-width: 0;
+      }
       .fixed-plan-title {
         font-size: 0.95em; font-weight: 600; color: var(--vcc-text);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .plan-name-pen,
+      .plan-name-confirm,
+      .plan-name-cancel {
+        display: flex; align-items: center;
+        padding: 2px; border: none; background: none;
+        color: var(--vcc-text2); cursor: pointer;
+      }
+      .plan-name-pen:hover { color: var(--vcc-accent); }
+      .plan-name-confirm:hover { color: var(--vcc-success); }
+      .plan-name-cancel:hover { color: var(--vcc-error); }
+      .plan-name-pen ha-icon,
+      .plan-name-confirm ha-icon,
+      .plan-name-cancel ha-icon { --mdc-icon-size: 16px; }
+      .plan-name-input {
+        font: inherit; font-size: 0.95em; font-weight: 600;
+        color: var(--vcc-text); background: none;
+        border: 1px solid var(--vcc-border); border-radius: 6px;
+        padding: 4px 8px; width: 130px; min-width: 0;
+      }
+      .plan-name-input:focus {
+        outline: none; border-color: var(--vcc-accent);
       }
       .fixed-plan-actions {
         display: flex; gap: 6px; align-items: center;

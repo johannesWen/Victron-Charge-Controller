@@ -226,19 +226,34 @@ def clear_all() -> tuple[
 
 FIXED_PLAN_BUCKETS = ("charge_hours", "discharge_hours", "pv_charge_hours")
 
+MAX_FIXED_PLAN_NAME_LENGTH = 10
 
-def normalize_fixed_plan(plan: Any) -> dict[str, list[int]]:
+
+def normalize_fixed_plan_name(name: Any) -> str:
+    """Validate a fixed-plan display name.
+
+    Non-strings are dropped (empty result); strings are trimmed and
+    truncated to ``MAX_FIXED_PLAN_NAME_LENGTH`` characters.
+    """
+    if not isinstance(name, str):
+        return ""
+    return name.strip()[:MAX_FIXED_PLAN_NAME_LENGTH]
+
+
+def normalize_fixed_plan(plan: Any) -> dict[str, Any]:
     """Validate a fixed-plan dict, returning a normalized copy.
 
     A fixed plan maps bucket names (``charge_hours``, ``discharge_hours``,
-    ``pv_charge_hours``) to lists of recurring hour-of-day values. Unknown
-    buckets and out-of-range hours are dropped so a corrupt store cannot
-    produce invalid state.
+    ``pv_charge_hours``) to lists of recurring hour-of-day values plus an
+    optional user-defined ``name``. Unknown buckets, out-of-range hours and
+    corrupt names are dropped so a corrupt store cannot produce invalid
+    state.
     """
-    normalized: dict[str, list[int]] = {
+    normalized: dict[str, Any] = {
         "charge_hours": [],
         "discharge_hours": [],
         "pv_charge_hours": [],
+        "name": "",
     }
     if not isinstance(plan, dict):
         return normalized
@@ -247,6 +262,7 @@ def normalize_fixed_plan(plan: Any) -> dict[str, list[int]]:
         if not isinstance(raw, list):
             continue
         normalized[key] = sorted({h for h in raw if isinstance(h, int) and 0 <= h <= 23})
+    normalized["name"] = normalize_fixed_plan_name(plan.get("name"))
     return normalized
 
 
@@ -254,7 +270,7 @@ def apply_fixed_plan(
     charge: list[ScheduleSlot],
     discharge: list[ScheduleSlot],
     pv_charge: list[ScheduleSlot],
-    fixed_plan: dict[str, list[int]] | None,
+    fixed_plan: dict[str, Any] | None,
     dates: list[str],
 ) -> tuple[list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot]]:
     """Merge fixed-plan hours on top of existing slot lists (fixed wins).

@@ -31,13 +31,19 @@ from custom_components.victron_charge_control.persistence import (
     deserialize_fixed_plans,
     serialize_fixed_plans,
 )
-from custom_components.victron_charge_control.schedule import apply_fixed_plan, normalize_fixed_plan
+from custom_components.victron_charge_control.schedule import (
+    MAX_FIXED_PLAN_NAME_LENGTH,
+    apply_fixed_plan,
+    normalize_fixed_plan,
+    normalize_fixed_plan_name,
+)
 from custom_components.victron_charge_control.select import ActiveFixedPlanSelect
 from custom_components.victron_charge_control.sensor import FixedPlansSensor
 from custom_components.victron_charge_control.services import (
     SERVICE_ADD_FIXED_PLAN,
     SERVICE_REMOVE_FIXED_PLAN,
     SERVICE_SET_FIXED_PLAN_HOUR,
+    SERVICE_SET_FIXED_PLAN_NAME,
     async_setup_services,
 )
 from tests.conftest import MockState, make_epex_data
@@ -143,13 +149,27 @@ class TestApplyFixedPlan:
         assert applied == [(TODAY, 5)]
 
 
+class TestNormalizeFixedPlanName:
+    def test_strips_and_truncates(self):
+        assert normalize_fixed_plan_name("  Weekend  ") == "Weekend"
+        assert normalize_fixed_plan_name("0123456789AB") == "0123456789"
+        assert normalize_fixed_plan_name("") == ""
+
+    def test_non_string_dropped(self):
+        assert normalize_fixed_plan_name(None) == ""
+        assert normalize_fixed_plan_name(42) == ""
+
+    def test_max_length_constant(self):
+        assert MAX_FIXED_PLAN_NAME_LENGTH == 10
+
+
 class TestNormalizeFixedPlan:
     def test_missing_keys_default_empty(self):
         plan = normalize_fixed_plan({"charge_hours": [1]})
-        assert plan == {"charge_hours": [1], "discharge_hours": [], "pv_charge_hours": []}
+        assert plan == {"charge_hours": [1], "discharge_hours": [], "pv_charge_hours": [], "name": ""}
 
     def test_non_dict_returns_empty(self):
-        assert normalize_fixed_plan(None) == {"charge_hours": [], "discharge_hours": [], "pv_charge_hours": []}
+        assert normalize_fixed_plan(None) == {"charge_hours": [], "discharge_hours": [], "pv_charge_hours": [], "name": ""}
 
     def test_invalid_bucket_types_dropped(self):
         plan = normalize_fixed_plan({"charge_hours": "5", "pv_charge_hours": [3, "x", 30]})
@@ -196,10 +216,10 @@ class TestFixedPlanPersistence:
             active_fixed_plan=1,
             last_schedule_update=None,
         )
-        assert payload["fixed_plans"] == {"1": {"charge_hours": [4], "discharge_hours": [5], "pv_charge_hours": []}}
+        assert payload["fixed_plans"] == {"1": {"charge_hours": [4], "discharge_hours": [5], "pv_charge_hours": [], "name": ""}}
         assert payload["active_fixed_plan"] == 1
         applied = apply_loaded_plan(payload)
-        assert applied["fixed_plans"] == {1: {"charge_hours": [4], "discharge_hours": [5], "pv_charge_hours": []}}
+        assert applied["fixed_plans"] == {1: {"charge_hours": [4], "discharge_hours": [5], "pv_charge_hours": [], "name": ""}}
         assert applied["active_fixed_plan"] == 1
 
     def test_v1_store_without_fixed_plans_loads(self):
@@ -240,7 +260,7 @@ class TestFixedPlanPersistence:
         coordinator._active_fixed_plan = None
         asyncio.run(coordinator._async_load_schedule())
 
-        assert coordinator.fixed_plans == {1: {"charge_hours": [4], "discharge_hours": [], "pv_charge_hours": []}}
+        assert coordinator.fixed_plans == {1: {"charge_hours": [4], "discharge_hours": [], "pv_charge_hours": [], "name": ""}}
         assert coordinator.active_fixed_plan == 1
 
 
@@ -264,7 +284,7 @@ class TestRefreshDebouncer:
 class TestSetFixedPlanHour:
     def test_creates_plan_and_sets_hour(self, coordinator):
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
-        assert coordinator.fixed_plans == {1: {"charge_hours": [4], "discharge_hours": [], "pv_charge_hours": []}}
+        assert coordinator.fixed_plans == {1: {"charge_hours": [4], "discharge_hours": [], "pv_charge_hours": [], "name": ""}}
 
     def test_action_cycles_clear_other_buckets(self, coordinator):
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
@@ -305,6 +325,87 @@ class TestSetFixedPlanHour:
     def test_invalid_action_ignored(self, coordinator):
         coordinator.set_fixed_plan_hour(1, 4, "blocked")
         assert coordinator.fixed_plans == {}
+
+
+class TestFixedPlanNaming:
+    @patch(DT_UTIL_PATCH)
+    def test_set_and_clear_name(self, mock_dt_util, coordinator):
+        _mock_dt_util(mock_dt_util)
+        coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
+        coordinator.set_fixed_plan_name(1, "Weekend")
+        assert coordinator.fixed_plans[1]["name"] == "Weekend"
+        coordinator.set_fixed_plan_name(1, "   ")
+        assert coordinator.fixed_plans[1]["name"] == ""
+
+    @patch(DT_UTIL_PATCH)
+    def test_name_truncated_to_10_chars(self, mock_dt_util, coordinator):
+        _mock_dt_util(mock_dt_util)
+        coordinator.set_fixed_plan_name(1, "0123456789AB")
+        assert coordinator.fixed_plans[1]["name"] == "0123456789"
+
+    @patch(DT_UTIL_PATCH)
+    def test_name_keeps_hours_and_does_not_replan(self, mock_dt_util, coordinator):
+        _mock_dt_util(mock_dt_util)
+        coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
+        coordinator.set_active_fixed_plan(1)
+        coordinator.set_fixed_plan_name(1, "Daily")
+        assert (TODAY, 4) in coordinator._charge_hours
+        assert coordinator.fixed_plans[1] == {
+            "charge_hours": [4],
+            "discharge_hours": [],
+            "pv_charge_hours": [],
+            "name": "Daily",
+        }
+
+    @patch(DT_UTIL_PATCH)
+    def test_name_auto_creates_plan(self, mock_dt_util, coordinator):
+        _mock_dt_util(mock_dt_util)
+        coordinator.set_fixed_plan_name(3, "Sunday")
+        assert coordinator.fixed_plans == {3: {"charge_hours": [], "discharge_hours": [], "pv_charge_hours": [], "name": "Sunday"}}
+
+    def test_invalid_plan_ignored(self, coordinator):
+        coordinator.set_fixed_plan_name(0, "x")
+        coordinator.set_fixed_plan_name(9, "x")
+        assert coordinator.fixed_plans == {}
+
+    @patch(DT_UTIL_PATCH)
+    def test_name_survives_persistence_roundtrip(self, mock_dt_util, coordinator, mock_store):
+        import asyncio
+
+        _mock_dt_util(mock_dt_util)
+        coordinator.set_fixed_plan_name(1, "Weekend")
+        asyncio.run(coordinator._async_save_schedule())
+        coordinator._fixed_plans = {}
+        asyncio.run(coordinator._async_load_schedule())
+        assert coordinator.fixed_plans[1]["name"] == "Weekend"
+
+    @patch(DT_UTIL_PATCH)
+    def test_snapshot_exposes_name(self, mock_dt_util, coordinator):
+        _mock_dt_util(mock_dt_util)
+        coordinator.set_fixed_plan_name(2, "Nightly")
+        snapshot = coordinator._build_snapshot(
+            action=ACTION_IDLE,
+            setpoint=0.0,
+            price_view=TestFixedPlanSnapshot._price_view(),
+            feed_in_active=False,
+            applied_feed_in=None,
+        )
+        assert snapshot.fixed_plans[2]["name"] == "Nightly"
+
+    @patch(DT_UTIL_PATCH)
+    def test_sensor_attributes_expose_name(self, mock_dt_util, coordinator, mock_config_entry):
+        _mock_dt_util(mock_dt_util)
+        coordinator.set_fixed_plan_name(1, "Weekend")
+        coordinator.data = coordinator._build_snapshot(
+            action=ACTION_IDLE,
+            setpoint=0.0,
+            price_view=TestFixedPlanSnapshot._price_view(),
+            feed_in_active=False,
+            applied_feed_in=None,
+        )
+        sensor = FixedPlansSensor(coordinator, mock_config_entry)
+        attrs = sensor.extra_state_attributes
+        assert attrs["plans"]["1"]["name"] == "Weekend"
 
 
 class TestAddRemoveFixedPlan:
@@ -558,7 +659,7 @@ class TestFixedPlanSnapshot:
             feed_in_active=False,
             applied_feed_in=None,
         )
-        assert snapshot.fixed_plans == {1: {"charge_hours": [4], "discharge_hours": [], "pv_charge_hours": []}}
+        assert snapshot.fixed_plans == {1: {"charge_hours": [4], "discharge_hours": [], "pv_charge_hours": [], "name": ""}}
         assert snapshot.active_fixed_plan == 1
 
     def test_snapshot_empty_defaults(self, coordinator):
@@ -599,7 +700,7 @@ class TestFixedPlanServices:
         service_call.data = {"plan": 2, "hour": 5, "action": ACTION_CHARGE}
         await handler(service_call)
 
-        assert coordinator.fixed_plans == {2: {"charge_hours": [5], "discharge_hours": [], "pv_charge_hours": []}}
+        assert coordinator.fixed_plans == {2: {"charge_hours": [5], "discharge_hours": [], "pv_charge_hours": [], "name": ""}}
 
     @pytest.mark.asyncio
     async def test_add_fixed_plan_handler(self, mock_hass, coordinator):
@@ -638,6 +739,37 @@ class TestFixedPlanServices:
         await handler(service_call)
 
         assert coordinator.fixed_plans == {}
+
+    @pytest.mark.asyncio
+    async def test_set_fixed_plan_name_handler(self, mock_hass, coordinator):
+        from unittest.mock import MagicMock
+
+        mock_hass.data[DOMAIN] = {"entry1": coordinator}
+        await async_setup_services(mock_hass)
+
+        handler = None
+        for call in mock_hass.services.async_register.call_args_list:
+            if call.args[1] == SERVICE_SET_FIXED_PLAN_NAME:
+                handler = call.args[2]
+                break
+
+        assert handler is not None
+
+        service_call = MagicMock()
+        service_call.data = {"plan": 1, "name": "  Weekend  "}
+        await handler(service_call)
+
+        assert coordinator.fixed_plans[1]["name"] == "Weekend"
+
+    def test_set_fixed_plan_name_schema_coerces_and_strips(self):
+        from custom_components.victron_charge_control.services import SCHEMA_SET_FIXED_PLAN_NAME
+
+        data = SCHEMA_SET_FIXED_PLAN_NAME({"plan": "2", "name": " My Plan "})
+        assert data == {"plan": 2, "name": "My Plan"}
+        with pytest.raises(Exception):
+            SCHEMA_SET_FIXED_PLAN_NAME({"plan": 1})
+        with pytest.raises(Exception):
+            SCHEMA_SET_FIXED_PLAN_NAME({"plan": 1, "name": 5})
 
     def test_set_fixed_plan_hour_schema_rejects_bad_action(self):
         from custom_components.victron_charge_control.services import SCHEMA_SET_FIXED_PLAN_HOUR

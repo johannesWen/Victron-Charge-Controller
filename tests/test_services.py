@@ -22,6 +22,7 @@ from custom_components.victron_charge_control.services import (
     SERVICE_SET_BLOCKED_CHARGING_HOURS,
     SERVICE_SET_BLOCKED_DISCHARGING_HOURS,
     SERVICE_SET_FIXED_PLAN_HOUR,
+    SERVICE_SET_FIXED_PLAN_NAME,
     SERVICE_SET_HOUR_ACTION,
     SERVICE_TOGGLE_HOUR,
     _get_coordinator,
@@ -68,6 +69,7 @@ class TestAsyncSetupServices:
         assert SERVICE_SET_BLOCKED_CHARGING_HOURS in registered
         assert SERVICE_SET_BLOCKED_DISCHARGING_HOURS in registered
         assert SERVICE_SET_FIXED_PLAN_HOUR in registered
+        assert SERVICE_SET_FIXED_PLAN_NAME in registered
         assert SERVICE_ADD_FIXED_PLAN in registered
         assert SERVICE_REMOVE_FIXED_PLAN in registered
         assert SERVICE_CALCULATE_SCHEDULE in registered
@@ -93,7 +95,7 @@ class TestAsyncUnloadServices:
         ]
         assert SERVICE_TOGGLE_HOUR in removed
         assert SERVICE_CLEAR_SCHEDULE in removed
-        assert len(removed) == 9
+        assert len(removed) == 10
 
 
 class TestServiceHandlers:

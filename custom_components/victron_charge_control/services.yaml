@@ -220,6 +220,28 @@ add_fixed_plan:
   name: Add Fixed Plan
   description: "Create a new empty fixed plan and return its number"
 
+set_fixed_plan_name:
+  name: Set Fixed Plan Name
+  description: "Set the display name of a fixed plan (max 10 characters, creating the plan if needed; empty clears the name)"
+  fields:
+    plan:
+      name: Plan
+      description: "Fixed plan number"
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 8
+          step: 1
+    name:
+      name: Name
+      description: "Display name for the plan (max 10 characters, empty to clear)"
+      required: true
+      example: "Weekend"
+      selector:
+        text:
+
 remove_fixed_plan:
   name: Remove Fixed Plan
   description: "Delete a fixed plan (deactivates it first when active)"
