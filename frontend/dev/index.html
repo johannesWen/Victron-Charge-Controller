@@ -171,6 +171,27 @@
     });
 
     // ── Mock entity states ──────────────────────
+    // URL modes (comma-separated after '#'):
+    //   slow          — apply state changes with a 5 s delay (optimistic UI)
+    //   suffixed      — register fixed-plan entities as '..._2' (registry
+    //                   suffix collision; card must resolve via fallback)
+    //   missingentity — drop the fixed_plans sensor entirely (card must warn)
+    //   failservice   — reject every service call (card must drop the
+    //                   optimistic state instantly and show the banner)
+    const MODES = window.location.hash.slice(1).split(',').filter(Boolean);
+    const SLOW = MODES.includes('slow');
+    const SUFFIXED = MODES.includes('suffixed');
+    const MISSING_ENTITY = MODES.includes('missingentity');
+    const FAIL_SERVICE = MODES.includes('failservice');
+    const EID = (domain, key) => {
+      const base = `${domain}.${P}_${key}`;
+      if (SUFFIXED && (key === 'fixed_plans' || key === 'active_fixed_plan')) {
+        return `${base}_2`;
+      }
+      if (MISSING_ENTITY && key === 'fixed_plans') return null;
+      return base;
+    };
+
     const states = {
       // select
       [e('select','control_mode')]:            { state: 'auto', attributes: { options: ['off','auto','manual','force_charge','force_discharge'] } },
@@ -210,11 +231,11 @@
       [e('text','blocked_charging_hours')]:     { state: '9, 10', attributes: {} },
       [e('text','blocked_discharging_hours')]:  { state: '8, 10', attributes: {} },
       // fixed plans
-      [e('sensor','fixed_plans')]:              { state: '2', attributes: { plans: {
+      [EID('sensor','fixed_plans')]:           { state: '2', attributes: { plans: {
         1: { charge_hours: [1, 2], discharge_hours: [20, 21], pv_charge_hours: [11, 12, 13] },
         2: { charge_hours: [], discharge_hours: [], pv_charge_hours: [] },
       }, active: 1 } },
-      [e('select','active_fixed_plan')]:        { state: '1', attributes: { options: ['off', '1', '2'] } },
+      [EID('select','active_fixed_plan')]:      { state: '1', attributes: { options: ['off', '1', '2'] } },
     };
 
     // ── Logging helper ──────────────────────────
@@ -231,7 +252,6 @@
     // With '#slow' in the URL, state changes are applied with a 5 s delay
     // to simulate HA's (previously slow) coordinator confirmation path —
     // useful to verify the card's optimistic pending-state rendering.
-    const SLOW = window.location.hash.includes('slow');
     const mockApply = (domain, service, data) => {
       // Apply state changes so the card reflects them on next update
       const eid = data.entity_id;
@@ -243,28 +263,37 @@
         if (service === 'set_value' && domain === 'text') states[eid].state = data.value;
       }
       if (domain === 'victron_charge_control') {
-        const plansAttr = states[e('sensor','fixed_plans')].attributes.plans;
-        if (service === 'set_fixed_plan_hour') {
-          const plan = plansAttr[data.plan] || (plansAttr[data.plan] = { charge_hours: [], discharge_hours: [], pv_charge_hours: [] });
-          for (const key of ['charge_hours', 'discharge_hours', 'pv_charge_hours']) {
-            plan[key] = plan[key].filter(h => h !== data.hour);
+        const fixedPlansId = EID('sensor', 'fixed_plans');
+        if (fixedPlansId && states[fixedPlansId]) {
+          const plansAttr = states[fixedPlansId].attributes.plans;
+          if (service === 'set_fixed_plan_hour') {
+            const plan = plansAttr[data.plan] || (plansAttr[data.plan] = { charge_hours: [], discharge_hours: [], pv_charge_hours: [] });
+            for (const key of ['charge_hours', 'discharge_hours', 'pv_charge_hours']) {
+              plan[key] = plan[key].filter(h => h !== data.hour);
+            }
+            if (data.action === 'charge') plan.charge_hours.push(data.hour);
+            if (data.action === 'pv_charge') plan.pv_charge_hours.push(data.hour);
+            if (data.action === 'discharge') plan.discharge_hours.push(data.hour);
+            states[fixedPlansId].state = String(Object.keys(plansAttr).length);
           }
-          if (data.action === 'charge') plan.charge_hours.push(data.hour);
-          if (data.action === 'pv_charge') plan.pv_charge_hours.push(data.hour);
-          if (data.action === 'discharge') plan.discharge_hours.push(data.hour);
-          states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);
-        }
-        if (service === 'set_fixed_plan_name') {
-          const plan = plansAttr[data.plan] || (plansAttr[data.plan] = { charge_hours: [], discharge_hours: [], pv_charge_hours: [], name: '' });
-          plan.name = String(data.name || '');
-          states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);
-        }
-        if (service === 'remove_fixed_plan') {
-          delete plansAttr[data.plan];
-          states[e('sensor','fixed_plans')].state = String(Object.keys(plansAttr).length);
-          if (String(data.plan) === states[e('select','active_fixed_plan')].state) {
-            states[e('select','active_fixed_plan')].state = 'off';
-            states[e('sensor','fixed_plans')].attributes.active = null;
+          if (service === 'set_fixed_plan_name') {
+            const plan = plansAttr[data.plan] || (plansAttr[data.plan] = { charge_hours: [], discharge_hours: [], pv_charge_hours: [], name: '' });
+            plan.name = String(data.name || '');
+            states[fixedPlansId].state = String(Object.keys(plansAttr).length);
+          }
+          if (service === 'remove_fixed_plan') {
+            delete plansAttr[data.plan];
+            states[fixedPlansId].state = String(Object.keys(plansAttr).length);
+            const activeId = EID('select', 'active_fixed_plan');
+            if (activeId && states[activeId] && String(data.plan) === states[activeId].state) {
+              states[activeId].state = 'off';
+              states[fixedPlansId].attributes.active = null;
+            }
+          }
+          const activeId2 = EID('select', 'active_fixed_plan');
+          if (activeId2 && states[activeId2]) {
+            states[fixedPlansId].attributes.active =
+              states[activeId2].state === 'off' ? null : Number(states[activeId2].state);
           }
         }
         if (service === 'set_hour_action') {
@@ -293,11 +322,9 @@
             states[sid].state = encode(groups);
           }
         }
-        states[e('sensor','fixed_plans')].attributes.active =
-          states[e('select','active_fixed_plan')].state === 'off' ? null : Number(states[e('select','active_fixed_plan')].state);
       }
-      if (domain === 'select' && eid === e('select', 'active_fixed_plan')) {
-        states[e('sensor','fixed_plans')].attributes.active = data.option === 'off' ? null : Number(data.option);
+      if (domain === 'select' && eid && eid === EID('select', 'active_fixed_plan') && states[eid]) {
+        states[eid].attributes.active = data.option === 'off' ? null : Number(data.option);
       }
       if (domain === 'victron_charge_control' && service !== 'toggle_hour') {
         // Backend bumps the schedule timestamp on every schedule mutation
@@ -310,11 +337,15 @@
       states,
       callService(domain, service, data) {
         log(`${domain}.${service}  ${JSON.stringify(data)}`);
+        if (FAIL_SERVICE) {
+          return Promise.reject(new Error(`Service ${domain}.${service} not found`));
+        }
         if (SLOW) {
           setTimeout(() => mockApply(domain, service, data), 5000);
-        } else {
-          mockApply(domain, service, data);
+          return undefined;
         }
+        mockApply(domain, service, data);
+        return undefined;
       },
     };
 

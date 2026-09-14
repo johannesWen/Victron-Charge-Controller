@@ -5,6 +5,7 @@ Automates Victron ESS battery charge/discharge based on EPEX Spot prices.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -14,7 +15,6 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import async_get_integration
 
 from .const import CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN
 from .coordinator import VictronChargeControlCoordinator
@@ -72,19 +72,24 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     # that honors that max-age across app and HA restarts. Without a
     # cache-busting token they keep serving a stale build -- or a 404 cached
     # from a boot where the card was not yet registered -- so the card shows up
-    # in the browser but is "not available" in the app. Appending the
-    # integration version to the injected URL changes it on every release,
-    # which invalidates the cached copy, while unchanged versions still cache
-    # long-term. The static path itself stays unversioned because aiohttp
-    # routes on the path and ignores the query string.
+    # in the browser but is "not available" in the app.
+    #
+    # The cache-busting token is a short content hash of the shipped card
+    # file, not the integration version: release candidates of the same
+    # base version intentionally share one manifest version, so a
+    # version-based token would serve a stale rc.0 card after updating to
+    # rc.1 (and identical base versions across different builds generally
+    # could not be told apart). A content hash changes the URL whenever
+    # the shipped file changes and keeps it stable otherwise. The static
+    # path itself stays unversioned because aiohttp routes on the path
+    # and ignores the query string.
     card_url = CARD_URL_PATH
     try:
-        integration = await async_get_integration(hass, DOMAIN)
-        if integration.version is not None:
-            card_url = f"{CARD_URL_PATH}?v={integration.version}"
-    except Exception:  # noqa: BLE001 - version is best-effort cache-busting only
+        digest = hashlib.sha256(card_path.read_bytes()).hexdigest()[:12]
+        card_url = f"{CARD_URL_PATH}?v={digest}"
+    except OSError:
         _LOGGER.debug(
-            "Could not resolve integration version for card cache-busting; "
+            "Could not hash the bundled card for cache-busting; "
             "serving the card at its unversioned URL.",
             exc_info=True,
         )

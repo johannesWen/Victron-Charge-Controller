@@ -95,6 +95,17 @@ view: settings
 > Remove the old `/local/victron-charge-controller-card.js` Lovelace resource
 > and update this integration to `>= 2.0.0` — the card comes bundled.
 
+> **After updating the integration** (via HACS or manually), **restart Home
+> Assistant** before using new card features. The card is served fresh, but
+> the loaded Python code only changes on restart; a card newer than the
+> integration would silently fail its service calls. The card detects this
+> and shows a warning plus the failing service in the browser console.
+>
+> Entity ids are resolved robustly: if Home Assistant's entity registry had
+> to suffix the generated id (for example `sensor.victron_charge_control_fixed_plans_2`
+> because the preferred id was taken by a leftover entity), the card finds
+> and uses the suffixed variant automatically.
+
 ## Requirements
 
 | Component | Purpose |

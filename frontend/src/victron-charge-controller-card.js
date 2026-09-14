@@ -178,6 +178,12 @@ class VictronChargeControllerCard extends LitElement {
     // Inline plan-rename editor state (detail view only)
     this._planNameEditing = false;
     this._planNameDraft = '';
+    // Entity-id alias cache for suffixed registry variants + service-call
+    // failure surfacing (the backend may be older than the card, or an
+    // expected entity may be missing entirely).
+    this._entityAliases = {};
+    this._lastServiceError = null;
+    this._warnedMissingFixedPlans = false;
   }
 
   disconnectedCallback() {
@@ -217,8 +223,52 @@ class VictronChargeControllerCard extends LitElement {
 
   // ── Entity helpers ──────────────────────────────────────
 
+  static _escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Resolve the entity id for a logical (domain, key) pair.
+   *
+   * The canonical id is `<domain>.<entity_prefix>_<key>`, but Home
+   * Assistant's entity registry can hand out a numeric suffix
+   * (e.g. `..._fixed_plans_2`) when the preferred id was already taken —
+   * e.g. by leftovers of a previous install. The card therefore falls
+   * back to a prefix-scoped suffix match so suffixed entities keep
+   * working. Results are memoized per canonical id and re-validated
+   * against the current hass states.
+   */
   _eid(domain, key) {
-    return `${domain}.${this.config.entity_prefix}_${key}`;
+    const states = this.hass?.states;
+    const exact = `${domain}.${this.config.entity_prefix}_${key}`;
+    if (!states || states[exact]) return exact;
+    return this._resolveSuffixedEntity(states, domain, key, exact);
+  }
+
+  _resolveSuffixedEntity(states, domain, key, exact) {
+    const alias = (this._entityAliases ||= {});
+    const cached = alias[exact];
+    if (cached !== undefined) {
+      if (states[cached]) return cached;
+      delete alias[exact];
+    }
+    const wanted = VictronChargeControllerCard._escapeRegExp(
+      `${this.config.entity_prefix}_${key}`,
+    );
+    const re = new RegExp(`^${domain}\\.${wanted}(?:_\\d+)?$`);
+    let best = null;
+    let bestSuffix = null;
+    for (const entityId of Object.keys(states)) {
+      const match = re.exec(entityId);
+      if (!match) continue;
+      const suffix = match[1] ? parseInt(match[1].slice(1), 10) : -1;
+      if (bestSuffix === null || suffix < bestSuffix) {
+        best = entityId;
+        bestSuffix = suffix;
+      }
+    }
+    if (best) alias[exact] = best;
+    return best ?? exact;
   }
 
   _state(domain, key) {
@@ -229,8 +279,23 @@ class VictronChargeControllerCard extends LitElement {
     return this._state(domain, key)?.state;
   }
 
-  _callService(domain, service, data) {
-    return this.hass.callService(domain, service, data);
+  _callService(domain, service, data, onFail) {
+    let result;
+    try {
+      result = this.hass.callService(domain, service, data);
+    } catch (err) {
+      result = Promise.reject(err);
+    }
+    return Promise.resolve(result).catch(err => {
+      console.error(
+        `[victron-charge-controller-card] service ${domain}.${service} failed:`,
+        err,
+      );
+      this._lastServiceError = { message: String(err?.message || err), ts: Date.now() };
+      if (onFail) onFail();
+      this.requestUpdate();
+      return undefined;
+    });
   }
 
   _callWS(message) {
@@ -274,8 +339,13 @@ class VictronChargeControllerCard extends LitElement {
     // Optimistically show the picked action until the schedule sensors
     // confirm it (or the plan is recalculated and the pending is cleared).
     if (date) {
-      this._pendingPlanActions[`${date}:${hour}`] = { action, ts: Date.now() };
+      const slotKey = `${date}:${hour}`;
+      this._pendingPlanActions[slotKey] = { action, ts: Date.now() };
       this.requestUpdate();
+      this._callService('victron_charge_control', 'set_hour_action', data, () => {
+        delete this._pendingPlanActions[slotKey];
+      });
+      return;
     }
     this._callService('victron_charge_control', 'set_hour_action', data);
   }
@@ -408,10 +478,10 @@ class VictronChargeControllerCard extends LitElement {
     return null;
   }
 
-  _setFixedPlanHour(plan, hour, action) {
+  _setFixedPlanHour(plan, hour, action, onFail) {
     this._callService('victron_charge_control', 'set_fixed_plan_hour', {
       plan, hour, action,
-    });
+    }, onFail);
   }
 
   _toggleFixedPlanHour(plan, hour, action, hours) {
@@ -427,19 +497,34 @@ class VictronChargeControllerCard extends LitElement {
     const next = inClickedRow ? 'idle' : action;
     if (current === next) return;
     const hourActions = this._pendingFixedPlanHours[plan] || {};
-    hourActions[hour] = { action: next, ts: Date.now() };
+    const pending = { action: next, ts: Date.now() };
+    hourActions[hour] = pending;
     this._pendingFixedPlanHours[plan] = hourActions;
-    this._setFixedPlanHour(plan, hour, next);
+    this._setFixedPlanHour(plan, hour, next, () => {
+      // Service call failed: drop the doomed optimistic state right away
+      // instead of waiting for the pending age-out.
+      if (this._pendingFixedPlanHours[plan]?.[hour] === pending) {
+        delete this._pendingFixedPlanHours[plan][hour];
+        if (Object.keys(this._pendingFixedPlanHours[plan]).length === 0) {
+          delete this._pendingFixedPlanHours[plan];
+        }
+      }
+    });
     this.requestUpdate();
   }
 
   _activateFixedPlan(plan, isActive) {
     // Optimistically switch the visible activation state until the
     // select entity catches up.
-    this._pendingActiveFixedPlan = { value: isActive ? null : plan, ts: Date.now() };
+    const pending = { value: isActive ? null : plan, ts: Date.now() };
+    this._pendingActiveFixedPlan = pending;
     this._callService('select', 'select_option', {
       entity_id: this._eid('select', 'active_fixed_plan'),
       option: isActive ? 'off' : String(plan),
+    }, () => {
+      if (this._pendingActiveFixedPlan === pending) {
+        this._pendingActiveFixedPlan = undefined;
+      }
     });
     this.requestUpdate();
   }
@@ -473,9 +558,14 @@ class VictronChargeControllerCard extends LitElement {
     const current = plans[planNumber]?.name || '';
     if (name !== current) {
       // Optimistically show the new name until the sensor catches up.
-      this._pendingFixedPlanNames[planNumber] = { value: name, ts: Date.now() };
+      const pending = { value: name, ts: Date.now() };
+      this._pendingFixedPlanNames[planNumber] = pending;
       this._callService('victron_charge_control', 'set_fixed_plan_name', {
         plan: planNumber, name,
+      }, () => {
+        if (this._pendingFixedPlanNames[planNumber] === pending) {
+          delete this._pendingFixedPlanNames[planNumber];
+        }
       });
     }
     this.requestUpdate();
@@ -2102,10 +2192,52 @@ class VictronChargeControllerCard extends LitElement {
   _renderPlanView() {
     return html`
       <div class="plan-container">
+        ${this._renderFixedPlansWarning()}
+        ${this._renderServiceErrorBanner()}
         ${this._renderPlanTabs()}
         ${this._planPage === 'auto'
           ? this._renderAutoPlanPage()
           : this._renderFixedPlanPage(this._fixedPlanNumber)}
+      </div>`;
+  }
+
+  _renderFixedPlansWarning() {
+    if (this._state('sensor', 'fixed_plans')) return nothing;
+    if (!this._warnedMissingFixedPlans) {
+      this._warnedMissingFixedPlans = true;
+      console.warn(
+        `[victron-charge-controller-card] ${this._eid('sensor', 'fixed_plans')} not found — `
+        + 'the integration may be older than the card, or the entity is missing. '
+        + 'Update/restart Home Assistant so card and integration match.',
+      );
+    }
+    return html`
+      <div class="warning">
+        <ha-icon icon="mdi:alert-outline"></ha-icon>
+        <span>
+          Fixed-plan data not found (expected
+          <code>${this._eid('sensor', 'fixed_plans')}</code>).
+          Update or restart Home Assistant so the integration matches the card.
+        </span>
+      </div>`;
+  }
+
+  _renderServiceErrorBanner() {
+    if (!this._lastServiceError) return nothing;
+    if (Date.now() - this._lastServiceError.ts > 6000) {
+      this._lastServiceError = null;
+      return nothing;
+    }
+    if (!this._serviceErrorBannerTimer) {
+      this._serviceErrorBannerTimer = setTimeout(() => {
+        this._serviceErrorBannerTimer = null;
+        this.requestUpdate();
+      }, 6500);
+    }
+    return html`
+      <div class="warning">
+        <ha-icon icon="mdi:alert-outline"></ha-icon>
+        <span>Service call failed: ${this._lastServiceError.message}</span>
       </div>`;
   }
 
