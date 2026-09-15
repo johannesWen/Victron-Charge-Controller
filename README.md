@@ -81,13 +81,9 @@ view: settings
 | --- | --- | --- | --- |
 | `view` | string | `settings` | Card view: `settings`, `plan`, or `history`. |
 
-| Settings | Plan |
-| :---: | :---: |
-| <img src="assets/screenshots/settings_card.png" width="420" alt="Settings card screenshot"> | <img src="assets/screenshots/plan_card.png" width="420" alt="Plan card screenshot"> |
-
-| History |
-| :---: |
-| <img src="assets/screenshots/costs_card.png" width="420" alt="History card screenshot"> |
+| Settings | Plan | History |
+| :---: | :---: | :---: |
+| ![Settings card screenshot](assets/screenshots/settings_card.png) | ![Plan card screenshot](assets/screenshots/plan_card.png) | ![History card screenshot](assets/screenshots/costs_card.png) |
 
 > **Upgrading from the standalone dashboard repo?** Earlier releases shipped
 > the card as a separate HACS "Dashboard" repository
