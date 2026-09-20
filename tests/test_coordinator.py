@@ -756,6 +756,68 @@ class TestSOCHysteresis:
         assert coordinator._determine_action() == ACTION_DISCHARGE
         assert coordinator._discharge_blocked_by_soc is False
 
+    def _make_solar_coordinator(self, mock_hass):
+        """Coordinator with a solar surplus sensor, configured for Force Discharge."""
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        coord.control_mode = MODE_FORCE_DISCHARGE
+        coord.discharge_allowed = True
+        coord.min_soc = 10.0
+        coord.soc_hysteresis = 2.0
+        coord.discharge_power = 3000.0
+        coord._solar_surplus_mean = 1500.0
+        return coord
+
+    def test_discharge_runs_at_full_power_until_min_soc(self, mock_hass):
+        """With a solar sensor, full discharge power is kept down to min_soc."""
+        coord = self._make_solar_coordinator(mock_hass)
+        self._set_soc(coord, 10.1)
+        assert coord._determine_action() == ACTION_DISCHARGE
+        assert coord._discharge_blocked_by_soc is False
+        assert coord._discharge_solar_only is False
+        # Full power + surplus, no early solar-only derating
+        assert coord._compute_setpoint(ACTION_DISCHARGE) == -4500.0
+
+    def test_discharge_degrades_to_solar_only_at_min_soc(self, mock_hass):
+        """At min_soc the discharge stays active but exports surplus only."""
+        coord = self._make_solar_coordinator(mock_hass)
+        self._set_soc(coord, 10.0)
+        assert coord._determine_action() == ACTION_DISCHARGE
+        assert coord._discharge_blocked_by_soc is False
+        assert coord._discharge_solar_only is True
+        # Battery is not drained further: only the solar surplus is exported
+        assert coord._compute_setpoint(ACTION_DISCHARGE) == -1500.0
+
+    def test_solar_only_release_restores_full_power(self, mock_hass):
+        """After the battery refills past min_soc + hysteresis, full power returns."""
+        coord = self._make_solar_coordinator(mock_hass)
+        self._set_soc(coord, 10.0)
+        assert coord._determine_action() == ACTION_DISCHARGE
+        assert coord._discharge_solar_only is True
+        # Release point is min_soc + hysteresis = 12.0 (strictly above)
+        self._set_soc(coord, 12.0)
+        assert coord._determine_action() == ACTION_DISCHARGE
+        assert coord._discharge_solar_only is True
+        self._set_soc(coord, 12.1)
+        assert coord._determine_action() == ACTION_DISCHARGE
+        assert coord._discharge_solar_only is False
+        assert coord._compute_setpoint(ACTION_DISCHARGE) == -4500.0
+
+    def test_min_soc_still_blocks_without_solar_sensor(self, coordinator):
+        """Without a solar sensor the discharge stops at min_soc (legacy behavior)."""
+        coordinator.control_mode = MODE_FORCE_DISCHARGE
+        coordinator.discharge_allowed = True
+        coordinator.min_soc = 10.0
+        coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 10.1)
+        assert coordinator._determine_action() == ACTION_DISCHARGE
+        self._set_soc(coordinator, 10.0)
+        assert coordinator._determine_action() == ACTION_IDLE
+        assert coordinator._discharge_blocked_by_soc is True
+        assert coordinator._discharge_solar_only is True
+
     def test_hysteresis_zero_behaves_like_before(self, coordinator):
         coordinator.control_mode = MODE_FORCE_CHARGE
         coordinator.charge_allowed = True
@@ -1198,26 +1260,26 @@ class TestSolarSurplus:
         assert sp == 0.0  # idle via surplus-only mode
 
     def test_soc_hysteresis_sets_solar_only(self, coordinator):
-        """soc <= min_soc + hysteresis triggers solar-only mode (latched)."""
+        """soc <= min_soc triggers solar-only mode (latched)."""
         coordinator.min_soc = 10.0
         coordinator.soc_hysteresis = 2.0
-        coordinator._update_soc_hysteresis(12.0)  # exactly at threshold
+        coordinator._update_soc_hysteresis(10.0)  # exactly at min_soc
         assert coordinator._discharge_solar_only is True
 
-        # Latched: a 0.1% rise above min_soc + hysteresis must NOT release.
+        # Latched: a 0.1% rise above min_soc must NOT release.
         # Without the latch this would oscillate as the SOC jitters across
         # the threshold — same root cause as the charge/discharge flaps
         # the wider Schmitt-trigger patch is fixing.
+        coordinator._update_soc_hysteresis(10.1)
+        assert coordinator._discharge_solar_only is True
+
+        # Re-engages when SOC dips back below min_soc.
+        coordinator._update_soc_hysteresis(9.5)
+        assert coordinator._discharge_solar_only is True
+
+        # Releases only after a full hysteresis margin above min_soc
+        # (min_soc + hysteresis = 12.0).
         coordinator._update_soc_hysteresis(12.1)
-        assert coordinator._discharge_solar_only is True
-
-        # Re-engages when SOC dips back below the threshold.
-        coordinator._update_soc_hysteresis(11.5)
-        assert coordinator._discharge_solar_only is True
-
-        # Releases only after a full hysteresis margin above the threshold
-        # (min_soc + 2*hysteresis = 14.0).
-        coordinator._update_soc_hysteresis(14.1)
         assert coordinator._discharge_solar_only is False
 
     def test_soc_hysteresis_clears_solar_only_above_threshold(self, coordinator):
@@ -1227,36 +1289,36 @@ class TestSolarSurplus:
         assert coordinator._discharge_solar_only is False
 
     def test_solar_only_does_not_release_within_hysteresis_band(self, coordinator):
-        """A 0.1% rise above min_soc + hysteresis must not release solar-only.
+        """A small rise above min_soc must not release solar-only.
 
         Regression test: previously the flag was assigned unconditionally
-        on every cycle (`soc <= min_soc + hysteresis`), so a SOC reading
-        that alternated between 11.9 and 12.1 would toggle the flag (and
-        therefore the discharge setpoint math) on every coordinator tick.
+        on every cycle, so a SOC reading that alternated between 11.9 and
+        12.1 would toggle the flag (and therefore the discharge setpoint
+        math) on every coordinator tick.
         """
         coordinator.min_soc = 10.0
         coordinator.soc_hysteresis = 2.0
         # Drive into solar-only
-        coordinator._update_soc_hysteresis(12.0)
+        coordinator._update_soc_hysteresis(10.0)
         assert coordinator._discharge_solar_only is True
         # Tiny rise — must stay latched
-        coordinator._update_soc_hysteresis(12.1)
+        coordinator._update_soc_hysteresis(10.1)
         assert coordinator._discharge_solar_only is True
-        coordinator._update_soc_hysteresis(12.5)
-        assert coordinator._discharge_solar_only is True
-        # Drop back below threshold — still latched (re-engages)
         coordinator._update_soc_hysteresis(11.5)
+        assert coordinator._discharge_solar_only is True
+        # Drop back below min_soc — still latched (re-engages)
+        coordinator._update_soc_hysteresis(9.5)
         assert coordinator._discharge_solar_only is True
 
     def test_solar_only_releases_after_full_hysteresis_margin(self, coordinator):
         coordinator.min_soc = 10.0
         coordinator.soc_hysteresis = 2.0
+        coordinator._update_soc_hysteresis(10.0)
+        assert coordinator._discharge_solar_only is True
+        # Release point is min_soc + hysteresis = 12.0 (strictly above)
         coordinator._update_soc_hysteresis(12.0)
         assert coordinator._discharge_solar_only is True
-        # Release point is min_soc + 2*hysteresis = 14.0 (strictly above)
-        coordinator._update_soc_hysteresis(14.0)
-        assert coordinator._discharge_solar_only is True
-        coordinator._update_soc_hysteresis(14.1)
+        coordinator._update_soc_hysteresis(12.1)
         assert coordinator._discharge_solar_only is False
 
 

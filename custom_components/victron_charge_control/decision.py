@@ -44,6 +44,7 @@ def update_soc_hysteresis(
     max_soc: float,
     min_soc: float,
     hysteresis: float,
+    has_solar_surplus: bool,
     state: SocHysteresisState,
 ) -> SocHysteresisState:
     """Update SOC hysteresis blocked flags (Schmitt-trigger style).
@@ -52,6 +53,13 @@ def update_soc_hysteresis(
     set until the SOC moves a full ``hysteresis`` margin *back* across
     the threshold. This prevents ±1% sensor jitter near the SOC
     boundaries from flapping the desired action and grid setpoint.
+
+    Discharge behavior: the battery is discharged at full power until
+    ``min_soc`` is reached. Below ``min_soc`` the discharge degrades to
+    a solar-surplus-only export (setpoint ``-surplus``, the battery is
+    not drained further and can refill from PV) when the optional solar
+    surplus sensor is configured. Without the sensor the discharge is
+    blocked entirely, as before.
     """
     if soc >= max_soc:
         charge_blocked = True
@@ -60,16 +68,16 @@ def update_soc_hysteresis(
     else:
         charge_blocked = state.charge_blocked_by_soc
 
-    if soc <= min_soc:
+    if soc <= min_soc and not has_solar_surplus:
         discharge_blocked = True
     elif soc > min_soc + hysteresis:
         discharge_blocked = False
     else:
         discharge_blocked = state.discharge_blocked_by_soc
 
-    if soc <= min_soc + hysteresis:
+    if soc <= min_soc:
         discharge_solar_only = True
-    elif soc > min_soc + (2 * hysteresis):
+    elif soc > min_soc + hysteresis:
         discharge_solar_only = False
     else:
         discharge_solar_only = state.discharge_solar_only
@@ -138,6 +146,7 @@ def determine_action(
         max_soc=state.max_soc,
         min_soc=state.min_soc,
         hysteresis=state.soc_hysteresis,
+        has_solar_surplus=state.solar_surplus_entity is not None,
         state=soc_state,
     )
 
