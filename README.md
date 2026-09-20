@@ -46,7 +46,7 @@ the system from dashboards or automations.
 - **Force modes** immediately apply the configured charge or discharge power.
 - **SOC protection** respects minimum and maximum battery limits, including hysteresis.
 - **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
-- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint, with a soft SOC fallback to solar-only export when the battery is near its lower boundary.
+- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint, and discharges at full power until the battery reaches its Min SOC. At Min SOC the discharge degrades to a solar-only export (only the measured surplus is fed in, the battery is not drained further and can refill from PV); full discharge power resumes once the SOC recovers past Min SOC + hysteresis. Without the sensor, discharge stops completely at Min SOC and resumes after the same hysteresis margin.
 - **PV charging** charges the battery from solar surplus without importing from the grid, splitting surplus between battery and export according to a configurable share. PV charging is independent of the **Charge Allowed** switch and of blocked charging hours — it never draws from the grid, so it can stay active even when grid charging is disabled.
 - **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
 - **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts. The full charge/discharge plan (charge/discharge/pv_charge slots, blocked hours, last update) is also persisted and reloaded on restart — and a restart in auto mode does **not** trigger a replan, so the plan you set up the night before survives HA reboots untouched.
@@ -135,7 +135,7 @@ During setup, select the entities that connect this integration to your Victron 
 | Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. |
 | Grid consumption energy sensor | No | Cumulative grid import meter in kWh. |
 | Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. |
-| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export. |
+| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export, and lets the discharge degrade to a solar-only export at Min SOC instead of stopping. |
 
 You can change these entities later from the integration options flow.
 

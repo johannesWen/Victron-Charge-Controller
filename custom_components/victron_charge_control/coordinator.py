@@ -1212,6 +1212,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             max_soc=self.max_soc,
             min_soc=self.min_soc,
             hysteresis=self.soc_hysteresis,
+            has_solar_surplus=self._solar_surplus_entity is not None,
             state=SocHysteresisState(
                 charge_blocked_by_soc=self._charge_blocked_by_soc,
                 discharge_blocked_by_soc=self._discharge_blocked_by_soc,

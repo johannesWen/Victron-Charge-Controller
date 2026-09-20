@@ -64,7 +64,7 @@ const HELP_TEXT = {
         ],
         [
           { text: 'Discharge', bold: true },
-          { text: ' exports battery power to the grid at the configured Discharge Power. With the optional solar surplus sensor configured, the measured surplus is exported on top; close to the Min SOC limit discharge falls back to solar-only export.' },
+          { text: ' exports battery power to the grid at the configured Discharge Power down to the Min SOC limit. With the optional solar surplus sensor configured, the measured surplus is exported on top, and at Min SOC the discharge degrades to solar-only export until the battery refills past Min SOC + hysteresis; without the sensor discharge stops completely at Min SOC.' },
         ],
         [
           { text: 'PV Charge', bold: true },
