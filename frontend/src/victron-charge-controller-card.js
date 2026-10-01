@@ -34,6 +34,12 @@ const FEED_IN_META = {
 
 const HELP_TEXT = {
   settings: [
+    { heading: 'Help for each input',
+      items: [
+        'Click a light-blue slider or switch name to read what it does and how it affects the controller. Slider help also shows its minimum, maximum and step size.',
+        'The question mark beside Mode explains all five modes. The question mark beside the action buttons explains Recalculate and Clear Schedule.',
+        'Click Charging, Discharging or Recalculation Hours above the hour chips for help with that group.',
+      ] },
     { heading: 'Mode',
       items: [
         'Pick a control mode: Off, Auto, Manual, Force Charge or Force Discharge.',
@@ -109,6 +115,117 @@ const HELP_TEXT = {
   ],
 };
 
+// Settings help uses the UI entity keys, including their friendly-name suffixes.
+// Numeric limits are read from the same live entity attributes as the sliders.
+const SETTINGS_HELP = {
+  control_mode: [
+    { heading: 'Off', items: ['Requests Idle and resets the grid target to the configured Idle Setpoint. It does not switch off the Victron system or prevent battery flows managed by Victron.'] },
+    { heading: 'Auto', items: ['Builds a price-based schedule from available current and future EPEX hours using the hour counts, price thresholds and recurring blocks. An active fixed plan and individual hour overrides can change that schedule. Permission switches and SOC protection still apply.'] },
+    { heading: 'Manual', items: ['Follows the hours you choose in the Plan card and any active fixed plan instead of selecting hours by price. Unscheduled hours use Idle. Permission switches and SOC protection still apply; selected Recalculation Hours reset manual charge/discharge slots.'] },
+    { heading: 'Force Charge', items: ['Requests grid charging at Charge Power without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Charge Allowed and obeys Max SOC, hysteresis and grid setpoint limits.'] },
+    { heading: 'Force Discharge', items: ['Requests discharge without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Discharge Allowed and obeys SOC protection, discharge stages and export limits.'] },
+  ],
+  charge_allowed: [
+    'Allows grid charging in scheduled and Force Charge operation. Turning it off stops the controller from requesting grid charging; it does not erase the schedule.',
+    'PV Charge is independent of this switch because it allocates solar surplus. Max SOC protection still applies to both charging actions.',
+  ],
+  discharge_allowed: [
+    'Allows scheduled discharge and Force Discharge. Turning it off makes those requests fall back to Idle without erasing the schedule.',
+    'This also gates surplus-only discharge at Min SOC. It does not disable solar export during PV Charge or other battery flows managed by Victron.',
+  ],
+  charge_power: [
+    'Sets the positive grid power target used during grid charging, in watts. A larger value requests more grid import, subject to Max Grid Setpoint and the Victron system’s own limits.',
+    'This is a grid setpoint, not a guarantee of battery charging power: household loads and solar production also affect the battery. Charge Allowed and SOC protection must permit charging.',
+  ],
+  discharge_power: [
+    'Sets the battery-power component of the discharge request, in watts. During full discharge the controller requests export equal to this value plus the optional solar surplus sensor’s 15-minute average.',
+    'The negative grid target is clamped by Min Grid Setpoint and, during reduced feed-in, Reduced Max Feed-in. At Min SOC the battery-power component is removed; without a surplus sensor discharge stops.',
+  ],
+  pv_charging_battery_share: [
+    'Controls how solar surplus is split during a PV Charge hour. At 0% the target exports the averaged surplus; at 100% it uses Idle Setpoint, normally retaining surplus for the battery. Intermediate values blend those two targets.',
+    'Requires the optional solar surplus sensor and a PV Charge slot. Higher values favor battery charging. Max SOC and grid/export limits still apply; Charge Allowed and blocked charging hours do not prevent PV Charge.',
+  ],
+  min_soc: [
+    'Sets the lower battery state-of-charge boundary for full discharge. With a solar surplus sensor, reaching this value changes full discharge to export of averaged solar surplus only.',
+    'Surplus-only discharge stops at Min SOC minus SOC Hysteresis, with a floor of 0%, and resumes at Min SOC. Full discharge resumes strictly above Min SOC plus SOC Hysteresis. Averaged surplus can temporarily draw battery power when actual solar output falls.',
+    'Without a surplus sensor, discharge stops at Min SOC and resumes strictly above the upper threshold. Stopping applies Idle Setpoint; it does not disable other Victron battery flows.',
+  ],
+  max_soc: [
+    'Sets the upper battery state-of-charge boundary for grid charging and PV Charge. At or above this value the controller requests Idle instead of charging.',
+    'Charging can resume once SOC falls strictly below Max SOC minus SOC Hysteresis. This protection also applies to Force Charge. Other charging managed by Victron can still occur.',
+  ],
+  soc_hysteresis: [
+    'Sets a buffer in SOC percentage points to avoid repeatedly switching actions near a battery limit. Charging stops at Max SOC and resumes strictly below Max SOC minus this buffer.',
+    'Full discharge changes to surplus-only at Min SOC and resumes strictly above Min SOC plus this buffer. With a surplus sensor, surplus-only stops at max(0%, Min SOC minus the buffer) and resumes at Min SOC. Without that sensor, discharge stops at Min SOC until the upper threshold is exceeded.',
+    'After restart, discharge starts stopped below Min SOC, surplus-only through the upper threshold, and full above it. Without a surplus sensor it stays stopped through that threshold. With a zero buffer, discharge stops at or below Min SOC and can run fully above it.',
+  ],
+  idle_setpoint: [
+    'Sets the grid power target when the controller is Idle, including Off, unscheduled hours and SOC-blocked actions. Positive values request grid import; negative values request export; zero targets balanced grid power.',
+    'During active control, the target is clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. It is also the target at 100% PV Charging Battery Share, so changing it affects PV Charge allocation. Idle does not mean the battery is disconnected.',
+  ],
+  min_grid_setpoint: [
+    'Sets the lowest grid power target the controller may request. Negative values represent export: a more negative limit permits more export, while zero prevents the controller from requesting a negative target.',
+    'During active control, all computed setpoints are clamped to this limit; Off resets directly to Idle Setpoint. During reduced feed-in, Reduced Max Feed-in can further restrict discharge and PV Charge export. This is a requested target, not a measurement of actual grid power.',
+  ],
+  max_grid_setpoint: [
+    'Sets the highest grid power target the controller may request. Positive values represent import, so reducing this limit can cap the Charge Power request.',
+    'During active control, all computed setpoints, including Idle and PV Charge, are clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. Actual grid power also depends on the Victron system and connected loads.',
+  ],
+  cheapest_hours_auto_charge: [
+    'Sets the maximum number of cheapest eligible hours selected for grid charging across the available current and future price data, rather than a guaranteed count per day.',
+    'Only hours at or below Charge Price Threshold qualify. Recurring blocked charging hours and PV Charge slots are skipped; conflicts with selected discharge hours favor discharge. Zero selects no automatic grid-charge hours. Changing this value in Auto recalculates the schedule.',
+  ],
+  expensive_hours_auto_discharge: [
+    'Sets the maximum number of most expensive eligible hours selected for discharge across the available current and future price data, rather than a guaranteed count per day.',
+    'Only hours at or above Discharge Price Threshold qualify. Recurring blocked discharging hours and PV Charge slots are skipped. Zero selects no automatic discharge hours. Changing this value in Auto recalculates the schedule; actual discharge still requires permission and sufficient SOC.',
+  ],
+  charge_price_threshold: [
+    'Sets the highest EPEX spot price, in ct/kWh, eligible for automatic grid charging. A price equal to the threshold qualifies. Raising it allows more hours to qualify; Cheapest Hours still caps how many are selected.',
+    'Changing it in Auto recalculates the schedule. It does not gate Force Charge or explicitly chosen manual/fixed-plan hours. This is the spot-price comparison, not a total electricity bill calculation.',
+  ],
+  discharge_price_threshold: [
+    'Sets the lowest EPEX spot price, in ct/kWh, eligible for automatic discharge. A price equal to the threshold qualifies. Raising it restricts selection to higher-priced hours; Expensive Hours caps their count.',
+    'Changing it in Auto recalculates the schedule. It does not gate Force Discharge or explicitly chosen manual/fixed-plan hours. Permission switches and SOC limits still govern execution.',
+  ],
+  grid_feed_in_control: [
+    'Enables price-based control of the linked Victron maximum grid feed-in setting. Prices strictly below Price Threshold use Reduced Max Feed-in; prices at or above it use Default Max Feed-in.',
+    'While reduced mode is active, discharge and PV Charge export targets are also capped by the reduced limit. When this feature is disabled after applying a reduced limit, the controller restores the configured default limit when the linked entity is available.',
+    'Requires the configured writable maximum feed-in entity and current price data. If the price is unavailable, no new feed-in limit is written.',
+  ],
+  control_dc_coupled_feed_in: [
+    'Allows the controller to operate the linked Victron DC-coupled feed-in switch: on at normal prices, off while reduced feed-in is active.',
+    'Requires Feed-in Control to be enabled, a configured and available external DC feed-in switch, and a control mode other than Off. Disabling this option stops controlling that switch; it does not automatically restore its previous state.',
+  ],
+  grid_feed_in_price_threshold: [
+    'Sets the EPEX spot-price boundary, in ct/kWh, for reduced feed-in. Prices strictly below this value select Reduced Max Feed-in. At exactly the threshold or above it, Default Max Feed-in applies.',
+    'Only affects price-based feed-in control when Feed-in Control is enabled. It also determines the DC-coupled feed-in switch state when that optional control is enabled.',
+  ],
+  default_max_grid_feed_in: [
+    'Sets the normal maximum grid feed-in limit written to the linked Victron entity when Feed-in Control is enabled and price is at or above its threshold.',
+    'This is an export ceiling in watts, not a command to export that amount. It is also the limit restored when disabling feed-in control after a reduced limit was applied.',
+  ],
+  reduced_max_grid_feed_in: [
+    'Sets the maximum grid feed-in limit used when Feed-in Control is enabled and price is strictly below its threshold. Zero requests no feed-in through this limit.',
+    'In reduced mode it also caps discharge and PV Charge export targets. Min Grid Setpoint may impose a tighter limit. This setting limits export; it does not itself schedule charging or discharging.',
+  ],
+  blocked_charging_hours: [
+    'Select hour chips to exclude those hours from automatic grid-charge selection every day. Each chip covers the hour beginning at the displayed time, using Home Assistant’s local time. Click a selected chip again to remove the recurring block.',
+    'Explicit per-day overrides and active fixed plans can still schedule the hour. Force Charge bypasses recurring blocks, and PV Charge is independent of charging blocks. Charge Allowed and SOC limits still apply to grid charging.',
+  ],
+  blocked_discharging_hours: [
+    'Select hour chips to exclude those hours from automatic discharge selection every day. Each chip covers the hour beginning at the displayed time, using Home Assistant’s local time. Click a selected chip again to remove the recurring block.',
+    'Explicit per-day overrides and active fixed plans can still schedule the hour. Force Discharge bypasses recurring blocks. Discharge Allowed and SOC protection still govern discharge.',
+  ],
+  replan_hours: [
+    'Select the local hours at which the daily replan runs, at minute 00. In Auto it rebuilds the price-based schedule; in Manual it clears manually chosen charge/discharge slots and reapplies any active fixed plan.',
+    'Expired slots are cleaned up during replanning. With no hours selected, these timed replans are disabled; the Recalculate button and automatic recalculation caused by Auto-setting changes remain available.',
+  ],
+  schedule_actions: [
+    { heading: 'Recalculate', items: ['Rebuilds the automatic charge/discharge schedule from the available current and future EPEX prices, using hour counts, price thresholds and recurring blocks. Requires Auto mode and usable price data.', 'Replaces individual charge/discharge selections with the calculated plan, preserves PV Charge slots, and reapplies any active fixed plan. It does not change the control mode.'] },
+    { heading: 'Clear Schedule', items: ['Clears scheduled charge, discharge and PV Charge hours and both recurring blocked-hour lists. Saved fixed plans are retained; any active fixed plan is immediately reapplied, so the resulting schedule may not be empty.', 'Does not change the control mode, permission switches or Recalculation Hours. Force modes can continue operating, and later Auto recalculation can populate the schedule again.'] },
+  ],
+};
+
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
 // How long an optimistic (pending) edit may linger without being
@@ -162,6 +279,8 @@ class VictronChargeControllerCard extends LitElement {
     this._onDocumentPointerDownBound = this._onDocumentPointerDown.bind(this);
     // Help dialog state
     this._helpOpen = false;
+    this._helpTopic = null;
+    this._helpTrigger = null;
     this._onHelpKeyDownBound = this._onHelpKeyDown.bind(this);
     // Plan view pages: 'auto' = auto-planned chart, number = fixed plan editor
     this._planPage = 'auto';
@@ -753,23 +872,44 @@ class VictronChargeControllerCard extends LitElement {
 
   // ── Reusable render fragments ───────────────────────────
 
-  _renderSection(title, icon, content) {
+  _renderSection(title, icon, content, helpKey = null) {
     return html`
       <div class="section">
         <div class="section-header">
           <ha-icon .icon=${icon}></ha-icon>
           <span>${title}</span>
+          ${helpKey ? this._renderHelpIcon(title, helpKey) : nothing}
         </div>
         <div class="section-content">${content}</div>
       </div>`;
+  }
+
+  _renderHelpLabel(label, key, className = 'control-label', unit = null) {
+    return html`<button type="button" class="${className} setting-help-label"
+      aria-label=${`Help for ${label}`} aria-haspopup="dialog"
+      @click=${(e) => this._openHelp({ key, label, unit }, e.currentTarget)}
+    >${label}</button>`;
+  }
+
+  _renderHelpIcon(label, key) {
+    return html`<button type="button" class="setting-help-icon"
+      aria-label=${`Help for ${label}`} title=${`Help for ${label}`} aria-haspopup="dialog"
+      @click=${(e) => this._openHelp({ key, label }, e.currentTarget)}
+    ><ha-icon icon="mdi:help-circle-outline"></ha-icon></button>`;
+  }
+
+  _sliderLimits(numberKey) {
+    const { min = 0, max = 100, step = 1 } = this._state('number', numberKey)?.attributes ?? {};
+    return { min, max, step };
   }
 
   _renderToggle(label, switchKey) {
     const on = this._val('switch', switchKey) === 'on';
     return html`
       <div class="control-row toggle-row">
-        <span class="control-label">${label}</span>
+        ${this._renderHelpLabel(label, switchKey)}
         <ha-switch
+          aria-label=${label}
           .checked=${on}
           @change=${() => this._toggleSwitch(switchKey)}
         ></ha-switch>
@@ -783,8 +923,9 @@ class VictronChargeControllerCard extends LitElement {
           const on = this._val('switch', key) === 'on';
           return html`
             <div class="toggle-pair-item">
-              <span class="control-label">${label}</span>
+              ${this._renderHelpLabel(label, key)}
               <ha-switch
+                aria-label=${label}
                 .checked=${on}
                 @change=${() => this._toggleSwitch(key)}
               ></ha-switch>
@@ -828,13 +969,14 @@ class VictronChargeControllerCard extends LitElement {
     const obj = this._state('number', numberKey);
     if (!obj) return nothing;
     const value = parseFloat(obj.state);
-    const { min = 0, max = 100, step = 1 } = obj.attributes;
+    const { min, max, step } = this._sliderLimits(numberKey);
     return html`
       <div class="control-row slider-row">
-        <span class="control-label">${label}</span>
+        ${this._renderHelpLabel(label, numberKey, 'control-label', unit)}
         <div class="slider-wrap">
           <div class="slider-container">
             <input type="range"
+              aria-label=${label}
               min=${min} max=${max} step=${step}
               .value=${String(value)}
               @input=${(e) => this._onSliderInput(e, unit)}
@@ -1089,7 +1231,6 @@ class VictronChargeControllerCard extends LitElement {
     const actMeta  = ACTION_META[action] || ACTION_META.idle;
     const setpoint = this._val('sensor', 'target_setpoint') || '0';
     const spotPrice = this._val('sensor', 'current_price');
-    const isAuto   = mode === 'auto';
     const feedIn   = this._val('switch', 'grid_feed_in_control') === 'on';
 
     return html`
@@ -1124,7 +1265,7 @@ class VictronChargeControllerCard extends LitElement {
             <span>${spotPrice != null && spotPrice !== 'unavailable' && spotPrice !== 'unknown' ? `${(parseFloat(spotPrice) * 100).toFixed(2)} ct/kWh` : '—'}</span>
           </div>
         </div>
-      `)}
+      `, 'control_mode')}
 
       <!-- Charge / Discharge -->
       ${this._renderSection('Charge / Discharge', 'mdi:battery-charging', html`
@@ -1151,13 +1292,13 @@ class VictronChargeControllerCard extends LitElement {
         ${this._renderSlider('Max Grid Setpoint', 'max_grid_setpoint', ' W')}
       `)}
 
-      <!-- Auto Mode (visible only when mode=auto) -->
-      ${isAuto ? this._renderSection('Auto Mode', 'mdi:auto-fix', html`
+      <!-- Keep automatic scheduling settings available in every control mode. -->
+      ${this._renderSection('Auto Mode', 'mdi:auto-fix', html`
         ${this._renderSlider('Cheapest Hours', 'cheapest_hours_auto_charge', ' h')}
         ${this._renderSlider('Expensive Hours', 'expensive_hours_auto_discharge', ' h')}
         ${this._renderSlider('Charge Price Threshold', 'charge_price_threshold', ' ct/kWh')}
         ${this._renderSlider('Discharge Price Threshold', 'discharge_price_threshold', ' ct/kWh')}
-      `) : nothing}
+      `)}
 
       <!-- Grid Feed-in -->
       ${this._renderSection('Grid Feed-in', 'mdi:solar-power', html`
@@ -1175,11 +1316,11 @@ class VictronChargeControllerCard extends LitElement {
       <!-- Blocked Hours -->
       ${this._renderSection('Blocked Hours', 'mdi:clock-alert', html`
         <div class="blocked-group">
-          <span class="blocked-label">Charging</span>
+          ${this._renderHelpLabel('Charging', 'blocked_charging_hours', 'blocked-label')}
           ${this._renderHourChips({ key: 'blocked_charging_hours', activeClass: 'blocked', onClick: h => this._toggleBlockedHour('charging', h) })}
         </div>
         <div class="blocked-group">
-          <span class="blocked-label">Discharging</span>
+          ${this._renderHelpLabel('Discharging', 'blocked_discharging_hours', 'blocked-label')}
           ${this._renderHourChips({ key: 'blocked_discharging_hours', activeClass: 'blocked', onClick: h => this._toggleBlockedHour('discharging', h) })}
         </div>
       `)}
@@ -1187,7 +1328,7 @@ class VictronChargeControllerCard extends LitElement {
       <!-- Replan Hours -->
       ${this._renderSection('Replan Hours', 'mdi:calendar-refresh', html`
         <div class="blocked-group">
-          <span class="blocked-label">Recalculation Hours</span>
+          ${this._renderHelpLabel('Recalculation Hours', 'replan_hours', 'blocked-label')}
           ${this._renderHourChips({ key: 'replan_hours', activeClass: 'replan' })}
         </div>
       `)}
@@ -1204,6 +1345,7 @@ class VictronChargeControllerCard extends LitElement {
           <ha-icon icon="mdi:delete-outline"></ha-icon>
           Clear Schedule
         </button>
+        ${this._renderHelpIcon('Schedule actions', 'schedule_actions')}
       </div>`;
   }
 
@@ -1667,32 +1809,45 @@ class VictronChargeControllerCard extends LitElement {
 
   // ── Help dialog handlers ───────────────────────────────
 
-  _openHelp() {
+  _openHelp(topic = null, trigger = null) {
     if (this._helpOpen) return;
+    this._helpTopic = topic;
+    this._helpTrigger = trigger;
     this._helpOpen = true;
     window.addEventListener('keydown', this._onHelpKeyDownBound);
+    this.requestUpdate();
     this.updateComplete.then(() => {
+      if (!this._helpOpen) return;
       const closeBtn = this.renderRoot?.querySelector?.('.vcc-help-close');
       if (closeBtn) closeBtn.focus();
     });
-    this.requestUpdate();
   }
 
   _closeHelp() {
     if (!this._helpOpen) return;
     this._helpOpen = false;
+    this._helpTopic = null;
+    const trigger = this._helpTrigger;
+    this._helpTrigger = null;
     window.removeEventListener('keydown', this._onHelpKeyDownBound);
     this.requestUpdate();
     this.updateComplete.then(() => {
-      const helpBtn = this.renderRoot?.querySelector?.('.help-btn');
+      if (this._helpOpen) return;
+      const helpBtn = trigger?.isConnected ? trigger : this.renderRoot?.querySelector?.('.help-btn');
       if (helpBtn) helpBtn.focus();
     });
   }
 
   _onHelpKeyDown(e) {
+    if (!this._helpOpen) return;
     if (e.key === 'Escape' || e.key === 'Esc') {
       e.preventDefault();
       this._closeHelp();
+    } else if (e.key === 'Tab') {
+      // The close button is the dialog's only interactive element. Trap both
+      // Tab directions here so the underlying settings cannot receive input.
+      e.preventDefault();
+      this.renderRoot?.querySelector?.('.vcc-help-close')?.focus();
     }
   }
 
@@ -2677,7 +2832,8 @@ class VictronChargeControllerCard extends LitElement {
               type="button"
               aria-label="Show help"
               title="Show help"
-              @click=${() => this._openHelp()}
+              aria-haspopup="dialog"
+              @click=${(e) => this._openHelp(null, e.currentTarget)}
             >
               <ha-icon icon="mdi:help-circle-outline"></ha-icon>
             </button>
@@ -2695,16 +2851,22 @@ class VictronChargeControllerCard extends LitElement {
 
   _renderHelpDialog(view, viewTitle) {
     if (!this._helpOpen) return nothing;
-    const sections = HELP_TEXT[view];
+    const topic = this._helpTopic;
+    const content = topic ? SETTINGS_HELP[topic.key] : null;
+    const sections = content
+      ? (typeof content[0] === 'string' ? [{ heading: 'How it works', items: content }] : content)
+      : HELP_TEXT[view];
+    const title = topic ? topic.label : `Help – ${viewTitle}`;
+    const limits = topic?.unit != null ? this._sliderLimits(topic.key) : null;
     return html`
       <div
         class="vcc-help-overlay"
         role="presentation"
         @click=${(e) => { if (e.target === e.currentTarget) this._closeHelp(); }}
       >
-        <div class="vcc-help-dialog" role="dialog" aria-modal="true" aria-label="Help">
+        <div class="vcc-help-dialog" role="dialog" aria-modal="true" aria-label=${title}>
           <div class="vcc-help-header">
-            <span class="vcc-help-title">Help – ${viewTitle}</span>
+            <span class="vcc-help-title">${title}</span>
             <button
               class="vcc-help-close"
               type="button"
@@ -2715,6 +2877,16 @@ class VictronChargeControllerCard extends LitElement {
             </button>
           </div>
           <div class="vcc-help-body">
+            ${limits ? html`
+              <section class="vcc-help-section">
+                <h4 class="vcc-help-heading">Allowed range</h4>
+                <dl class="vcc-help-limits">
+                  ${[['Minimum', limits.min], ['Maximum', limits.max], ['Step', limits.step]].map(([label, value]) => html`
+                    <div><dt>${label}</dt><dd>${value}${topic.unit.trim() ? ` ${topic.unit.trim()}` : ''}</dd></div>
+                  `)}
+                </dl>
+              </section>
+            ` : nothing}
             ${sections.map(section => html`
               <section class="vcc-help-section">
                 <h4 class="vcc-help-heading">${section.heading}</h4>
@@ -2815,6 +2987,7 @@ class VictronChargeControllerCard extends LitElement {
         animation: vcc-help-fade .15s ease-out;
       }
       .vcc-help-dialog {
+        box-sizing: border-box;
         background: var(--vcc-bg);
         color: var(--vcc-text);
         border-radius: 10px;
@@ -2858,6 +3031,27 @@ class VictronChargeControllerCard extends LitElement {
       }
       .vcc-help-list li { font-size: 0.92em; }
       .vcc-help-list li::marker { color: var(--vcc-text2); }
+      .vcc-help-limits { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; }
+      .vcc-help-limits dt { color: var(--vcc-text2); font-size: 0.85em; }
+      .vcc-help-limits dd { margin: 2px 0 0; font-weight: 600; }
+      .setting-help-label, .setting-help-icon {
+        background: none; border: 0; cursor: pointer; font-family: inherit;
+        color: var(--vcc-help-color, #039be5);
+      }
+      .setting-help-label {
+        padding: 2px 0; text-align: left; border-radius: 2px;
+      }
+      .setting-help-label:hover { text-decoration: underline; text-underline-offset: 3px; }
+      .setting-help-icon {
+        display: inline-flex; align-items: center; justify-content: center;
+        flex: 0 0 auto; padding: 4px; border-radius: 50%;
+      }
+      .setting-help-icon ha-icon { --mdc-icon-size: 20px; }
+      .setting-help-icon:hover { background: rgba(3,155,229,0.12); }
+      .setting-help-label:focus-visible, .setting-help-icon:focus-visible,
+      .vcc-help-close:focus-visible, .help-btn:focus-visible {
+        outline: 2px solid var(--vcc-help-color, #039be5); outline-offset: 3px;
+      }
       @keyframes vcc-help-fade { from { opacity: 0; } to { opacity: 1; } }
       @keyframes vcc-help-pop  { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
@@ -2902,6 +3096,9 @@ class VictronChargeControllerCard extends LitElement {
       .control-label {
         font-size: 0.88em; color: var(--vcc-text); flex-shrink: 0;
         width: 180px;
+      }
+      .control-label.setting-help-label, .blocked-label.setting-help-label {
+        color: var(--vcc-help-color, #039be5);
       }
       .control-row.slider-row > .control-label {
         width: auto;
