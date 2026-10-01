@@ -64,7 +64,7 @@ const HELP_TEXT = {
         ],
         [
           { text: 'Discharge', bold: true },
-          { text: ' exports battery power to the grid at the configured Discharge Power down to the Min SOC limit. With the optional solar surplus sensor configured, the measured surplus is exported on top, and at Min SOC the discharge degrades to solar-only export until the battery refills past Min SOC + hysteresis; without the sensor discharge stops completely at Min SOC.' },
+          { text: ' exports battery power plus the optional 15-minute averaged solar surplus until Min SOC is reached. At Min SOC it switches to surplus-only export; at Min SOC minus SOC Hysteresis (at least 0%) it stops and applies the Idle Setpoint without the action confirmation delay. Surplus-only resumes at Min SOC, and full discharge resumes strictly above Min SOC plus SOC Hysteresis. Averaged surplus can exceed available solar power and temporarily draw from the battery. After restart, discharge starts stopped below Min SOC, surplus-only through the upper threshold, and full above it. Without a surplus sensor, discharge stops at Min SOC and resumes above the upper threshold. With zero hysteresis, discharge stops at or below Min SOC and runs at full power above it. Stopping does not disable other battery flows managed by Victron.' },
         ],
         [
           { text: 'PV Charge', bold: true },

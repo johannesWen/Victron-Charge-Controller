@@ -175,6 +175,7 @@ class ChargeControlData:
     solar_surplus_mean: float | None = None
     solar_surplus_window_samples: int = 0
     discharge_solar_only: bool = False
+    discharge_blocked_by_soc: bool = False
 
 
 class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
@@ -226,7 +227,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.max_soc: float = DEFAULT_MAX_SOC
         self.soc_hysteresis: float = DEFAULT_SOC_HYSTERESIS
         self._charge_blocked_by_soc: bool = False
-        self._discharge_blocked_by_soc: bool = False
+        # Conservative startup: release each discharge latch only once
+        # its recovery threshold has been observed with a valid SOC.
+        self._discharge_blocked_by_soc: bool = True
         self.charge_power: float = DEFAULT_CHARGE_POWER
         self.discharge_power: float = DEFAULT_DISCHARGE_POWER
         self.idle_setpoint: float = DEFAULT_IDLE_SETPOINT
@@ -268,7 +271,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # --- Solar surplus tracking (optional) ---
         self._solar_samples: deque[tuple[datetime, float]] = deque(maxlen=64)
         self._solar_surplus_mean: float | None = None
-        self._discharge_solar_only: bool = False
+        self._discharge_solar_only: bool = True
 
         # --- Schedule state ---
         # Charge/discharge are date-aware: list of (date_iso, hour) tuples
@@ -1263,6 +1266,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             live_action,
             control_mode=self.control_mode,
             action_confirm_seconds=self.action_confirm_seconds,
+            discharge_blocked_by_soc=self._discharge_blocked_by_soc,
             state=DebounceState(
                 last_published_action=self._last_published_action,
                 pending_action=self._pending_action,
@@ -1306,7 +1310,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         how close the previous value is. Without this, a transition from
         PV-Charging (or any other state) to Idle could leave the entity
         holding the old setpoint whenever the difference falls within
-        ``setpoint_deadband``.
+        ``setpoint_deadband``. Surplus-only discharge also bypasses the
+        deadband whenever the device is requesting more export than the
+        protected target, including a retry after device unavailability.
         """
         def _log(current: float, target: float) -> None:
             _LOGGER.info(
@@ -1325,6 +1331,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             action=action,
             last_applied_setpoint=self._last_applied_setpoint,
             setpoint_deadband=self.setpoint_deadband,
+            enforce_export_limit=action == ACTION_DISCHARGE and self._discharge_solar_only,
             on_log=_log,
         )
 
@@ -1595,6 +1602,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             solar_surplus_mean=self._solar_surplus_mean,
             solar_surplus_window_samples=len(self._solar_samples),
             discharge_solar_only=self._discharge_solar_only,
+            discharge_blocked_by_soc=self._discharge_blocked_by_soc,
         )
 
     # ------------------------------------------------------------------

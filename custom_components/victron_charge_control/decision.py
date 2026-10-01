@@ -49,17 +49,12 @@ def update_soc_hysteresis(
 ) -> SocHysteresisState:
     """Update SOC hysteresis blocked flags (Schmitt-trigger style).
 
-    All three flags are latched: once a limit is reached the flag stays
-    set until the SOC moves a full ``hysteresis`` margin *back* across
-    the threshold. This prevents ±1% sensor jitter near the SOC
-    boundaries from flapping the desired action and grid setpoint.
-
-    Discharge behavior: the battery is discharged at full power until
-    ``min_soc`` is reached. Below ``min_soc`` the discharge degrades to
-    a solar-surplus-only export (setpoint ``-surplus``, the battery is
-    not drained further and can refill from PV) when the optional solar
-    surplus sensor is configured. Without the sensor the discharge is
-    blocked entirely, as before.
+    Full discharge changes to surplus-only at ``min_soc`` and resumes
+    strictly above ``min_soc + hysteresis``. With a surplus sensor,
+    export stops at ``max(0, min_soc - hysteresis)`` and can resume at
+    ``min_soc``. Without that sensor it stops at ``min_soc`` and resumes
+    strictly above the upper threshold. The lower cutoff takes priority
+    when hysteresis is zero. Flags retain their values between thresholds.
     """
     if soc >= max_soc:
         charge_blocked = True
@@ -68,9 +63,10 @@ def update_soc_hysteresis(
     else:
         charge_blocked = state.charge_blocked_by_soc
 
-    if soc <= min_soc and not has_solar_surplus:
+    stop_soc = max(0.0, min_soc - hysteresis) if has_solar_surplus else min_soc
+    if soc <= stop_soc:
         discharge_blocked = True
-    elif soc > min_soc + hysteresis:
+    elif (has_solar_surplus and soc >= min_soc) or soc > min_soc + hysteresis:
         discharge_blocked = False
     else:
         discharge_blocked = state.discharge_blocked_by_soc
@@ -230,15 +226,24 @@ def resolve_published_action(
     action_confirm_seconds: float,
     state: DebounceState,
     now: datetime,
+    discharge_blocked_by_soc: bool = False,
 ) -> DebounceResult:
     """Apply the action-change debounce to a live decision-engine result.
 
     A new ``live_action`` must persist for ``action_confirm_seconds``
     before it replaces the currently published one. MODE_OFF bypasses
-    the debounce and forces ``ACTION_IDLE`` immediately. The first ever
-    call also publishes immediately (no prior state to confirm against).
+    the debounce and forces ``ACTION_IDLE`` immediately. SOC-blocked
+    discharge also stops immediately and clears pending transitions.
+    The first call also publishes immediately (no prior state to confirm
+    against).
     """
-    if control_mode == MODE_OFF:
+    if control_mode == MODE_OFF or (
+        discharge_blocked_by_soc
+        and (
+            live_action == ACTION_DISCHARGE
+            or state.last_published_action == ACTION_DISCHARGE
+        )
+    ):
         return DebounceResult(
             published_action=ACTION_IDLE,
             state=DebounceState(

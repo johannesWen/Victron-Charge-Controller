@@ -46,7 +46,8 @@ the system from dashboards or automations.
 - **Force modes** immediately apply the configured charge or discharge power.
 - **SOC protection** respects minimum and maximum battery limits, including hysteresis.
 - **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
-- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint, and discharges at full power until the battery reaches its Min SOC. At Min SOC the discharge degrades to a solar-only export (only the measured surplus is fed in, the battery is not drained further and can refill from PV); full discharge power resumes once the SOC recovers past Min SOC + hysteresis. Without the sensor, discharge stops completely at Min SOC and resumes after the same hysteresis margin.
+- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint. Full discharge switches to surplus-only export at Min SOC. At or below `max(0, Min SOC − SOC Hysteresis)`, discharge stops and the configured Idle Setpoint is applied immediately on the next control update, without the action confirmation delay. Surplus-only export resumes at Min SOC; full discharge resumes strictly above Min SOC + SOC Hysteresis and then continues down to Min SOC again. The averaged surplus can temporarily exceed available solar power and draw from the battery, which is why the lower cutoff is needed. Without the sensor, discharge stops at Min SOC and resumes strictly above Min SOC + SOC Hysteresis.
+- **Conservative discharge startup** starts stopped below Min SOC, surplus-only from Min SOC through Min SOC + SOC Hysteresis, and at full discharge above that upper threshold. Without a surplus sensor it stays stopped until the upper threshold is exceeded. With zero hysteresis, discharge stops at or below Min SOC and can run at full power above it. Stopping uses the configured Idle Setpoint; it does not disable other battery flows managed by Victron.
 - **PV charging** charges the battery from solar surplus without importing from the grid, splitting surplus between battery and export according to a configurable share. PV charging is independent of the **Charge Allowed** switch and of blocked charging hours — it never draws from the grid, so it can stay active even when grid charging is disabled.
 - **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
 - **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts. The full charge/discharge plan (charge/discharge/pv_charge slots, blocked hours, last update) is also persisted and reloaded on restart — and a restart in auto mode does **not** trigger a replan, so the plan you set up the night before survives HA reboots untouched.
@@ -185,7 +186,7 @@ You can change these entities later from the integration options flow.
 | Grid Energy Import | Sensor | Cumulative tracked grid import in kWh. |
 | Grid Energy Export | Sensor | Cumulative tracked grid export in kWh. |
 | Solar Surplus Mean (15 min) | Sensor | Sliding 15-minute mean of the configured solar surplus sensor in watts. Unavailable when no sensor is configured. |
-| Solar Surplus Mode | Sensor | `normal` while the discharge setpoint combines battery and solar, `solar_only` when the SOC is near the lower boundary and only solar surplus is exported. |
+| Solar Surplus Mode | Sensor | SOC discharge stage: `normal` permits battery power plus surplus, `solar_only` permits only averaged surplus, and `blocked` stops discharge until SOC recovers. The Desired Action sensor indicates whether discharge is actually requested by the current mode and schedule. |
 
 ## Services
 
@@ -206,7 +207,7 @@ You can change these entities later from the integration options flow.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| Min SOC | 10% | Battery is not intentionally discharged below this level. |
+| Min SOC | 10% | Full discharge changes to surplus-only here; surplus-only stops at Min SOC − SOC Hysteresis (at least 0%). Without a surplus sensor, discharge stops here. |
 | Max SOC | 95% | Battery is not intentionally charged above this level. |
 | SOC Hysteresis | 2% | Buffer used before leaving SOC boundary protection. |
 | Charge Power | 3000 W | Grid import power while charging. |

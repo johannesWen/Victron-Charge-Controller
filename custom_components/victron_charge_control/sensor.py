@@ -766,7 +766,7 @@ class SolarSurplusMeanSensor(VictronCCBaseSensor):
 
 
 class SolarSurplusStatusSensor(VictronCCBaseSensor):
-    """Sensor showing whether the discharge setpoint is currently using the solar-only mode."""
+    """Sensor showing the SOC discharge stage: normal, solar-only, or blocked."""
 
     _attr_translation_key = "solar_surplus_status"
     _attr_icon = "mdi:solar-power-variant"
@@ -786,12 +786,7 @@ class SolarSurplusStatusSensor(VictronCCBaseSensor):
     @callback
     def _handle_coordinator_update(self) -> None:
         data: ChargeControlData | None = self.coordinator.data
-        if data is None:
-            self._attr_native_value = "off"
-        else:
-            self._attr_native_value = (
-                "solar_only" if data.discharge_solar_only else "normal"
-            )
+        self._attr_native_value = self.native_value
         self._attr_extra_state_attributes = {
             "source_entity": self.coordinator.solar_surplus_entity,
             "solar_surplus_mean": (
@@ -806,4 +801,6 @@ class SolarSurplusStatusSensor(VictronCCBaseSensor):
         data = self.coordinator.data
         if data is None:
             return "off"
+        if data.discharge_blocked_by_soc:
+            return "blocked"
         return "solar_only" if data.discharge_solar_only else "normal"
