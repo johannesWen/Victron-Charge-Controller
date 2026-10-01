@@ -773,6 +773,8 @@ class TestSOCHysteresis:
     def test_discharge_runs_at_full_power_until_min_soc(self, mock_hass):
         """With a solar sensor, full discharge power is kept down to min_soc."""
         coord = self._make_solar_coordinator(mock_hass)
+        self._set_soc(coord, 12.1)
+        assert coord._determine_action() == ACTION_DISCHARGE
         self._set_soc(coord, 10.1)
         assert coord._determine_action() == ACTION_DISCHARGE
         assert coord._discharge_blocked_by_soc is False
@@ -787,7 +789,7 @@ class TestSOCHysteresis:
         assert coord._determine_action() == ACTION_DISCHARGE
         assert coord._discharge_blocked_by_soc is False
         assert coord._discharge_solar_only is True
-        # Battery is not drained further: only the solar surplus is exported
+        # Only the averaged solar surplus is requested for export.
         assert coord._compute_setpoint(ACTION_DISCHARGE) == -1500.0
 
     def test_solar_only_release_restores_full_power(self, mock_hass):
@@ -811,6 +813,8 @@ class TestSOCHysteresis:
         coordinator.discharge_allowed = True
         coordinator.min_soc = 10.0
         coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 12.1)
+        assert coordinator._determine_action() == ACTION_DISCHARGE
         self._set_soc(coordinator, 10.1)
         assert coordinator._determine_action() == ACTION_DISCHARGE
         self._set_soc(coordinator, 10.0)
@@ -1030,6 +1034,11 @@ class TestActionDebounce:
 
 class TestComputeSetpoint:
     """Tests for _compute_setpoint."""
+
+    @pytest.fixture(autouse=True)
+    def establish_normal_soc(self, coordinator):
+        """Setpoint arithmetic tests start with full discharge permitted."""
+        coordinator._update_soc_hysteresis(50.0)
 
     def test_charge_setpoint(self, coordinator):
         coordinator.charge_power = 3000.0

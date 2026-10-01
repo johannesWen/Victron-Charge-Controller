@@ -100,6 +100,7 @@
         "state": {
           "normal": "Normal Discharge",
           "solar_only": "Solar Only",
+          "blocked": "Blocked by SOC",
           "off": "Off"
         }
       },
