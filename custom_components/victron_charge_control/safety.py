@@ -15,13 +15,12 @@ from typing import Any
 def check_safety(hass: Any, critical_entities: list[str]) -> bool:
     """Return True when every critical entity reports a real state.
 
-    Returns False as soon as one critical entity is explicitly
-    ``"unavailable"`` or ``"unknown"`` — an unconfigured entity
-    (state is None) is not treated as unavailable.
+    Returns False as soon as one configured critical entity is missing
+    or reports ``"unavailable"`` or ``"unknown"``.
     """
     for entity_id in critical_entities:
         state = hass.states.get(entity_id)
-        if state is not None and state.state in ("unavailable", "unknown"):
+        if state is None or state.state in ("unavailable", "unknown"):
             return False
     return True
 
