@@ -140,6 +140,15 @@ During setup, select the entities that connect this integration to your Victron 
 
 You can change these entities later from the integration options flow.
 
+The options flow also provides a **Safety watchdog grace period** (default
+90 seconds, configurable from 0–600 seconds). During this startup window,
+missing, unknown, or unavailable battery SOC and grid setpoint entities do not
+switch the restored control mode to OFF. Grace ends early once both entities
+report real states. After grace ends, a missing, unknown, or unavailable
+critical entity triggers the safety stop and notification. Set the period to
+`0` to disable startup grace. The window begins when the integration's
+coordinator is created, including on integration reloads.
+
 ## Entity Reference
 
 | Entity | Platform | Description |
