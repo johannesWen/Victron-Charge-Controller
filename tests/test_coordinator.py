@@ -773,6 +773,8 @@ class TestSOCHysteresis:
     def test_discharge_runs_at_full_power_until_min_soc(self, mock_hass):
         """With a solar sensor, full discharge power is kept down to min_soc."""
         coord = self._make_solar_coordinator(mock_hass)
+        self._set_soc(coord, 12.1)
+        assert coord._determine_action() == ACTION_DISCHARGE
         self._set_soc(coord, 10.1)
         assert coord._determine_action() == ACTION_DISCHARGE
         assert coord._discharge_blocked_by_soc is False
@@ -787,7 +789,7 @@ class TestSOCHysteresis:
         assert coord._determine_action() == ACTION_DISCHARGE
         assert coord._discharge_blocked_by_soc is False
         assert coord._discharge_solar_only is True
-        # Battery is not drained further: only the solar surplus is exported
+        # Only the averaged solar surplus is requested for export.
         assert coord._compute_setpoint(ACTION_DISCHARGE) == -1500.0
 
     def test_solar_only_release_restores_full_power(self, mock_hass):
@@ -811,6 +813,8 @@ class TestSOCHysteresis:
         coordinator.discharge_allowed = True
         coordinator.min_soc = 10.0
         coordinator.soc_hysteresis = 2.0
+        self._set_soc(coordinator, 12.1)
+        assert coordinator._determine_action() == ACTION_DISCHARGE
         self._set_soc(coordinator, 10.1)
         assert coordinator._determine_action() == ACTION_DISCHARGE
         self._set_soc(coordinator, 10.0)
@@ -1030,6 +1034,11 @@ class TestActionDebounce:
 
 class TestComputeSetpoint:
     """Tests for _compute_setpoint."""
+
+    @pytest.fixture(autouse=True)
+    def establish_normal_soc(self, coordinator):
+        """Setpoint arithmetic tests start with full discharge permitted."""
+        coordinator._update_soc_hysteresis(50.0)
 
     def test_charge_setpoint(self, coordinator):
         coordinator.charge_power = 3000.0
@@ -1785,10 +1794,10 @@ class TestSafetyWatchdog:
         coordinator.hass.states.get.side_effect = side_effect
         assert coordinator._check_safety() is False
 
-    def test_safe_when_entity_missing(self, coordinator):
-        """If entity doesn't exist (None), it's not marked unavailable."""
+    def test_unsafe_when_entity_missing(self, coordinator):
+        """A configured critical entity must report a real state."""
         coordinator.hass.states.get.return_value = None
-        assert coordinator._check_safety() is True
+        assert coordinator._check_safety() is False
 
 
 class TestSafetyStartupGrace:
@@ -1828,6 +1837,82 @@ class TestSafetyStartupGrace:
 
         assert coord.safety_startup_grace_seconds == 0
         assert coord._safety_startup_deadline is None
+
+    @pytest.mark.parametrize("entity_id", ["sensor.battery_soc", "number.grid_setpoint"])
+    async def test_missing_entity_retains_grace_until_ready(self, coordinator, entity_id):
+        """Startup recovery preserves auto; later unavailability stops it."""
+        now = datetime(2026, 4, 28, tzinfo=timezone.utc)
+        deadline = now + timedelta(seconds=90)
+        coordinator._safety_startup_deadline = deadline
+        coordinator.control_mode = MODE_AUTO
+        states = {
+            "sensor.battery_soc": MockState("50"),
+            "number.grid_setpoint": MockState("0"),
+        }
+        coordinator.hass.states.get.side_effect = states.get
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.dt_util.now",
+            return_value=now,
+        ) as mock_now:
+            for seconds, state in [(0, None), (30, MockState("unavailable"))]:
+                mock_now.return_value = now + timedelta(seconds=seconds)
+                states[entity_id] = state
+                await coordinator._step_safety()
+                assert coordinator.control_mode == MODE_AUTO
+                assert coordinator._safety_startup_deadline == deadline
+                coordinator.hass.services.async_call.assert_not_called()
+
+            mock_now.return_value = now + timedelta(seconds=60)
+            states[entity_id] = MockState("50")
+            await coordinator._step_safety()
+            assert coordinator.control_mode == MODE_AUTO
+            assert coordinator._safety_startup_deadline is None
+            coordinator.hass.services.async_call.assert_not_called()
+
+            mock_now.return_value = now + timedelta(seconds=61)
+            states[entity_id] = MockState("unavailable")
+            await coordinator._step_safety()
+            await coordinator._step_safety()
+
+        assert coordinator.control_mode == MODE_OFF
+        coordinator.hass.services.async_call.assert_called_once()
+        assert coordinator.hass.services.async_call.call_args.args[:2] == (
+            "persistent_notification", "create",
+        )
+
+    @pytest.mark.parametrize("entity_id", ["sensor.battery_soc", "number.grid_setpoint"])
+    @pytest.mark.parametrize("deadline_offset", [None, 0, -1])
+    async def test_missing_entity_trips_watchdog_without_grace(
+        self, coordinator, entity_id, deadline_offset,
+    ):
+        """Missing entities stop control when grace is disabled or expired."""
+        now = datetime(2026, 4, 28, tzinfo=timezone.utc)
+        coordinator._safety_startup_deadline = (
+            now + timedelta(seconds=deadline_offset)
+            if deadline_offset is not None else None
+        )
+        coordinator.control_mode = MODE_AUTO
+        states = {
+            "sensor.battery_soc": MockState("50"),
+            "number.grid_setpoint": MockState("0"),
+        }
+        states[entity_id] = None
+        coordinator.hass.states.get.side_effect = states.get
+
+        with patch(
+            "custom_components.victron_charge_control.coordinator.dt_util.now",
+            return_value=now,
+        ):
+            await coordinator._step_safety()
+            await coordinator._step_safety()
+
+        assert coordinator.control_mode == MODE_OFF
+        assert coordinator._safety_startup_deadline is None
+        coordinator.hass.services.async_call.assert_called_once()
+        assert coordinator.hass.services.async_call.call_args.args[:2] == (
+            "persistent_notification", "create",
+        )
 
     @pytest.mark.asyncio
     async def test_first_safe_tick_clears_grace_deadline(self, coordinator):

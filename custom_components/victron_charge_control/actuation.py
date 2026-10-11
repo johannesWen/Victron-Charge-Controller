@@ -45,13 +45,15 @@ async def apply_setpoint(
     action: str | None,
     last_applied_setpoint: float | None,
     setpoint_deadband: float,
+    enforce_export_limit: bool = False,
     on_log: Any = None,
 ) -> float | None:
     """Write the target setpoint to the grid setpoint entity.
 
     Returns the new ``last_applied_setpoint`` (equal to the input when
     the call was skipped, or ``target_setpoint`` after a successful
-    write).
+    write). With ``enforce_export_limit``, reducing an excessive export
+    request bypasses the deadband so SOC protection reaches the device.
     """
     state = hass.states.get(entity_id)
     if state is None or state.state in ("unavailable", "unknown"):
@@ -68,6 +70,7 @@ async def apply_setpoint(
 
     if (
         action != ACTION_IDLE
+        and not (enforce_export_limit and current < target_setpoint)
         and last_applied_setpoint is not None
         and abs(target_setpoint - current) <= setpoint_deadband
     ):

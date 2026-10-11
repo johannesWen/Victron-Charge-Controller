@@ -31,7 +31,7 @@
       --disabled-color: #666;
     }
     .toolbar {
-      display: flex; gap: 8px; margin-bottom: 16px; align-items: center;
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center;
     }
     .toolbar button {
       padding: 6px 14px; border: 1px solid #ccc; border-radius: 6px;
@@ -52,6 +52,13 @@
 <body>
   <div class="toolbar">
     <button id="toggleTheme">Toggle Dark/Light</button>
+    <label>View:
+      <select id="viewSelect">
+        <option value="settings">Settings</option>
+        <option value="plan" selected>Plan</option>
+        <option value="history">History</option>
+      </select>
+    </label>
     <label>Mode:
       <select id="modeSelect">
         <option value="off">Off</option>
@@ -211,12 +218,15 @@
       [e('switch','charge_allowed')]:           { state: 'on', attributes: {} },
       [e('switch','discharge_allowed')]:        { state: 'on', attributes: {} },
       [e('switch','grid_feed_in_control')]:     { state: 'on', attributes: {} },
+      [e('switch','control_dc_coupled_feed_in')]: { state: 'off', attributes: {} },
       // numbers – charge/discharge
       [e('number','charge_power')]:             { state: '2500', attributes: { min: 0, max: 5000, step: 100 } },
       [e('number','discharge_power')]:          { state: '1500', attributes: { min: 0, max: 5000, step: 100 } },
+      [e('number','pv_charging_battery_share')]: { state: '50', attributes: { min: 0, max: 100, step: 1 } },
       // numbers – battery
       [e('number','min_soc')]:                  { state: '20', attributes: { min: 0, max: 100, step: 1 } },
       [e('number','max_soc')]:                  { state: '90', attributes: { min: 0, max: 100, step: 1 } },
+      [e('number','soc_hysteresis')]:           { state: '2', attributes: { min: 0, max: 20, step: 1 } },
       // numbers – grid
       [e('number','idle_setpoint')]:            { state: '50', attributes: { min: -5000, max: 5000, step: 10 } },
       [e('number','min_grid_setpoint')]:        { state: '-3000', attributes: { min: -5000, max: 0, step: 100 } },
@@ -359,6 +369,9 @@
     document.getElementById('cardContainer').appendChild(card);
 
     // ── Toolbar controls ────────────────────────
+    document.getElementById('viewSelect').addEventListener('change', (ev) => {
+      card.setConfig({ ...card.config, view: ev.target.value });
+    });
     document.getElementById('toggleTheme').addEventListener('click', () => {
       document.body.classList.toggle('dark');
     });

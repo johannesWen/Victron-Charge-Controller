@@ -47,11 +47,59 @@ the system from dashboards or automations.
 - **Force modes** immediately apply the configured charge or discharge power.
 - **SOC protection** respects minimum and maximum battery limits, including hysteresis.
 - **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
-- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint, and discharges at full power until the battery reaches its Min SOC. At Min SOC the discharge degrades to a solar-only export (only the measured surplus is fed in, the battery is not drained further and can refill from PV); full discharge power resumes once the SOC recovers past Min SOC + hysteresis. Without the sensor, discharge stops completely at Min SOC and resumes after the same hysteresis margin.
+- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint. Full discharge switches to surplus-only export at Min SOC. At or below `max(0, Min SOC − SOC Hysteresis)`, discharge stops and the configured Idle Setpoint is applied immediately on the next control update, without the action confirmation delay. Surplus-only export resumes at Min SOC; full discharge resumes strictly above Min SOC + SOC Hysteresis and then continues down to Min SOC again. The averaged surplus can temporarily exceed available solar power and draw from the battery, which is why the lower cutoff is needed. Without the sensor, discharge stops at Min SOC and resumes strictly above Min SOC + SOC Hysteresis.
+- **Conservative discharge startup** starts stopped below Min SOC, surplus-only from Min SOC through Min SOC + SOC Hysteresis, and at full discharge above that upper threshold. Without a surplus sensor it stays stopped until the upper threshold is exceeded. With zero hysteresis, discharge stops at or below Min SOC and can run at full power above it. Stopping uses the configured Idle Setpoint; it does not disable other battery flows managed by Victron.
 - **PV charging** charges the battery from solar surplus without importing from the grid, splitting surplus between battery and export according to a configurable share. PV charging is independent of the **Charge Allowed** switch and of blocked charging hours — it never draws from the grid, so it can stay active even when grid charging is disabled.
 - **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
 - **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts. The full charge/discharge plan (charge/discharge/pv_charge slots, blocked hours, last update) is also persisted and reloaded on restart — and a restart in auto mode does **not** trigger a replan, so the plan you set up the night before survives HA reboots untouched.
 - **Service API** exposes schedule manipulation for dashboards, scripts, and automations.
+
+## Requirements
+
+| Component | Purpose |
+| --- | --- |
+| Home Assistant | Runs the custom integration and exposes entities/services. |
+| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC, writable ESS grid setpoint and Victron telemetry. |
+| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly day-ahead electricity prices. |
+
+The config flow requires a battery SOC sensor, writable grid setpoint number, EPEX Spot price sensor, and writable max grid feed-in number. Grid import/export energy sensors are optional and enable cost and energy tracking.
+
+## Installation
+
+### HACS
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=johannesWen&repository=Victron-Charge-Controller&category=integration)
+
+1. Search for **Victron Charge Control** in HACS and install it.
+2. Restart Home Assistant after installation completes.
+3. Go to **Settings** > **Devices & Services** > **Add Integration** and search for **Victron Charge Control**.
+4. Complete the setup flow.
+
+## Setup
+
+During setup, select the entities that connect this integration to your Victron and price data:
+
+| Field | Required | Description | HA Entity |
+| --- | --- | --- | --- |
+| Battery SOC sensor | Yes | Battery state of charge in percent. | GX Device - DC battery charge |
+| Grid setpoint entity | Yes | Writable ESS grid setpoint in watts. | GX Device - AC power setpoint |
+| EPEX Spot price sensor | Yes | Hourly electricity price data. | EPEX Spot Data - Market Price |
+| Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. | GX Device - ESS max feed-in power |
+| Grid consumption energy sensor | No | Cumulative grid import meter in kWh. | - |
+| Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. | - |
+| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export, and lets the discharge degrade to a solar-only export at Min SOC instead of stopping. | - |
+| DC coupled PV feed in switch | No | Control the DC coupled PV feed in when in reduced mode. | GX Device - DC-coupled PV - feed in excess |
+
+You can change these entities later from the integration options flow.
+
+The options flow also provides a **Safety watchdog grace period** (default
+90 seconds, configurable from 0–600 seconds). During this startup window,
+missing, unknown, or unavailable battery SOC and grid setpoint entities do not
+switch the restored control mode to OFF. Grace ends early once both entities
+report real states. After grace ends, a missing, unknown, or unavailable
+critical entity triggers the safety stop and notification. Set the period to
+`0` to disable startup grace. The window begins when the integration's
+coordinator is created, including on integration reloads.
 
 ## Dashboard Card
 
@@ -85,60 +133,6 @@ view: settings
 | Settings | Plan | History |
 | :---: | :---: | :---: |
 | ![Settings card screenshot](assets/screenshots/settings_card.png) | ![Plan card screenshot](assets/screenshots/plan_card.png) | ![History card screenshot](assets/screenshots/costs_card.png) |
-
-> **Upgrading from the standalone dashboard repo?** Earlier releases shipped
-> the card as a separate HACS "Dashboard" repository
-> (`Victron-Charge-Controller-Dashboard`). That repository is now deprecated.
-> Remove the old `/local/victron-charge-controller-card.js` Lovelace resource
-> and update this integration to `>= 2.0.0` — the card comes bundled.
-
-> **After updating the integration** (via HACS or manually), **restart Home
-> Assistant** before using new card features. The card is served fresh, but
-> the loaded Python code only changes on restart; a card newer than the
-> integration would silently fail its service calls. The card detects this
-> and shows a warning plus the failing service in the browser console.
->
-> Entity ids are resolved robustly: if Home Assistant's entity registry had
-> to suffix the generated id (for example `sensor.victron_charge_control_fixed_plans_2`
-> because the preferred id was taken by a leftover entity), the card finds
-> and uses the suffixed variant automatically.
-
-## Requirements
-
-| Component | Purpose |
-| --- | --- |
-| Home Assistant | Runs the custom integration and exposes entities/services. |
-| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC, writable ESS grid setpoint and Victron telemetry. |
-| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly day-ahead electricity prices. |
-
-The config flow requires a battery SOC sensor, writable grid setpoint number, EPEX Spot price sensor, and writable max grid feed-in number. Grid import/export energy sensors are optional and enable cost and energy tracking.
-
-## Installation
-
-### HACS
-
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=johannesWen&repository=Victron-Charge-Controller&category=integration)
-
-1. Search for **Victron Charge Control** in HACS and install it.
-2. Restart Home Assistant after installation completes.
-3. Go to **Settings** > **Devices & Services** > **Add Integration** and search for **Victron Charge Control**.
-4. Complete the setup flow.
-
-## Setup
-
-During setup, select the entities that connect this integration to your Victron and price data:
-
-| Field | Required | Description |
-| --- | --- | --- |
-| Battery SOC sensor | Yes | Battery state of charge in percent. |
-| Grid setpoint entity | Yes | Writable ESS grid setpoint in watts. |
-| EPEX Spot price sensor | Yes | Hourly electricity price data. |
-| Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. |
-| Grid consumption energy sensor | No | Cumulative grid import meter in kWh. |
-| Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. |
-| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export, and lets the discharge degrade to a solar-only export at Min SOC instead of stopping. |
-
-You can change these entities later from the integration options flow.
 
 ## Entity Reference
 
@@ -186,7 +180,7 @@ You can change these entities later from the integration options flow.
 | Grid Energy Import | Sensor | Cumulative tracked grid import in kWh. |
 | Grid Energy Export | Sensor | Cumulative tracked grid export in kWh. |
 | Solar Surplus Mean (15 min) | Sensor | Sliding 15-minute mean of the configured solar surplus sensor in watts. Unavailable when no sensor is configured. |
-| Solar Surplus Mode | Sensor | `normal` while the discharge setpoint combines battery and solar, `solar_only` when the SOC is near the lower boundary and only solar surplus is exported. |
+| Solar Surplus Mode | Sensor | SOC discharge stage: `normal` permits battery power plus surplus, `solar_only` permits only averaged surplus, and `blocked` stops discharge until SOC recovers. The Desired Action sensor indicates whether discharge is actually requested by the current mode and schedule. |
 
 ## Services
 
@@ -207,7 +201,7 @@ You can change these entities later from the integration options flow.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| Min SOC | 10% | Battery is not intentionally discharged below this level. |
+| Min SOC | 10% | Full discharge changes to surplus-only here; surplus-only stops at Min SOC − SOC Hysteresis (at least 0%). Without a surplus sensor, discharge stops here. |
 | Max SOC | 95% | Battery is not intentionally charged above this level. |
 | SOC Hysteresis | 2% | Buffer used before leaving SOC boundary protection. |
 | Charge Power | 3000 W | Grid import power while charging. |
@@ -272,215 +266,6 @@ Cost tracking is optional and requires cumulative grid import and grid export en
 - Positive prices add grid consumption to cost and grid feed-in to revenue.
 - Negative prices add grid consumption to revenue and grid feed-in to cost.
 - Taxes, fixed fees, grid fees, and provider markups are not included.
-
-## Home Assistant Entities
-
-![](assets/entities.png)
-
-<details>
-<summary>Show dashboard YAML</summary>
-
-```yaml
-  - type: sections
-    max_columns: 4
-    title: ESS
-    path: ess
-    icon: mdi:home-battery
-    subview: true
-    sections:
-      - type: grid
-        cards:
-          - type: heading
-            heading: Enable
-            heading_style: title
-          - type: tile
-            entity: switch.victron_charge_control_charge_allowed
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: switch.victron_charge_control_discharge_allowed
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: select.victron_charge_control_control_mode
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: heading
-            heading: Grid Feed In Control
-            heading_style: title
-          - type: tile
-            entity: switch.victron_charge_control_grid_feed_in_control
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_grid_feed_in_price_threshold
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_default_max_grid_feed_in
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_reduced_max_grid_feed_in
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: heading
-            heading: Inputs
-            heading_style: title
-          - type: tile
-            entity: number.victron_charge_control_charge_power
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_discharge_power
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_charge_price_threshold
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_discharge_price_threshold
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_max_grid_setpoint
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_min_grid_setpoint
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_cheapest_hours_auto_charge
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_expensive_hours_auto_discharge
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_min_soc
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_max_soc
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: text.victron_charge_control_blocked_charging_hours
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: text.victron_charge_control_blocked_discharging_hours
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: number.victron_charge_control_idle_setpoint
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: button.victron_charge_control_recalculate_schedule
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-      - type: grid
-        cards:
-          - type: heading
-            heading: Sensors
-            heading_style: title
-          - type: tile
-            entity: sensor.victron_charge_control_charge_hours
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: sensor.victron_charge_control_discharge_hours
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: sensor.victron_charge_control_target_setpoint
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: sensor.victron_charge_control_desired_action
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: sensor.victron_charge_control_blocked_charging_hours
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: sensor.victron_charge_control_blocked_discharging_hours
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: sensor.victron_charge_control_charge_plan
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-          - type: tile
-            entity: sensor.victron_charge_control_last_schedule_update
-            name:
-              type: entity
-            vertical: false
-            features_position: bottom
-```
-
-</details>
 
 ## Development
 
