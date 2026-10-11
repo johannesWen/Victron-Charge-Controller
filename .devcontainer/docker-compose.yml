@@ -1,0 +1,19 @@
+services:
+  devcontainer:
+    image: mcr.microsoft.com/devcontainers/python:3-3.14-bookworm
+    volumes:
+      # shortcut: only the checkout is mounted; add Git metadata mounts for linked-worktree Git support.
+      - .:/workspaces/victron-charge-controller:cached
+    command: sleep infinity
+    depends_on:
+      - homeassistant
+
+  homeassistant:
+    container_name: !reset null
+    ports: !override
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - homeassistant-data:/config
+
+volumes:
+  homeassistant-data:
