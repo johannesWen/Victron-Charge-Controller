@@ -33,6 +33,8 @@ template: |
 
   $CHANGES
 
+  [![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?style=flat-square&logo=kofi&logoColor=white)](https://ko-fi.com/yoschi777)
+
 autolabeler:
   - label: 'type-bug'
     branch:
