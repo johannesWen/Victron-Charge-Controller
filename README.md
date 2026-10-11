@@ -295,6 +295,12 @@ time by CI and included in the HACS release zip (`victron_charge_control.zip`).
 A Docker Compose stack is provided for testing the integration together with the
 bundled card against dummy Victron/EPEX entities.
 
+For an editor environment with Python, Node, and dependencies installed
+automatically, use **Dev Containers: Reopen in Container** in VS Code. It also
+onboards Home Assistant, configures Charge Control with dummy entities, and
+provides Settings, Plan, History, and Dev Controls dashboard tabs. See the
+[devcontainer setup](dev/README.md#using-the-devcontainer) for details.
+
 ```bash
 cd frontend && npm install && npm run build && cd ..
 docker compose up -d

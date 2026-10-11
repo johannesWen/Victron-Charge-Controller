@@ -1,12 +1,32 @@
 title: Victron Dashboard Dev
 views:
-  - title: Victron Charge Controller
-    path: victron
-    icon: mdi:solar-power-variant
+  - title: Settings
+    path: settings
     cards:
       - type: custom:victron-charge-controller-card
         entity_prefix: victron_charge_control
-        title: Victron Charge Control
+        view: settings
+        title: Charge Control Settings
+
+  - title: Plan
+    path: plan
+    cards:
+      - type: custom:victron-charge-controller-card
+        entity_prefix: victron_charge_control
+        view: plan
+        title: Charge Plan
+
+  - title: History
+    path: history
+    cards:
+      - type: custom:victron-charge-controller-card
+        entity_prefix: victron_charge_control
+        view: history
+        title: History
+
+  - title: Dev Controls
+    path: dev-controls
+    cards:
 
       # Helper cards to adjust dummy sensor values
       - type: entities
