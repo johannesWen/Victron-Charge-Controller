@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.victron_charge_control.config_flow import (
+    OPTIONAL_ENTITY_KEYS,
     VictronChargeControlConfigFlow,
     VictronChargeControlOptionsFlow,
 )
@@ -227,34 +228,99 @@ class TestOptionsFlow:
         assert kwargs["data"][CONF_DC_COUPLED_PV_FEED_IN_ENTITY] == "switch.dc_pv_feed_in"
 
     @pytest.mark.asyncio
-    async def test_clears_optional_cost_entities(self, options_flow):
-        options_flow._config_entry.data = dict(MOCK_CONFIG_DATA_WITH_COST)
-        user_input = {
-            **MOCK_CONFIG_DATA,
-            CONF_GRID_CONSUMPTION_ENTITY: "",
-            CONF_GRID_FEED_IN_ENERGY_ENTITY: "",
-            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
-        }
+    @pytest.mark.parametrize("optional_key", OPTIONAL_ENTITY_KEYS)
+    @pytest.mark.parametrize("blank", ["", None])
+    async def test_clears_blank_optional_entity(self, options_flow, optional_key, blank):
+        options_flow._config_entry.data = {**MOCK_CONFIG_DATA, optional_key: "sensor.old"}
 
-        await options_flow.async_step_init(user_input=user_input)
+        await options_flow.async_step_init({**MOCK_CONFIG_DATA, optional_key: blank})
 
-        _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
-        assert CONF_GRID_CONSUMPTION_ENTITY not in kwargs["data"]
-        assert CONF_GRID_FEED_IN_ENERGY_ENTITY not in kwargs["data"]
+        saved = options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        assert saved == MOCK_CONFIG_DATA
 
     @pytest.mark.asyncio
-    async def test_clears_dc_feed_in_entity(self, options_flow):
-        options_flow._config_entry.data = dict(MOCK_CONFIG_DATA_WITH_DC_FEED_IN)
-        user_input = {
-            **MOCK_CONFIG_DATA,
-            CONF_DC_COUPLED_PV_FEED_IN_ENTITY: "",
-            CONF_SAFETY_STARTUP_GRACE_SECONDS: DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+    @pytest.mark.parametrize(
+        "removed_keys", [(key,) for key in OPTIONAL_ENTITY_KEYS] + [OPTIONAL_ENTITY_KEYS]
+    )
+    async def test_cleared_selectors_stay_empty_after_reopening(
+        self, options_flow, removed_keys
+    ):
+        configured = {
+            **MOCK_CONFIG_DATA_WITH_COST,
+            **MOCK_CONFIG_DATA_WITH_SOLAR,
+            **MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
+        }
+        options_flow._config_entry.data = {**configured, "unrelated_setting": "preserved"}
+        await options_flow.async_step_init()
+        schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        for key in schema.schema:
+            if key in OPTIONAL_ENTITY_KEYS:
+                assert key.description["suggested_value"] == configured[key]
+
+        submitted = {
+            key: value for key, value in configured.items() if key not in removed_keys
+        }
+        submitted[CONF_BATTERY_SOC_ENTITY] = "sensor.new_soc"
+        submitted[CONF_SAFETY_STARTUP_GRACE_SECONDS] = 45
+        validated = schema(submitted)
+        assert all(key not in validated for key in removed_keys)
+        await options_flow.async_step_init(validated)
+
+        saved = options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        expected = {
+            key: value
+            for key, value in submitted.items()
+            if key != CONF_SAFETY_STARTUP_GRACE_SECONDS
+        }
+        assert saved == {**expected, "unrelated_setting": "preserved"}
+        assert options_flow.async_create_entry.call_args.kwargs["data"] == {
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
         }
 
-        await options_flow.async_step_init(user_input=user_input)
+        options_flow._config_entry.data = saved
+        await options_flow.async_step_init()
+        reopened_schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        for key in reopened_schema.schema:
+            if key in removed_keys:
+                assert not key.description.get("suggested_value")
+        assert all(key not in reopened_schema(submitted) for key in removed_keys)
 
-        _, kwargs = options_flow.hass.config_entries.async_update_entry.call_args
-        assert CONF_DC_COUPLED_PV_FEED_IN_ENTITY not in kwargs["data"]
+    @pytest.mark.asyncio
+    async def test_save_with_unconfigured_optional_entities(self, options_flow):
+        await options_flow.async_step_init()
+        schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        submitted = {**MOCK_CONFIG_DATA, CONF_BATTERY_SOC_ENTITY: "sensor.new_soc"}
+
+        await options_flow.async_step_init(schema(submitted))
+
+        saved = options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
+        assert saved == submitted
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "invalid_key", [CONF_BATTERY_SOC_ENTITY, CONF_SOLAR_SURPLUS_ENTITY]
+    )
+    async def test_validation_error_preserves_cleared_selection(
+        self, options_flow, invalid_key
+    ):
+        options_flow._config_entry.data = dict(MOCK_CONFIG_DATA_WITH_COST)
+        submitted = {**MOCK_CONFIG_DATA, invalid_key: "sensor.missing"}
+        options_flow.hass.states.get.side_effect = (
+            lambda entity_id: None if entity_id == "sensor.missing" else MockState("50")
+        )
+
+        await options_flow.async_step_init(submitted)
+
+        options_flow.hass.config_entries.async_update_entry.assert_not_called()
+        options_flow.async_create_entry.assert_not_called()
+        form = options_flow.async_show_form.call_args.kwargs
+        assert form["errors"] == {invalid_key: "entity_not_found"}
+        for key in form["data_schema"].schema:
+            if key in (CONF_GRID_CONSUMPTION_ENTITY, CONF_GRID_FEED_IN_ENERGY_ENTITY):
+                assert not key.description.get("suggested_value")
+        validated = form["data_schema"](submitted)
+        assert CONF_GRID_CONSUMPTION_ENTITY not in validated
+        assert CONF_GRID_FEED_IN_ENERGY_ENTITY not in validated
 
     @pytest.mark.asyncio
     async def test_grace_period_value_is_persisted_to_options(self, options_flow):

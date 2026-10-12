@@ -168,9 +168,15 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     for key, value in user_input.items()
                     if key != CONF_SAFETY_STARTUP_GRACE_SECONDS
                 }
+                # Cleared optional selectors are omitted from the submitted form.
+                current_data = {
+                    key: value
+                    for key, value in self._config_entry.data.items()
+                    if key not in OPTIONAL_ENTITY_KEYS
+                }
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
-                    data=_clean_entity_data({**self._config_entry.data, **data_update}),
+                    data=_clean_entity_data({**current_data, **data_update}),
                 )
                 # Options (e.g. grace period) are returned via async_create_entry
                 # so they land in entry.options rather than entry.data.
@@ -187,7 +193,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 )
 
         # Pre-fill with current values
-        current = self._config_entry.data
+        current = user_input if user_input is not None else self._config_entry.data
         current_options = self._config_entry.options
         schema = vol.Schema(
             {
@@ -217,25 +223,25 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 ),
                 vol.Optional(
                     CONF_GRID_CONSUMPTION_ENTITY,
-                    default=current.get(CONF_GRID_CONSUMPTION_ENTITY, ""),
+                    description={"suggested_value": current.get(CONF_GRID_CONSUMPTION_ENTITY)},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor"),
                 ),
                 vol.Optional(
                     CONF_GRID_FEED_IN_ENERGY_ENTITY,
-                    default=current.get(CONF_GRID_FEED_IN_ENERGY_ENTITY, ""),
+                    description={"suggested_value": current.get(CONF_GRID_FEED_IN_ENERGY_ENTITY)},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor"),
                 ),
                 vol.Optional(
                     CONF_SOLAR_SURPLUS_ENTITY,
-                    default=current.get(CONF_SOLAR_SURPLUS_ENTITY, ""),
+                    description={"suggested_value": current.get(CONF_SOLAR_SURPLUS_ENTITY)},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="power"),
                 ),
                 vol.Optional(
                     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
-                    default=current.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY, ""),
+                    description={"suggested_value": current.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY)},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="switch"),
                 ),
