@@ -2923,7 +2923,7 @@ class VictronChargeControllerCard extends LitElement {
         --vcc-info:     var(--info-color, #2196f3);
         --vcc-disabled: var(--disabled-color, #bdbdbd);
         --vcc-blocked-charging:    var(--success-color, #2e7d32);
-        --vcc-blocked-discharging: var(--warning-color, #ef6c00);
+        --vcc-blocked-discharging: var(--vcc-warning);
         --vcc-blocked-both:        var(--error-color, #f44336);
         --vcc-pv-charge:           #ffb74d;
       }
