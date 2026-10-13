@@ -121,7 +121,7 @@ from .actuation import (
     apply_setpoint as actuation_apply_setpoint,
     is_reduced_feed_in_mode as actuation_is_reduced_feed_in_mode,
 )
-from .safety import check_safety as safety_check_safety, is_in_startup_grace
+from .safety import get_unsafe_entities, is_in_startup_grace
 from .planning import calculate_auto_schedule as planning_calculate_auto_schedule
 
 _LOGGER = logging.getLogger(__name__)
@@ -1389,9 +1389,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Safety watchdog
     # ------------------------------------------------------------------
 
-    def _check_safety(self) -> bool:
-        """Check critical entities. Returns True if safe, False to trigger shutdown."""
-        return safety_check_safety(
+    def _get_unsafe_entities(self) -> dict[str, str]:
+        """Check critical entities and return the reasons for shutdown."""
+        return get_unsafe_entities(
             self.hass,
             [self._battery_soc_entity, self._grid_setpoint_entity],
         )
@@ -1441,7 +1441,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Run the safety watchdog for this tick."""
         now = dt_util.now()
         in_startup_grace = is_in_startup_grace(now, self._safety_startup_deadline)
-        safe = self._check_safety()
+        unsafe_entities = self._get_unsafe_entities()
+        safe = not unsafe_entities
         if safe and self._safety_startup_deadline is not None:
             # First tick with all critical entities reporting a real state
             # ends the grace period early — the watchdog becomes fully
@@ -1455,8 +1456,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             and not safe
             and not in_startup_grace
         ):
+            previous_mode = self.control_mode
+            entity_details = ", ".join(
+                f"{entity_id} ({reason})"
+                for entity_id, reason in unsafe_entities.items()
+            )
             _LOGGER.warning(
-                "Safety watchdog: critical entity unavailable — switching to OFF"
+                "Safety watchdog: %s — switching from %s to OFF",
+                entity_details,
+                previous_mode,
             )
             self.control_mode = MODE_OFF
             self._safety_startup_deadline = None
@@ -1466,8 +1474,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 {
                     "title": "Victron Charge Control — Safety Stop",
                     "message": (
-                        "A critical Victron entity became unavailable. "
-                        "System switched to OFF."
+                        f"System switched from {previous_mode} to OFF because "
+                        "critical Victron entities are missing or have no valid state: "
+                        f"{entity_details}.\n\n"
+                        "Check these entities and their Victron connection. "
+                        "Once they report valid states, select the desired control "
+                        "mode again to resume operation."
                     ),
                     "notification_id": "victron_cc_safety_stop",
                 },

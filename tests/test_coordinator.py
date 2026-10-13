@@ -1774,7 +1774,7 @@ class TestSafetyWatchdog:
 
     def test_safe_when_entities_available(self, coordinator):
         coordinator.hass.states.get.return_value = MockState("50")
-        assert coordinator._check_safety() is True
+        assert coordinator._get_unsafe_entities() == {}
 
     def test_unsafe_when_soc_unavailable(self, coordinator):
         def side_effect(entity_id):
@@ -1783,7 +1783,7 @@ class TestSafetyWatchdog:
             return MockState("50")
 
         coordinator.hass.states.get.side_effect = side_effect
-        assert coordinator._check_safety() is False
+        assert coordinator._get_unsafe_entities() == {"sensor.battery_soc": "unavailable"}
 
     def test_unsafe_when_setpoint_unknown(self, coordinator):
         def side_effect(entity_id):
@@ -1792,12 +1792,58 @@ class TestSafetyWatchdog:
             return MockState("50")
 
         coordinator.hass.states.get.side_effect = side_effect
-        assert coordinator._check_safety() is False
+        assert coordinator._get_unsafe_entities() == {"number.grid_setpoint": "unknown"}
 
     def test_unsafe_when_entity_missing(self, coordinator):
         """A configured critical entity must report a real state."""
         coordinator.hass.states.get.return_value = None
-        assert coordinator._check_safety() is False
+        assert coordinator._get_unsafe_entities() == {
+            "sensor.battery_soc": "missing",
+            "number.grid_setpoint": "missing",
+        }
+
+    @pytest.mark.parametrize(
+        "mode", [MODE_AUTO, MODE_MANUAL, MODE_FORCE_CHARGE, MODE_FORCE_DISCHARGE],
+    )
+    @pytest.mark.parametrize("state", [None, "unavailable", "unknown"])
+    async def test_notification_identifies_failed_entity(self, coordinator, mode, state, caplog):
+        coordinator.control_mode = mode
+        coordinator._safety_startup_deadline = None
+        coordinator.hass.states.get.side_effect = {
+            "sensor.battery_soc": MockState(state) if state is not None else None,
+            "number.grid_setpoint": MockState("0"),
+        }.get
+
+        await coordinator._step_safety()
+        await coordinator._step_safety()
+
+        assert coordinator.control_mode == MODE_OFF
+        coordinator.hass.services.async_call.assert_called_once()
+        call = coordinator.hass.services.async_call.call_args
+        assert call.args[:2] == ("persistent_notification", "create")
+        notification = call.args[2]
+        assert notification["notification_id"] == "victron_cc_safety_stop"
+        message = notification["message"]
+        assert f"from {mode} to OFF" in message
+        details = f"sensor.battery_soc ({state if state is not None else 'missing'})"
+        assert details in message
+        assert details in caplog.text
+        assert "number.grid_setpoint" not in message
+        assert "select the desired control mode again" in message
+
+    async def test_notification_lists_all_failed_entities(self, coordinator):
+        coordinator.control_mode = MODE_AUTO
+        coordinator._safety_startup_deadline = None
+        coordinator.hass.states.get.side_effect = {
+            "sensor.battery_soc": None,
+            "number.grid_setpoint": MockState("unknown"),
+        }.get
+
+        await coordinator._step_safety()
+
+        message = coordinator.hass.services.async_call.call_args.args[2]["message"]
+        assert "sensor.battery_soc (missing)" in message
+        assert "number.grid_setpoint (unknown)" in message
 
 
 class TestSafetyStartupGrace:

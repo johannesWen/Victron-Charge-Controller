@@ -1,0 +1,19 @@
+{
+  "name": "Victron Charge Controller",
+  "dockerComposeFile": [
+    "../docker-compose.yml",
+    "docker-compose.yml"
+  ],
+  "service": "devcontainer",
+  "workspaceFolder": "/workspaces/victron-charge-controller",
+  "remoteUser": "vscode",
+  "shutdownAction": "stopCompose",
+  "features": {
+    "ghcr.io/devcontainers/features/node:2": {
+      "version": "20",
+      "pnpmVersion": "none"
+    }
+  },
+  "postCreateCommand": "python -m pip install --user -r requirements-dev.txt && npm --prefix frontend ci && npm --prefix frontend run build",
+  "postStartCommand": "python dev/bootstrap_home_assistant.py"
+}

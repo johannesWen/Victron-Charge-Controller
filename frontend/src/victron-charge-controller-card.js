@@ -2923,7 +2923,7 @@ class VictronChargeControllerCard extends LitElement {
         --vcc-info:     var(--info-color, #2196f3);
         --vcc-disabled: var(--disabled-color, #bdbdbd);
         --vcc-blocked-charging:    var(--success-color, #2e7d32);
-        --vcc-blocked-discharging: var(--warning-color, #ef6c00);
+        --vcc-blocked-discharging: var(--vcc-warning);
         --vcc-blocked-both:        var(--error-color, #f44336);
         --vcc-pv-charge:           #ffb74d;
       }
@@ -3040,8 +3040,9 @@ class VictronChargeControllerCard extends LitElement {
       }
       .setting-help-label {
         padding: 2px 0; text-align: left; border-radius: 2px;
+        text-decoration: underline dashed var(--vcc-help-color, #039be5);
+        text-underline-offset: 3px;
       }
-      .setting-help-label:hover { text-decoration: underline; text-underline-offset: 3px; }
       .setting-help-icon {
         display: inline-flex; align-items: center; justify-content: center;
         flex: 0 0 auto; padding: 4px; border-radius: 50%;
@@ -3098,7 +3099,7 @@ class VictronChargeControllerCard extends LitElement {
         width: 180px;
       }
       .control-label.setting-help-label, .blocked-label.setting-help-label {
-        color: var(--vcc-help-color, #039be5);
+        color: var(--vcc-text);
       }
       .control-row.slider-row > .control-label {
         width: auto;

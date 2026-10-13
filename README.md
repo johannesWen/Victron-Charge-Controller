@@ -97,7 +97,9 @@ The options flow also provides a **Safety watchdog grace period** (default
 missing, unknown, or unavailable battery SOC and grid setpoint entities do not
 switch the restored control mode to OFF. Grace ends early once both entities
 report real states. After grace ends, a missing, unknown, or unavailable
-critical entity triggers the safety stop and notification. Set the period to
+critical entity triggers the safety stop and notification. The notification lists
+each affected entity and whether it is missing, unavailable, or unknown, along
+with the previous control mode and instructions to resume. Set the period to
 `0` to disable startup grace. The window begins when the integration's
 coordinator is created, including on integration reloads.
 
@@ -294,6 +296,12 @@ time by CI and included in the HACS release zip (`victron_charge_control.zip`).
 
 A Docker Compose stack is provided for testing the integration together with the
 bundled card against dummy Victron/EPEX entities.
+
+For an editor environment with Python, Node, and dependencies installed
+automatically, use **Dev Containers: Reopen in Container** in VS Code. It also
+onboards Home Assistant, configures Charge Control with dummy entities, and
+provides Settings, Plan, History, and Dev Controls dashboard tabs. See the
+[devcontainer setup](dev/README.md#using-the-devcontainer) for details.
 
 ```bash
 cd frontend && npm install && npm run build && cd ..

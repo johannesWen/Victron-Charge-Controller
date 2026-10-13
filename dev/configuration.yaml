@@ -14,11 +14,17 @@ homeassistant:
 # that the card relys on to auto-load the bundled JS module).
 default_config:
 
-# Use YAML mode for Lovelace so we can pre-configure the dashboard card.
+# Keep a dedicated development dashboard with pre-configured cards.
 # The card is auto-registered by the integration via add_extra_js_url, so
 # no manual `resources:` entry is needed.
 lovelace:
-  mode: yaml
+  dashboards:
+    victron-dev:
+      mode: yaml
+      title: Victron Dev
+      icon: mdi:test-tube
+      show_in_sidebar: true
+      filename: ui-lovelace.yaml
 
 # ---------------------------------------------------------------
 # Backing input_numbers (internal state stores for template numbers)
