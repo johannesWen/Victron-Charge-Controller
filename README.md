@@ -97,7 +97,9 @@ The options flow also provides a **Safety watchdog grace period** (default
 missing, unknown, or unavailable battery SOC and grid setpoint entities do not
 switch the restored control mode to OFF. Grace ends early once both entities
 report real states. After grace ends, a missing, unknown, or unavailable
-critical entity triggers the safety stop and notification. Set the period to
+critical entity triggers the safety stop and notification. The notification lists
+each affected entity and whether it is missing, unavailable, or unknown, along
+with the previous control mode and instructions to resume. Set the period to
 `0` to disable startup grace. The window begins when the integration's
 coordinator is created, including on integration reloads.
 

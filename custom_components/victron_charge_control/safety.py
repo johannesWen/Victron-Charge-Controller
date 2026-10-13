@@ -12,17 +12,14 @@ from datetime import datetime
 from typing import Any
 
 
-def check_safety(hass: Any, critical_entities: list[str]) -> bool:
-    """Return True when every critical entity reports a real state.
-
-    Returns False as soon as one configured critical entity is missing
-    or reports ``"unavailable"`` or ``"unknown"``.
-    """
+def get_unsafe_entities(hass: Any, critical_entities: list[str]) -> dict[str, str]:
+    """Return each critical entity that lacks a real state and its reason."""
+    unsafe_entities = {}
     for entity_id in critical_entities:
         state = hass.states.get(entity_id)
         if state is None or state.state in ("unavailable", "unknown"):
-            return False
-    return True
+            unsafe_entities[entity_id] = "missing" if state is None else state.state
+    return unsafe_entities
 
 
 def is_in_startup_grace(
