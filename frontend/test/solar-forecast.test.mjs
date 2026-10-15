@@ -196,15 +196,16 @@ test('disconnect falls back, rejects stale in-flight results and recovers on rea
   assert.equal(requests.length, 3);
 });
 
-test('older backend rejection disables forecast and a later poll can recover', async t => {
+test('unknown command explains the required restart and a later poll can recover', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] });
   const states = [], conn = connection();
   let supported = false;
-  const poller = new ForecastPoller(async () => { if (!supported) throw new Error('unknown_command'); return fixture(); }, state => states.push(state));
+  const poller = new ForecastPoller(async () => { if (!supported) throw { code: 'unknown_command', message: 'Unknown command.' }; return fixture(); }, state => states.push(state));
   t.after(() => poller.stop());
   poller.setActive(true, conn);
   await flush();
   assert.equal(states.at(-1).usable, false);
+  assert.equal(states.at(-1).reason, 'Restart Home Assistant to load PV forecast support, then refresh the dashboard');
   supported = true;
   t.mock.timers.tick(60000);
   await flush();

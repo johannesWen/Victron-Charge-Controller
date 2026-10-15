@@ -121,8 +121,11 @@ export class ForecastPoller {
     try {
       const data = await this.callWS({ type: 'victron_charge_control/solar_forecast' });
       if (this.active && generation === this.generation) this.onState(normalizeForecast(data));
-    } catch {
-      if (this.active && generation === this.generation) this.onState({ usable: false, reason: 'PV forecast unavailable (check integration support and connection)' });
+    } catch (error) {
+      const reason = error?.code === 'unknown_command'
+        ? 'Restart Home Assistant to load PV forecast support, then refresh the dashboard'
+        : 'PV forecast unavailable (check integration support and connection)';
+      if (this.active && generation === this.generation) this.onState({ usable: false, reason });
     }
   }
 
