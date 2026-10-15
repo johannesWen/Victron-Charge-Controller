@@ -103,6 +103,47 @@ with the previous control mode and instructions to resume. Set the period to
 `0` to disable startup grace. The window begins when the integration's
 coordinator is created, including on integration reloads.
 
+### Optional Solcast forecast
+
+**Use Solcast forecast** is enabled by default, including on existing installations.
+If [Solcast PV Solar Forecast](https://github.com/BJReplay/ha-solcast-solar) is installed,
+Victron automatically discovers its integration-owned entities, including renamed and
+disabled entities. Disable this feature in **Settings → Devices & services → Victron
+Charge Control → Configure → Use Solcast forecast**. No API key or entity selection
+is needed here, and disabled Solcast entities are never enabled automatically.
+
+The integration reads Solcast's combined rooftop forecast for today and tomorrow
+from its local cache at startup and every five minutes. It uses only
+`solcast_solar.query_forecast_data`, retains Solcast's dampening and limits, and
+does not request cloud updates. Detailed forecast attributes can remain disabled.
+Forecast intervals stay in memory; this feature does not change charging decisions,
+saved schedules, or the dashboard card.
+
+Three diagnostic sensors appear on the existing Victron device:
+
+| Sensor | Meaning |
+| --- | --- |
+| Solar Forecast Status | Whether the forecast is usable; see the states below. Attributes identify the source entry and discovered entities, coverage bounds, and the reason for an unusable forecast. |
+| Solar Forecast Last Updated | Solcast's source timestamp, not the time Victron polled it. The last known timestamp may remain visible after a failure. |
+| Solar Forecast Coverage | Continuous forecast hours from now, capped at the end of tomorrow. Gaps are never treated as zero production. |
+
+For troubleshooting, check **Solar Forecast Status**:
+
+| State | Meaning and action |
+| --- | --- |
+| `disabled` | Enable **Use Solcast forecast** in the integration options to collect forecasts. |
+| `not_detected` | No Solcast integration is installed. Install and configure it if forecasts are wanted. |
+| `unavailable` | Solcast is not loaded, its cached-data action failed or is unavailable, or its source timestamp cannot be read. Check Solcast's setup and its Last Updated/API Last Polled entity. |
+| `invalid_data` | The action returned malformed intervals, invalid estimates, or conflicting duplicates. Check Solcast and update compatibility. |
+| `incomplete` | Continuous coverage from the current interval through tomorrow's end is missing. Check the forecast available in Solcast. |
+| `stale` | The source timestamp is older than 36 hours. Check Solcast's own update configuration. |
+| `ready` | Valid central estimates cover the remaining horizon and the source timestamp is no older than 36 hours. |
+
+Installation, removal, reloads, and entity renames are rediscovered on the next
+five-minute poll. Forecast failures clear unusable intervals and affect only these
+diagnostics; they do not trigger the battery safety watchdog. Coverage uses the
+Home Assistant time zone, including shorter and longer daylight-saving days.
+
 ## Dashboard Card
 
 The integration ships a bundled Lovelace card for monitoring and steering the
