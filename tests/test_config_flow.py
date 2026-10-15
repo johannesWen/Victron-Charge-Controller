@@ -21,6 +21,7 @@ from custom_components.victron_charge_control.const import (
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
+    CONF_USE_SOLCAST_FORECAST,
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
 )
@@ -270,11 +271,12 @@ class TestOptionsFlow:
         expected = {
             key: value
             for key, value in submitted.items()
-            if key != CONF_SAFETY_STARTUP_GRACE_SECONDS
+            if key not in (CONF_SAFETY_STARTUP_GRACE_SECONDS, CONF_USE_SOLCAST_FORECAST)
         }
         assert saved == {**expected, "unrelated_setting": "preserved"}
         assert options_flow.async_create_entry.call_args.kwargs["data"] == {
             CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
+            CONF_USE_SOLCAST_FORECAST: True,
         }
 
         options_flow._config_entry.data = saved
@@ -295,6 +297,32 @@ class TestOptionsFlow:
 
         saved = options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
         assert saved == submitted
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_forecast_option_preserves_entities_and_other_options(self, options_flow, enabled):
+        options_flow._config_entry.options = {
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
+            "unrelated_option": "preserved",
+        }
+        await options_flow.async_step_init({**MOCK_CONFIG_DATA, CONF_USE_SOLCAST_FORECAST: enabled})
+
+        assert options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"] == MOCK_CONFIG_DATA
+        assert options_flow.async_create_entry.call_args.kwargs["data"] == {
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
+            CONF_USE_SOLCAST_FORECAST: enabled,
+            "unrelated_option": "preserved",
+        }
+
+    @pytest.mark.asyncio
+    async def test_forecast_defaults_and_validation_redisplay(self, options_flow):
+        await options_flow.async_step_init()
+        schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        assert schema(MOCK_CONFIG_DATA)[CONF_USE_SOLCAST_FORECAST] is True
+        options_flow.hass.states.get.return_value = None
+        await options_flow.async_step_init({**MOCK_CONFIG_DATA, CONF_USE_SOLCAST_FORECAST: False})
+        schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        assert schema(MOCK_CONFIG_DATA)[CONF_USE_SOLCAST_FORECAST] is False
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

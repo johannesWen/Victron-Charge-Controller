@@ -134,6 +134,7 @@ class MockConfigEntry:
         self.entry_id = entry_id
         self.data = data or dict(MOCK_CONFIG_DATA)
         self.options = {}
+        self.pref_disable_polling = False
         self._async_on_unload: list = []
 
     def async_on_unload(self, func):
@@ -198,6 +199,10 @@ def mock_hass() -> MagicMock:
         return task
 
     hass.async_create_task = MagicMock(side_effect=_async_create_task)
+    hass.async_create_background_task = MagicMock(
+        side_effect=lambda coro, name: _async_create_task(coro)
+    )
+    hass.config_entries.async_entries.return_value = []
     return hass
 
 

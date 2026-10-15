@@ -123,6 +123,7 @@ from .actuation import (
 )
 from .safety import get_unsafe_entities, is_in_startup_grace
 from .planning import calculate_auto_schedule as planning_calculate_auto_schedule
+from .forecast import SolcastForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -200,6 +201,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             # itself stays guarded by its own debounces and deadband.
             request_refresh_debouncer=Debouncer(hass, _LOGGER, cooldown=1, immediate=True),
         )
+
+        self.forecast_coordinator = SolcastForecastCoordinator(hass, entry)
 
         # --- Entity references from config ---
         self._battery_soc_entity: str = entry.data[CONF_BATTERY_SOC_ENTITY]
@@ -1693,6 +1696,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # the restored state.
         self._suspend_save = False
 
+        # Cached forecast reads must never delay control or schedule restoration.
+        await self.forecast_coordinator.async_setup()
+
     async def async_shutdown(self) -> None:
         """Remove all listeners."""
         if self._replan_unsub is not None:
@@ -1702,3 +1708,4 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             unsub()
         self._unsub_listeners.clear()
         self._safety_startup_deadline = None
+        await self.forecast_coordinator.async_shutdown()

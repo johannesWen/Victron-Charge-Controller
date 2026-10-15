@@ -29,6 +29,7 @@ CONF_DC_COUPLED_PV_FEED_IN_ENTITY = "dc_coupled_pv_feed_in_entity"
 
 # --- Config options keys (from options flow) ---
 CONF_SAFETY_STARTUP_GRACE_SECONDS = "safety_startup_grace_seconds"
+CONF_USE_SOLCAST_FORECAST = "use_solcast_forecast"
 
 # --- Control modes ---
 MODE_OFF = "off"

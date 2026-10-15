@@ -17,6 +17,7 @@ from custom_components.victron_charge_control.const import (
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
+    CONF_USE_SOLCAST_FORECAST,
     DEFAULT_CHARGE_POWER,
     DEFAULT_DEADBAND,
     DEFAULT_DISCHARGE_POWER,
@@ -36,6 +37,7 @@ from custom_components.victron_charge_control.coordinator import (
     ScheduleSlot,
     VictronChargeControlCoordinator,
 )
+from custom_components.victron_charge_control.forecast import ForecastSnapshot
 
 from .conftest import (
     MOCK_CONFIG_DATA,
@@ -46,6 +48,87 @@ from .conftest import (
     MockState,
     make_epex_data,
 )
+
+
+class TestForecastLifecycle:
+    """Optional forecasts do not hold up control startup or restored schedules."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled,status", [(False, "disabled"), (True, "ready"), (True, "unavailable")])
+    async def test_forecast_option_and_failure_leave_charging_unchanged(
+        self, mock_hass, mock_config_entry, enabled, status
+    ):
+        mock_config_entry.options[CONF_USE_SOLCAST_FORECAST] = enabled
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.data = ChargeControlData()
+        coord.control_mode = MODE_FORCE_CHARGE
+        coord.forecast_coordinator.data = ForecastSnapshot(status=status, usable=status == "ready")
+        mock_hass.states.get.return_value = MockState("50")
+        slots = [("2099-01-01", 4)]
+        coord._charge_hours = list(slots)
+        coord._safety_startup_deadline = None
+
+        data = await coord._async_update_data()
+
+        assert data.desired_action == ACTION_CHARGE
+        assert data.target_setpoint == DEFAULT_CHARGE_POWER
+        assert coord.control_mode == MODE_FORCE_CHARGE
+        assert coord._charge_hours == slots
+        assert all(call.args[0] != "persistent_notification" for call in mock_hass.services.async_call.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_slow_forecast_setup_does_not_delay_restore_or_control(
+        self, mock_hass, mock_config_entry, mock_store
+    ):
+        mock_store._data = {"charge_hours": [["2026-05-02", 1]], "discharge_hours": []}
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def slow_setup():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        coord.forecast_coordinator._async_read_forecast = AsyncMock(side_effect=slow_setup)
+        coord.async_request_refresh = AsyncMock()
+        coord.calculate_auto_schedule = MagicMock()
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch("custom_components.victron_charge_control.coordinator.async_track_time_change"):
+            await asyncio.wait_for(coord.async_setup(), timeout=1)
+        await started.wait()
+
+        assert coord._charge_hours == [("2026-05-02", 1)]
+        coord.async_request_refresh.assert_awaited_once()
+        coord.calculate_auto_schedule.assert_not_called()
+        mock_hass.services.async_call.assert_not_awaited()
+        assert not coord.forecast_coordinator._startup_task.done()
+
+        await coord.async_shutdown()
+        assert cancelled.is_set()
+        assert coord.forecast_coordinator._startup_task is None
+        assert coord.forecast_coordinator._unsub_polling is None
+
+    @pytest.mark.asyncio
+    async def test_forecast_startup_failure_does_not_fail_control_or_unload(
+        self, mock_hass, mock_config_entry
+    ):
+        coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
+        coord.forecast_coordinator._async_read_forecast = AsyncMock(side_effect=RuntimeError("source failure"))
+        coord.async_request_refresh = AsyncMock()
+        with patch(
+            "custom_components.victron_charge_control.coordinator.async_track_state_change_event"
+        ), patch("custom_components.victron_charge_control.coordinator.async_track_time_change"):
+            await coord.async_setup()
+        await asyncio.sleep(0)
+        assert coord.forecast_coordinator.data.status == "unavailable"
+        await coord.async_shutdown()
+        coord.async_request_refresh.assert_awaited_once()
+        assert coord.forecast_coordinator._unsub_polling is None
+        mock_hass.services.async_call.assert_not_awaited()
 
 
 # ======================================================================
