@@ -116,8 +116,8 @@ The integration reads Solcast's combined rooftop forecast for today and tomorrow
 from its local cache at startup and every five minutes. It uses only
 `solcast_solar.query_forecast_data`, retains Solcast's dampening and limits, and
 does not request cloud updates. Detailed forecast attributes can remain disabled.
-Forecast intervals stay in memory; this feature does not change charging decisions,
-saved schedules, or the dashboard card.
+Forecast intervals stay in memory and are available in the Plan card's optional
+PV forecast view. They do not change charging decisions or saved schedules.
 
 Three diagnostic sensors appear on the existing Victron device:
 
@@ -140,9 +140,10 @@ For troubleshooting, check **Solar Forecast Status**:
 | `ready` | Valid central estimates cover the remaining horizon and the source timestamp is no older than 36 hours. |
 
 Installation, removal, reloads, and entity renames are rediscovered on the next
-five-minute poll. Forecast failures clear unusable intervals and affect only these
-diagnostics; they do not trigger the battery safety watchdog. Coverage uses the
-Home Assistant time zone, including shorter and longer daylight-saving days.
+five-minute poll. Forecast failures clear unusable intervals, update the diagnostics,
+and disable the PV forecast view; they do not trigger the battery safety watchdog.
+Coverage uses the Home Assistant time zone, including shorter and longer
+daylight-saving days.
 
 ## Dashboard Card
 
@@ -168,6 +169,22 @@ view: settings
 | `settings` | Operate the controller, adjust limits, configure price thresholds, tune grid feed-in behavior, and recalculate schedules. |
 | `plan` | Inspect the EPEX Spot based plan for today and tomorrow, view blocked hours, set manual actions for future hours, and manage fixed plans (recurring 24-hour charge/discharge/PV-charge patterns with a per-plan activate check mark). |
 | `history` | Review grid cost, revenue, import, and export statistics by day, week, month, or year. |
+
+In the Plan card, use the switch below **Charge allowed** and **Discharge allowed**
+to change from **Price** to **PV forecast**. Today and tomorrow show Solcast's
+`pv_estimate10` as a yellow filled curve and `pv_estimate` as a light-yellow filled
+curve, with neutral hourly price bars. The left axis is ct/kWh and the right axis
+is kW. Hover, tap, or focus a time slot to inspect values. Forecast charts are
+read-only; switch back to Price to edit hours or thresholds.
+
+The switch is disabled with an explanation when Solcast is unavailable or its
+forecast is unusable. If the forecast becomes unusable, the card returns to Price.
+Missing estimates remain gaps, and forecasts still appear when prices have not
+arrived. The card checks the integration's in-memory cache every minute while the
+Plan page is open; this never requests a Solcast cloud update. Diagnostic sensors
+can remain disabled. The view selection lasts only for the current card instance.
+Times use Home Assistant's timezone; repeated daylight-saving hours share the
+existing plan's hourly price.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
