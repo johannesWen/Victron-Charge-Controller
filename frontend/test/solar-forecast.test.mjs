@@ -30,6 +30,27 @@ test('DST spring-forward has 23 hours and no phantom hour', () => {
   assert.equal(day.date, '2026-03-29');
 });
 
+for (const [season, start, middle, end, expected] of [
+  ['spring', '2026-10-04T00:00:00+10:30', '2026-10-05T00:00:00+11:00', '2026-10-06T00:00:00+11:00', [
+    ['2026-10-04T01:00:00+10:30', 1, 60], ['2026-10-04T02:30:00+11:00', 2, 30], ['2026-10-04T03:00:00+11:00', 3, 60],
+  ]],
+  ['fall', '2026-04-05T00:00:00+11:00', '2026-04-06T00:00:00+10:30', '2026-04-07T00:00:00+10:30', [
+    ['2026-04-05T01:00:00+11:00', 1, 60], ['2026-04-05T01:30:00+10:30', 1, 30], ['2026-04-05T02:00:00+10:30', 2, 60],
+  ]],
+]) test(`Lord Howe ${season} prices follow civil hours and the half-hour offset transition`, () => {
+  const raw = { ...fixture(start, middle, end), time_zone: 'Australia/Lord_Howe' };
+  const plan = Array.from({ length: 24 }, (_, hour) => ({ date: start.slice(0, 10), hour, price: hour }));
+  const day = buildForecastCharts(normalizeForecast(raw), plan).days[0];
+  assert.equal(day.hours.length, season === 'spring' ? 24 : 25);
+  assert.deepEqual(day.hours.slice(1, 4).map(hour => [hour.start, hour.hour, (hour.end - hour.start) / 60000]),
+    expected.map(([time, hour, minutes]) => [Date.parse(time), hour, minutes]));
+  for (const hour of day.hours) {
+    assert.equal(hour.price, hour.hour);
+    assert.equal(day.slots.find(slot => slot.start === hour.start).price, hour.price);
+    assert.equal(Number(new Intl.DateTimeFormat('en-GB', { timeZone: raw.time_zone, hour: '2-digit', hourCycle: 'h23' }).format(hour.end - 1)), hour.hour);
+  }
+});
+
 test('shared scales include both days, negative prices and lower estimates; missing prices stay null', () => {
   const raw = fixture();
   raw.intervals.push({ start: raw.days[1].start, end: new Date(Date.parse(raw.days[1].start) + HOUR / 2).toISOString(), pv_estimate: 4, pv_estimate10: 6 });
@@ -93,6 +114,40 @@ function connection() {
   };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+for (const failure of ['rejection', 'unusable']) test(`poller preserves cached PV state on re-entry until actual ${failure}`, async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const requests = [], states = [], conn = connection();
+  let mode = 'price';
+  const poller = new ForecastPoller(() => new Promise((resolve, reject) => requests.push({ resolve, reject })), state => {
+    states.push(state);
+    if (!state.usable) mode = 'price';
+  });
+  t.after(() => poller.stop());
+  poller.setActive(true, conn);
+  assert.equal(states.length, 0);
+  requests[0].resolve(fixture());
+  await flush();
+  mode = 'pv';
+  const cached = states.at(-1);
+  poller.setActive(false, conn);
+  poller.setActive(true, conn);
+  assert.equal(requests.length, 2);
+  assert.equal(states.length, 1);
+  assert.equal(states.at(-1), cached);
+  assert.equal(mode, 'pv');
+  requests[1].resolve(fixture());
+  await flush();
+  assert.equal(mode, 'pv');
+  poller.stop();
+  poller.setActive(true, conn);
+  assert.equal(mode, 'pv');
+  if (failure === 'rejection') requests[2].reject(new Error('connection failed'));
+  else requests[2].resolve({ usable: false, reason: 'stale' });
+  await flush();
+  assert.equal(states.at(-1).usable, false);
+  assert.equal(mode, 'price');
+});
 
 test('poller fetches only on entry/minute, ignores obsolete responses and cleans up listeners/timers', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] });

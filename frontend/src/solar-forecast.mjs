@@ -30,11 +30,21 @@ export function forecastTime(time, timeZone) {
 }
 
 export function buildForecastCharts(forecast, plan = []) {
+  const civilHour = new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, hour: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' });
   const days = forecast.days.map(day => {
     const prices = new Map(plan.filter(entry => entry.date === day.date && numeric(entry.price)).map(entry => [Number(entry.hour), entry.price]));
     const hours = [];
-    for (let start = day.start; start < day.end; start += HOUR) {
-      hours.push({ start, end: Math.min(start + HOUR, day.end), hour: localHour(start, forecast.time_zone), price: prices.get(localHour(start, forecast.time_zone)) ?? null });
+    let previousHour;
+    // Split at civil-hour and offset changes, including partial DST hours.
+    for (let start = day.start; start < day.end; start += HOUR / 60) {
+      const key = civilHour.format(start);
+      const end = Math.min(start + HOUR / 60, day.end);
+      if (key === previousHour) hours.at(-1).end = end;
+      else {
+        const hour = localHour(start, forecast.time_zone);
+        hours.push({ start, end, hour, price: prices.get(hour) ?? null });
+      }
+      previousHour = key;
     }
     const intervals = forecast.intervals.filter(interval => interval.start < day.end && interval.end > day.start)
       .map(interval => ({ ...interval, start: Math.max(day.start, interval.start), end: Math.min(day.end, interval.end) }));
@@ -94,7 +104,7 @@ export class ForecastPoller {
 
   start() {
     if (!this.active) return;
-    this.pause('Loading PV forecast');
+    clearInterval(this.timer);
     this.refresh();
     this.timer = setInterval(() => this.refresh(), 60000);
   }
