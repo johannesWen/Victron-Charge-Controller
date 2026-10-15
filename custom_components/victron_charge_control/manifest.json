@@ -4,6 +4,7 @@
   "after_dependencies": ["http", "frontend", "solcast_solar"],
   "codeowners": ["@johannesWen"],
   "config_flow": true,
+  "dependencies": ["websocket_api"],
   "documentation": "https://github.com/johannesWen/Victron-Charge-Controller",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/johannesWen/Victron-Charge-Controller/issues",

@@ -19,6 +19,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN
 from .coordinator import VictronChargeControlCoordinator
 from .services import async_setup_services, async_unload_services
+from .websocket_api import async_register_commands
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     they have completed the integration's config flow.
     """
     hass.data.setdefault(DOMAIN, {})
+    async_register_commands(hass)
     await _async_register_card(hass)
     return True
 
@@ -119,6 +121,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
+    async_register_commands(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await coordinator.async_setup()
