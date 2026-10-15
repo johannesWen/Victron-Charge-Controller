@@ -1,6 +1,13 @@
 __pycache__
 *.pyc
 
+# Local credentials, including nested and environment-specific dotenv files.
+.env
+.env.*
+*.env
+*.env.*
+!/.env.example
+
 # Frontend build artifacts (built at release time; not committed)
 frontend/node_modules/
 custom_components/victron_charge_control/static/

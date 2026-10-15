@@ -8,6 +8,11 @@ import pytest
 from dev import bootstrap_home_assistant as bootstrap
 
 
+@pytest.fixture(autouse=True)
+def no_real_solcast_key(monkeypatch):
+    monkeypatch.delenv("SOLCAST_API_KEY", raising=False)
+
+
 def test_existing_integration_is_not_reconfigured():
     client = Mock()
     client.request.return_value = [{"entry_id": "existing"}]
@@ -104,3 +109,88 @@ def test_readiness_does_not_retry_authentication_errors():
     with pytest.raises(HTTPError):
         bootstrap.wait_for(check, "Home Assistant")
     check.assert_called_once()
+
+
+@pytest.mark.parametrize("api_key", ["", "  "])
+def test_solcast_without_key_does_not_call_home_assistant(monkeypatch, api_key):
+    monkeypatch.setenv("SOLCAST_API_KEY", api_key)
+    client = Mock()
+
+    bootstrap.configure_solcast(client)
+
+    client.request.assert_not_called()
+
+
+def test_solcast_existing_entry_preserves_key_and_settings(monkeypatch):
+    monkeypatch.setenv("SOLCAST_API_KEY", "new-test-key")
+    client = Mock()
+    client.request.return_value = [{"entry_id": "existing"}]
+
+    bootstrap.configure_solcast(client)
+
+    client.request.assert_called_once_with("/api/config/config_entries/entry?domain=solcast_solar")
+
+
+def test_solcast_uses_upstream_user_flow_and_daylight_updates(monkeypatch, capsys):
+    monkeypatch.setenv("SOLCAST_API_KEY", "test-key-never-log")
+    client = Mock()
+    client.request.side_effect = [
+        [], {"type": "form", "step_id": "user", "flow_id": "solcast"},
+        {"type": "create_entry"},
+    ]
+
+    bootstrap.configure_solcast(client)
+
+    assert client.request.call_args_list == [
+        call("/api/config/config_entries/entry?domain=solcast_solar"),
+        call("/api/config/config_entries/flow", {
+            "handler": "solcast_solar", "show_advanced_options": False,
+        }),
+        call("/api/config/config_entries/flow/solcast", {
+            "api_key": "test-key-never-log", "api_limit": "10", "auto_update": "1",
+        }),
+    ]
+    output = capsys.readouterr()
+    assert "test-key-never-log" not in output.out + output.err
+
+
+@pytest.mark.parametrize("failure", [
+    RuntimeError("test-key-never-log"),
+    HTTPError("http://localhost/test-key-never-log", 400, "test-key-never-log", {}, None),
+    {"type": "form", "errors": {"base": "test-key-never-log"},
+     "description_placeholders": {"error_detail": "test-key-never-log"}},
+])
+def test_optional_solcast_failure_preserves_victron_and_revokes_token(monkeypatch, capsys, failure):
+    monkeypatch.setenv("SOLCAST_API_KEY", "test-key-never-log")
+    client = Mock()
+    client.request.side_effect = [
+        {"name": "Home Assistant"}, [], [{"state": "loaded"}],
+        [], {"type": "form", "step_id": "user", "flow_id": "solcast"}, failure,
+        None,
+    ]
+    configure = Mock()
+    monkeypatch.setattr(bootstrap, "authenticate", Mock(return_value="temporary-refresh-token"))
+    monkeypatch.setattr(bootstrap, "configure_integration", configure)
+
+    bootstrap.bootstrap(client, "dev", "password")
+
+    configure.assert_called_once_with(client)
+    client.request.assert_called_with(
+        "/auth/token", {"action": "revoke", "token": "temporary-refresh-token"}, form=True,
+    )
+    output = capsys.readouterr()
+    assert "Optional Solcast setup failed" in output.err
+    assert "Development dashboard ready" in output.out
+    assert "test-key-never-log" not in output.out + output.err
+
+
+def test_unexpected_solcast_flow_is_nonfatal_and_does_not_send_key(monkeypatch, capsys):
+    monkeypatch.setenv("SOLCAST_API_KEY", "test-key-never-log")
+    client = Mock()
+    client.request.side_effect = [[], {"type": "abort", "reason": "test-key-never-log"}]
+
+    bootstrap.configure_solcast(client)
+
+    assert client.request.call_count == 2
+    output = capsys.readouterr()
+    assert "test-key-never-log" not in output.out + output.err

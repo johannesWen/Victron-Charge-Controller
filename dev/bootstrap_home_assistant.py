@@ -117,6 +117,32 @@ def configure_integration(client: Client) -> None:
     print("Charge Control configured with dummy entities in Auto mode.")
 
 
+def configure_solcast(client: Client) -> None:
+    """Optionally create Solcast through its user flow without exposing responses."""
+    api_key = os.environ.get("SOLCAST_API_KEY", "").strip()
+    if not api_key:
+        print("SOLCAST_API_KEY is blank; skipping optional Solcast configuration.")
+        return
+    try:
+        if client.request("/api/config/config_entries/entry?domain=solcast_solar"):
+            print("Solcast is already configured; preserving its settings and API key.")
+            return
+        flow = client.request("/api/config/config_entries/flow", {
+            "handler": "solcast_solar", "show_advanced_options": False,
+        })
+        if flow.get("type") != "form" or flow.get("step_id") != "user":
+            raise RuntimeError("Unexpected Solcast setup step")
+        result = client.request(f"/api/config/config_entries/flow/{flow['flow_id']}", {
+            "api_key": api_key, "api_limit": "10", "auto_update": "1",
+        })
+        if result.get("type") != "create_entry":
+            raise RuntimeError("Solcast setup did not create an entry")
+        print("Solcast configured with 10 API calls/day and daylight forecast updates.")
+    except Exception:
+        # Optional setup must not block Victron or echo upstream errors containing credentials.
+        print("Optional Solcast setup failed; check its configuration in Home Assistant.", file=sys.stderr)
+
+
 def bootstrap(client: Client, username: str, password: str) -> None:
     wait_for(lambda: client.request("/manifest.json"), "Home Assistant")
     try:
@@ -139,6 +165,7 @@ def bootstrap(client: Client, username: str, password: str) -> None:
             )),
             "Charge Control to load",
         )
+        configure_solcast(client)
         print("Development dashboard ready: http://localhost:8123/victron-dev/settings")
     finally:
         client.request("/auth/token", {"action": "revoke", "token": refresh_token}, form=True)

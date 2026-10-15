@@ -11,6 +11,20 @@ extends the root Compose file with a Python 3.14 development service and Node 20
 matching CI. It installs `requirements-dev.txt` and the frontend dependencies,
 then builds the bundled card automatically.
 
+For Solcast forecasts, first copy the root template and fill in your rooftop API
+key locally:
+
+```bash
+cp .env.example .env
+# Edit .env and set SOLCAST_API_KEY to your Solcast rooftop API key.
+```
+
+Then run **Dev Containers: Rebuild and Reopen in Container** (also after changing
+`.env`). Compose reads this optional file into the editor/bootstrap service only;
+the key is never a build argument or part of an image. All dotenv files, including
+nested and environment-specific files, are gitignored except the root
+`.env.example`. Keep the real `.env` private.
+
 Home Assistant runs alongside the editor container at <http://localhost:8123>.
 After the build, startup automatically completes onboarding, creates the Charge
 Control integration using the dummy entities, and enables Auto mode on the new
@@ -39,6 +53,32 @@ The existing integration and dummy configuration mounts are reused.
 Home Assistant's database and onboarding settings persist in the
 `homeassistant-data` Docker volume across rebuilds. Closing the devcontainer stops
 both services.
+
+A one-shot init service installs [Solcast PV Forecast v4.6.1](https://github.com/BJReplay/ha-solcast-solar/releases/tag/v4.6.1)
+into that config volume **before Home Assistant starts**, with a pinned release
+checksum. It also works with an existing volume, preserves any existing
+`custom_components/solcast_solar` directory, and leaves HA configuration untouched.
+The first install requires network access to GitHub; installation failure stops
+HA startup rather than starting with incomplete code. Retry the rebuild after
+resolving the download or volume-permission issue. Existing Solcast code is never
+automatically upgraded or replaced.
+
+When `SOLCAST_API_KEY` is set and no Solcast entry exists, the bootstrap creates
+one through Home Assistant's config-flow API. This stores the key in HA's config
+volume, as normal integration setup does. With a missing/blank key, Solcast code
+is installed but remains unconfigured, and Victron still starts normally. A
+Solcast setup failure also leaves Victron available; finish setup from
+**Settings → Devices & services → Add integration → Solcast PV Forecast**.
+Existing Solcast entries and their keys/settings are preserved on every startup:
+change an existing entry's key in Home Assistant's Solcast configuration UI;
+editing `.env` does not replace it.
+
+Solcast setup validates your rooftop sites against its cloud API and enables
+daylight forecast updates with a default allowance of **10 API calls per day**.
+Those real cloud requests consume your Solcast account quota; use your account's
+actual allowance and Solcast's HA options when sharing the key with other
+clients. Victron's separate five-minute forecast polling only reads Solcast's
+local cache and does not fetch cloud data or consume additional API calls.
 
 If the standalone Compose stack is already running, stop it before opening the
 devcontainer: both use port 8123. The devcontainer uses a Compose-generated

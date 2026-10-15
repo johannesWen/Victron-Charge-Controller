@@ -344,6 +344,13 @@ onboards Home Assistant, configures Charge Control with dummy entities, and
 provides Settings, Plan, History, and Dev Controls dashboard tabs. See the
 [devcontainer setup](dev/README.md#using-the-devcontainer) for details.
 
+The devcontainer also installs pinned Solcast v4.6.1 before Home Assistant starts.
+For automatic Solcast setup, copy `.env.example` to `.env`, fill in
+`SOLCAST_API_KEY`, then rebuild/reopen the container. Without a key, Victron works
+and Solcast remains unconfigured. Existing Solcast entries are preserved; change
+their keys through Home Assistant. Solcast's default daylight cloud updates use
+its 10-call/day allowance; Victron's cache polling makes no extra cloud requests.
+
 ```bash
 cd frontend && npm install && npm run build && cd ..
 docker compose up -d
