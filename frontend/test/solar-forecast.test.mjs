@@ -1,0 +1,157 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { normalizeForecast, buildForecastCharts, forecastAreas, forecastTime, ForecastPoller } from '../src/solar-forecast.mjs';
+
+const HOUR = 3600000;
+const fixture = (start = '2026-10-25T00:00:00+02:00', middle = '2026-10-26T00:00:00+01:00', end = '2026-10-27T00:00:00+01:00') => ({
+  status: 'ready', usable: true, reason: null, source_updated_at: start, time_zone: 'Europe/Vienna',
+  days: [{ date: start.slice(0, 10), start, end: middle }, { date: middle.slice(0, 10), start: middle, end }],
+  intervals: [{ start, end: new Date(Date.parse(start) + HOUR / 2).toISOString(), pv_estimate: 0, pv_estimate10: null }],
+});
+
+test('DST fall-back uses 25 absolute hours and repeats the existing local-hour price', () => {
+  const forecast = normalizeForecast(fixture());
+  const charts = buildForecastCharts(forecast, [{ date: '2026-10-25', hour: 2, price: -5 }]);
+  assert.equal(charts.days[0].hours.length, 25);
+  assert.equal(charts.days[1].hours.length, 24);
+  assert.equal(charts.days[0].end - charts.days[0].start, 25 * HOUR);
+  const repeated = charts.days[0].hours.filter(hour => hour.hour === 2);
+  assert.equal(repeated.length, 2);
+  assert.deepEqual(repeated.map(hour => hour.price), [-5, -5]);
+  assert.equal(repeated[1].start - repeated[0].start, HOUR);
+  assert.notEqual(forecastTime(repeated[0].start, forecast.time_zone), forecastTime(repeated[1].start, forecast.time_zone));
+});
+
+test('DST spring-forward has 23 hours and no phantom hour', () => {
+  const forecast = normalizeForecast(fixture('2026-03-29T00:00:00+01:00', '2026-03-30T00:00:00+02:00', '2026-03-31T00:00:00+02:00'));
+  const day = buildForecastCharts(forecast).days[0];
+  assert.equal(day.hours.length, 23);
+  assert.equal(day.hours.some(hour => hour.hour === 2), false);
+  assert.equal(day.date, '2026-03-29');
+});
+
+test('shared scales include both days, negative prices and lower estimates; missing prices stay null', () => {
+  const raw = fixture();
+  raw.intervals.push({ start: raw.days[1].start, end: new Date(Date.parse(raw.days[1].start) + HOUR / 2).toISOString(), pv_estimate: 4, pv_estimate10: 6 });
+  const charts = buildForecastCharts(normalizeForecast(raw), [
+    { date: '2026-10-25', hour: 0, price: -12 },
+    { date: '2026-10-26', hour: 0, price: 25 },
+    { date: '2026-10-25', hour: 1, price: null },
+    { date: '2026-10-25', hour: 3, price: undefined },
+    { date: '2026-10-25', hour: 4, price: NaN },
+  ]);
+  assert.ok(charts.priceMin < -12);
+  assert.ok(charts.priceMax > 25);
+  assert.ok(charts.pvMax > 6);
+  assert.equal(charts.days[0].hours.filter(hour => hour.price !== null).length, 1);
+  assert.equal(charts.days[0].slots[0].pv_estimate, 0);
+  assert.equal(charts.days[0].slots[0].pv_estimate10, null);
+  assert.equal(charts.days[0].slots[1].pv_estimate, null);
+});
+
+test('zero production and missing prices still yield two charts with finite scales', () => {
+  const charts = buildForecastCharts(normalizeForecast(fixture()));
+  assert.equal(charts.days.length, 2);
+  assert.equal(charts.days[0].intervals[0].end - charts.days[0].intervals[0].start, HOUR / 2);
+  assert.ok(charts.pvMax > 0);
+  assert.ok(charts.priceMax > charts.priceMin);
+  assert.equal(charts.days[1].hours.every(hour => hour.price === null), true);
+});
+
+test('areas use straight lines, keep half-hour estimates and split on nulls or missing intervals', () => {
+  const intervals = [
+    { start: 0, end: 30, pv_estimate: 2, pv_estimate10: 1 },
+    { start: 30, end: 60, pv_estimate: 4, pv_estimate10: null },
+    { start: 60, end: 90, pv_estimate: 2, pv_estimate10: 1 },
+    { start: 120, end: 150, pv_estimate: 0, pv_estimate10: 0 },
+  ];
+  const central = forecastAreas(intervals, 'pv_estimate', x => x, y => 10 - y, 10);
+  const lower = forecastAreas(intervals, 'pv_estimate10', x => x, y => 10 - y, 10);
+  assert.equal(central.length, 2);
+  assert.equal(lower.length, 3);
+  assert.match(central[0], /15 8 L 45 6 L 75 8/);
+  assert.equal(central.some(path => /[CQ]/.test(path)), false);
+  assert.match(lower[2], /^M 120 10 L 120 10/);
+});
+
+test('invalid contracts and naive times disable the view without turning null estimates into zero', () => {
+  assert.equal(normalizeForecast({ usable: false, reason: 'not_configured' }).reason, 'not_configured');
+  for (const change of [
+    { time_zone: 'invalid/timezone' }, { days: [] }, { intervals: [] },
+    { intervals: [{ start: '2026-10-25T12:00:00', end: '2026-10-25T12:30:00', pv_estimate: 3 }] },
+    { intervals: [{ start: '2026-10-25T12:00:00Z', end: '2026-10-25T12:30:00Z', pv_estimate: null }] },
+  ]) assert.equal(normalizeForecast({ ...fixture(), ...change }).usable, false);
+});
+
+function connection() {
+  const handlers = new Map();
+  return {
+    connected: true, handlers,
+    addEventListener(name, fn) { handlers.set(name, fn); },
+    removeEventListener(name, fn) { if (handlers.get(name) === fn) handlers.delete(name); },
+    emit(name) { handlers.get(name)?.(); },
+  };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('poller fetches only on entry/minute, ignores obsolete responses and cleans up listeners/timers', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const requests = [], states = [], conn = connection();
+  const poller = new ForecastPoller(message => new Promise(resolve => requests.push({ message, resolve })), state => states.push(state));
+  t.after(() => poller.stop());
+  poller.setActive(true, conn);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].message, { type: 'victron_charge_control/solar_forecast' });
+  poller.setActive(true, conn);
+  assert.equal(requests.length, 1);
+  t.mock.timers.tick(60000);
+  assert.equal(requests.length, 2);
+  requests[1].resolve(fixture());
+  await flush();
+  assert.equal(states.at(-1).usable, true);
+  requests[0].resolve({ usable: false, reason: 'stale' });
+  await flush();
+  assert.equal(states.at(-1).usable, true);
+  poller.setActive(false, conn);
+  assert.equal(conn.handlers.size, 0);
+  assert.equal(poller.timer, null);
+  t.mock.timers.tick(60000);
+  assert.equal(requests.length, 2);
+});
+
+test('disconnect falls back, rejects stale in-flight results and recovers on ready or re-entry', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const requests = [], states = [], conn = connection();
+  const poller = new ForecastPoller(() => new Promise(resolve => requests.push(resolve)), state => states.push(state));
+  t.after(() => poller.stop());
+  poller.setActive(true, conn);
+  conn.emit('disconnected');
+  assert.equal(states.at(-1).usable, false);
+  assert.equal(poller.timer, null);
+  requests[0](fixture());
+  await flush();
+  assert.equal(states.at(-1).usable, false);
+  conn.emit('ready');
+  assert.equal(requests.length, 2);
+  requests[1](fixture());
+  await flush();
+  assert.equal(states.at(-1).usable, true);
+  poller.stop();
+  poller.setActive(true, conn);
+  assert.equal(requests.length, 3);
+});
+
+test('older backend rejection disables forecast and a later poll can recover', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const states = [], conn = connection();
+  let supported = false;
+  const poller = new ForecastPoller(async () => { if (!supported) throw new Error('unknown_command'); return fixture(); }, state => states.push(state));
+  t.after(() => poller.stop());
+  poller.setActive(true, conn);
+  await flush();
+  assert.equal(states.at(-1).usable, false);
+  supported = true;
+  t.mock.timers.tick(60000);
+  await flush();
+  assert.equal(states.at(-1).usable, true);
+});

@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build": "rollup -c",
-    "test": "node test/view.test.mjs",
+    "test": "node --test test/*.test.mjs",
     "watch": "rollup -c --watch",
     "dev": "rollup -c --watch",
     "serve": "npx serve . -l 5050 --cors"
