@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import ChargeControlData, VictronChargeControlCoordinator
+from .forecast import SolcastForecastCoordinator
 
 
 async def async_setup_entry(
@@ -49,6 +50,9 @@ async def async_setup_entry(
             GridEnergySensor(coordinator, entry, "grid_export"),
             SolarSurplusMeanSensor(coordinator, entry),
             SolarSurplusStatusSensor(coordinator, entry),
+            SolarForecastStatusSensor(coordinator.forecast_coordinator, entry),
+            SolarForecastLastUpdatedSensor(coordinator.forecast_coordinator, entry),
+            SolarForecastCoverageSensor(coordinator.forecast_coordinator, entry),
         ]
     )
 
@@ -70,6 +74,70 @@ class VictronCCBaseSensor(CoordinatorEntity[VictronChargeControlCoordinator], Se
             manufacturer="Victron Energy",
             entry_type=DeviceEntryType.SERVICE,
         )
+
+
+class SolarForecastBaseSensor(CoordinatorEntity[SolcastForecastCoordinator], SensorEntity):
+    """Expose forecast diagnostics independently of battery control health."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: SolcastForecastCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_{self._attr_translation_key}"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)})
+
+    @property
+    def available(self) -> bool:
+        return True
+
+
+class SolarForecastStatusSensor(SolarForecastBaseSensor):
+    """Expose forecast status and a small source inventory."""
+
+    _attr_translation_key = "solar_forecast_status"
+    _attr_icon = "mdi:solar-power"
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.data.status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        data = self.coordinator.data
+        return {
+            "source_entry_id": data.source_entry_id,
+            "discovered_entity_ids": data.discovered_entity_ids,
+            "coverage_start": data.coverage_start,
+            "coverage_end": data.coverage_end,
+            "reason": data.reason,
+        }
+
+
+class SolarForecastLastUpdatedSensor(SolarForecastBaseSensor):
+    """Expose Solcast's source timestamp, including when its forecast is unusable."""
+
+    _attr_translation_key = "solar_forecast_last_updated"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:clock-check-outline"
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.data.source_updated_at
+
+
+class SolarForecastCoverageSensor(SolarForecastBaseSensor):
+    """Expose continuous forecast coverage from now in hours."""
+
+    _attr_translation_key = "solar_forecast_coverage"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:timeline-clock-outline"
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.data.coverage_hours
 
 
 class VictronCCBaseRestoreSensor(

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfTime
 
 from custom_components.victron_charge_control.const import (
     ACTION_CHARGE,
@@ -26,6 +27,7 @@ from custom_components.victron_charge_control.const import (
     MODE_OFF,
 )
 from custom_components.victron_charge_control.coordinator import ChargeControlData
+from custom_components.victron_charge_control.forecast import ForecastSnapshot
 from custom_components.victron_charge_control.number import (
     NUMBERS,
     VictronCCNumber,
@@ -38,6 +40,10 @@ from custom_components.victron_charge_control.sensor import (
     GridEnergySensor,
     LastScheduleUpdateSensor,
     ScheduleSensor,
+    SolarForecastBaseSensor,
+    SolarForecastCoverageSensor,
+    SolarForecastLastUpdatedSensor,
+    SolarForecastStatusSensor,
     TargetSetpointSensor,
 )
 from custom_components.victron_charge_control.switch import (
@@ -59,6 +65,67 @@ from .conftest import MOCK_CONFIG_DATA_WITH_COST, MockConfigEntry
 # ======================================================================
 # Sensor entities
 # ======================================================================
+
+
+class TestSolarForecastSensors:
+    """Forecast sensors subscribe to their own coordinator and expose safe diagnostics."""
+
+    @pytest.mark.parametrize(
+        "status", ["disabled", "not_detected", "unavailable", "invalid_data", "incomplete", "stale", "ready"]
+    )
+    def test_status_remains_readable_with_main_and_forecast_failures(self, coordinator, status):
+        coordinator.last_update_success = False
+        forecast = coordinator.forecast_coordinator
+        forecast.last_update_success = False
+        forecast.data = ForecastSnapshot(status=status, reason="Concise explanation")
+        sensor = SolarForecastStatusSensor(forecast, MockConfigEntry())
+
+        assert sensor.coordinator is forecast
+        assert sensor.available
+        assert sensor.native_value == status
+        assert sensor.entity_category == EntityCategory.DIAGNOSTIC
+        assert sensor.device_info["identifiers"] == {(DOMAIN, MockConfigEntry().entry_id)}
+        assert set(sensor.extra_state_attributes) == {
+            "source_entry_id", "discovered_entity_ids", "coverage_start", "coverage_end", "reason"
+        }
+
+    @pytest.mark.asyncio
+    async def test_platform_adds_forecast_sensors_and_updates_from_forecast(self, coordinator):
+        from custom_components.victron_charge_control.sensor import async_setup_entry
+
+        entry = MockConfigEntry()
+        coordinator.hass.data[DOMAIN] = {entry.entry_id: coordinator}
+        add_entities = MagicMock()
+        await async_setup_entry(coordinator.hass, entry, add_entities)
+        sensors = [sensor for sensor in add_entities.call_args.args[0] if isinstance(sensor, SolarForecastBaseSensor)]
+        assert len(sensors) == 3
+        forecast = coordinator.forecast_coordinator
+        updated = datetime(2026, 10, 15, 8, tzinfo=timezone.utc)
+        forecast.data = ForecastSnapshot(
+            status="ready", usable=True, source_entry_id="solcast_entry",
+            discovered_entity_ids=("sensor.renamed_forecast",), source_updated_at=updated,
+            coverage_start=updated, coverage_end=updated, coverage_hours=17.5,
+        )
+        by_key = {sensor.translation_key: sensor for sensor in sensors}
+        assert by_key["solar_forecast_status"].native_value == "ready"
+        assert by_key["solar_forecast_status"].extra_state_attributes["source_entry_id"] == "solcast_entry"
+        timestamp = by_key["solar_forecast_last_updated"]
+        assert isinstance(timestamp, SolarForecastLastUpdatedSensor)
+        assert timestamp.native_value == updated
+        assert timestamp.device_class == SensorDeviceClass.TIMESTAMP
+        assert timestamp.extra_state_attributes is None
+        coverage = by_key["solar_forecast_coverage"]
+        assert isinstance(coverage, SolarForecastCoverageSensor)
+        assert coverage.native_value == 17.5
+        assert coverage.native_unit_of_measurement == UnitOfTime.HOURS
+        assert coverage.extra_state_attributes is None
+        for sensor in sensors:
+            sensor.async_write_ha_state = MagicMock()
+            await sensor.async_added_to_hass()
+        forecast.async_update_listeners()
+        for sensor in sensors:
+            sensor.async_write_ha_state.assert_called_once()
+            await sensor.async_will_remove_from_hass()
 
 
 class TestDesiredActionSensor:

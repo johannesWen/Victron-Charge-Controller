@@ -1,6 +1,9 @@
 services:
   devcontainer:
     image: mcr.microsoft.com/devcontainers/python:3-3.14-bookworm
+    env_file:
+      - path: ./.env
+        required: false
     volumes:
       # shortcut: only the checkout is mounted; add Git metadata mounts for linked-worktree Git support.
       - .:/workspaces/victron-charge-controller:cached
@@ -13,6 +16,17 @@ services:
     ports: !override
       - "127.0.0.1:8123:8123"
     volumes:
+      - homeassistant-data:/config
+    depends_on:
+      solcast-install:
+        condition: service_completed_successfully
+
+  solcast-install:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    entrypoint: ["python", "/install_solcast.py"]
+    restart: "no"
+    volumes:
+      - ./dev/install_solcast.py:/install_solcast.py:ro
       - homeassistant-data:/config
 
 volumes:
