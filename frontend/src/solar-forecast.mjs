@@ -53,13 +53,17 @@ export function buildForecastCharts(forecast, plan = []) {
       const interval = intervals.find(interval => interval.start <= start && interval.end > start);
       return { start, end: boundaries[index + 1], price: prices.get(localHour(start, forecast.time_zone)) ?? null, pv_estimate: interval?.pv_estimate ?? null, pv_estimate10: interval?.pv_estimate10 ?? null };
     });
-    return { ...day, hours, intervals, slots };
+    const energy = key => intervals.length && intervals.every(interval => numeric(interval[key]))
+      ? intervals.reduce((total, interval) => total + interval[key] * (interval.end - interval.start) / HOUR, 0)
+      : null;
+    return { ...day, hours, intervals, slots, pvKwh: energy('pv_estimate'), pv10Kwh: energy('pv_estimate10') };
   });
   const prices = days.flatMap(day => day.hours.map(hour => hour.price)).filter(numeric);
   const min = Math.min(0, ...prices), max = Math.max(0, ...prices);
   const margin = (max - min || 1) * 0.1;
   const pvMax = Math.max(1, ...days.flatMap(day => day.intervals.flatMap(interval => [interval.pv_estimate, interval.pv_estimate10 ?? 0])));
-  return { days, priceMin: min < 0 ? min - margin : 0, priceMax: max + margin, pvMax: pvMax * 1.1 };
+  // Reserve at least half the plot above zero for PV, even with negative-only prices.
+  return { days, priceMin: min < 0 ? min - margin : 0, priceMax: Math.max(max, -min) + margin, pvMax: pvMax * 1.1 };
 }
 
 // Each missing value or timestamp gap starts a new area, so no curve bridges missing data.

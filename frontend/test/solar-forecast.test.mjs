@@ -79,6 +79,30 @@ test('zero production and missing prices still yield two charts with finite scal
   assert.equal(charts.days[1].hours.every(hour => hour.price === null), true);
 });
 
+test('daily energy weights interval durations and clips at local midnight across DST', () => {
+  const raw = fixture();
+  raw.intervals = [
+    { start: raw.days[0].start, end: raw.days[0].end, pv_estimate: 2, pv_estimate10: 1 },
+    { start: raw.days[1].start, end: '2026-10-26T00:30:00+01:00', pv_estimate: 4, pv_estimate10: 2 },
+    { start: '2026-10-26T23:45:00+01:00', end: '2026-10-27T00:15:00+01:00', pv_estimate: 8, pv_estimate10: 4 },
+  ];
+  const { days } = buildForecastCharts(normalizeForecast(raw));
+  assert.deepEqual(days.map(day => [day.pv10Kwh, day.pvKwh]), [[25, 50], [2, 4]]);
+});
+
+test('daily energy distinguishes zero production, missing days and incomplete lower estimates', () => {
+  const raw = fixture();
+  let { days } = buildForecastCharts(normalizeForecast(raw));
+  assert.equal(days[0].pvKwh, 0);
+  assert.equal(days[0].pv10Kwh, null);
+  assert.equal(days[1].pvKwh, null);
+  assert.equal(days[1].pv10Kwh, null);
+  raw.intervals.push({ start: '2026-10-25T00:30:00+02:00', end: '2026-10-25T01:00:00+02:00', pv_estimate: 4, pv_estimate10: 2 });
+  ({ days } = buildForecastCharts(normalizeForecast(raw)));
+  assert.equal(days[0].pvKwh, 2);
+  assert.equal(days[0].pv10Kwh, null);
+});
+
 test('areas use straight lines, keep half-hour estimates and split on nulls or missing intervals', () => {
   const intervals = [
     { start: 0, end: 30, pv_estimate: 2, pv_estimate10: 1 },

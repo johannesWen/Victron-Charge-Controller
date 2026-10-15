@@ -62,8 +62,21 @@ const HELP_TEXT = {
       items: [
         'In Price view, each bar shows the scheduled action for one hour (today + tomorrow).',
         'Tap a Price bar to see price details for that hour.',
-        'Switch from Price to PV forecast below the permission switches to compare neutral hourly prices with the Solcast estimate and its lower (10th percentile) estimate in kW. The two yellow areas each start at zero; they are not added together.',
-        'PV forecast is a read-only view: hover, tap or focus a time slot for details. It uses Home Assistant time, preserves half-hour forecasts and leaves gaps where data is missing. It returns to Price if the forecast becomes unavailable.',
+      ] },
+    { heading: 'PV forecast requirements',
+      items: [
+        'Install and configure the Solcast PV Solar Forecast integration in Home Assistant with your Solcast API key and rooftop sites. It must be loaded and have downloaded forecast data.',
+        'In Settings > Devices & services > Victron Charge Control > Configure, enable Use Solcast forecast (enabled by default). Solcast is discovered automatically; no API key or forecast entity selection is needed in Victron Charge Control, and detailed forecast attributes can stay disabled.',
+        'The forecast must cover now through the end of tomorrow, and its source update must be no more than 36 hours old. If the toggle is disabled, read the message below it and check Solar Forecast Status in the integration diagnostics. Check Solcast configuration and updates if data is missing or stale.',
+      ] },
+    { heading: 'Using the PV forecast view',
+      items: [
+        'On the automatic Plan page, use the Price / PV forecast toggle below Charge Allowed and Discharge Allowed to switch views. Today and Tomorrow use the Home Assistant time zone.',
+        'The light-yellow area shows the central Solcast estimate (pv_estimate). The yellow area shows the lower, 10th-percentile estimate (pv_estimate10), not 10% of the central value. Both show power in kW on the right axis; the areas overlap and are not added together.',
+        'Grey hourly bars show prices in ct/kWh on the left axis. Bars and forecast curves share the same zero line, with negative prices below it. Thresholds and scheduled-hour markings are hidden in this view.',
+        'Each title shows PV 10% and PV energy in kWh, calculated from the available forecast intervals for that day. These are forecast totals, not measured production; missing intervals are not counted as zero. A missing day or missing lower estimates is shown as unavailable.',
+        'Hover, tap or keyboard-focus a time slot to see its time, price and PV estimates in the top-left tooltip. Half-hour forecasts are preserved, and missing values remain gaps. Prices can be unavailable while the PV forecast is still shown.',
+        'This view is read-only and returns to Price if the forecast becomes unusable. Switching views does not enable PV charging or alter charging permissions.',
         'Forecast data is read from the integration cache every minute while this page is open. This does not request a Solcast refresh or change the charging schedule.',
       ] },
     { heading: 'Charging modes',
@@ -2629,11 +2642,11 @@ class VictronChargeControllerCard extends LitElement {
     return html`
       ${this._renderPlanControls()}
       <div class="forecast-mode-row">
-        <span>Price</span>
+        <ha-icon icon="mdi:currency-eur" title="Price" role="img" aria-label="Price"></ha-icon>
         <ha-switch aria-label="PV forecast view" aria-describedby="forecast-status"
           .checked=${this._planChartMode === 'pv'} .disabled=${!forecast.usable}
           @change=${e => this._setPlanChartMode(e.target.checked ? 'pv' : 'price')}></ha-switch>
-        <span>PV forecast</span>
+        <ha-icon icon="mdi:solar-power" title="PV forecast" role="img" aria-label="PV forecast"></ha-icon>
         <span id="forecast-status" class="forecast-status" role="status">${forecast.usable ? '' : String(forecast.reason).replaceAll('_', ' ')}</span>
       </div>
       ${this._planChartMode === 'pv' && forecast.usable ? this._renderSolarForecast() : this._renderAutoPlanContent()}
@@ -2647,7 +2660,7 @@ class VictronChargeControllerCard extends LitElement {
     return html`
       <div class="plan-chart-container">
         ${charts.days.map((day, index) => html`
-          <div class="plan-chart-label">${index === 0 ? 'Today' : 'Tomorrow'} <span class="plan-chart-date">${day.date}</span></div>
+          <div class="plan-chart-label">${index === 0 ? 'Today' : 'Tomorrow'} <span class="plan-chart-date">${day.date}</span> - PV 10%: ${day.pv10Kwh === null ? 'unavailable' : this._formatEnergy(day.pv10Kwh, 1)} - PV: ${day.pvKwh === null ? 'unavailable' : this._formatEnergy(day.pvKwh, 1)}</div>
           ${day.hours.every(hour => hour.price === null) ? html`<div class="forecast-status">Prices not yet available</div>` : nothing}
           ${this._renderSolarChart(day, charts, forecast.time_zone)}
         `)}
@@ -2664,7 +2677,8 @@ class VictronChargeControllerCard extends LitElement {
     const left = 50, right = 550, top = 38, bottom = 240;
     const x = time => left + (time - day.start) / (day.end - day.start) * (right - left);
     const priceY = price => bottom - (price - scales.priceMin) / (scales.priceMax - scales.priceMin) * (bottom - top);
-    const pvY = power => bottom - power / scales.pvMax * (bottom - top);
+    const baseline = priceY(0);
+    const pvY = power => priceY(power / scales.pvMax * scales.priceMax);
     const details = slot => `${forecastTime(slot.start, timeZone)}–${forecastTime(slot.end, timeZone)} · Price: ${slot.price === null ? 'unavailable' : `${slot.price.toFixed(2)} ct/kWh`} · PV: ${slot.pv_estimate === null ? 'unavailable' : `${slot.pv_estimate.toFixed(2)} kW`} · Lower: ${slot.pv_estimate10 === null ? 'unavailable' : `${slot.pv_estimate10.toFixed(2)} kW`}`;
     const show = index => { this._solarTooltip = { date: day.date, index }; this.requestUpdate(); };
     const hide = () => { this._solarTooltip = null; this.requestUpdate(); };
@@ -2673,18 +2687,20 @@ class VictronChargeControllerCard extends LitElement {
       <svg class="plan-chart solar-chart" viewBox="0 0 600 280" role="group" aria-label=${`PV forecast and prices for ${day.date}, ${timeZone}`}>
         ${[0, 1, 2, 3, 4].map(index => {
           const y = bottom - index / 4 * (bottom - top);
+          const price = scales.priceMin + index / 4 * (scales.priceMax - scales.priceMin);
           return svg`
             <line x1=${left} x2=${right} y1=${y} y2=${y} stroke="var(--vcc-border, #ddd)" stroke-width="0.5" />
-            <text x=${left - 6} y=${y + 4} text-anchor="end" class="plan-axis-label">${(scales.priceMin + index / 4 * (scales.priceMax - scales.priceMin)).toFixed(1)}</text>
-            <text x=${right + 6} y=${y + 4} class="plan-axis-label">${(index / 4 * scales.pvMax).toFixed(1)}</text>`;
+            <text x=${left - 6} y=${y + 4} text-anchor="end" class="plan-axis-label">${price.toFixed(1)}</text>
+            <text x=${right + 6} y=${y + 4} class="plan-axis-label">${(price / scales.priceMax * scales.pvMax).toFixed(1)}</text>`;
         })}
+        <line x1=${left} x2=${right} y1=${baseline} y2=${baseline} stroke="var(--vcc-text-secondary, #888)" stroke-width="1" />
         <text x=${left} y="22" class="plan-axis-unit">ct/kWh</text>
         <text x=${right} y="22" text-anchor="end" class="plan-axis-unit">kW</text>
         ${day.hours.filter(hour => hour.price !== null).map(hour => svg`
-          <rect x=${x(hour.start) + 1} y=${Math.min(priceY(0), priceY(hour.price))}
-            width=${Math.max(0, x(hour.end) - x(hour.start) - 2)} height=${Math.abs(priceY(hour.price) - priceY(0))} fill="#9e9e9e" opacity="0.6" />`)}
-        ${forecastAreas(day.intervals, 'pv_estimate', x, pvY, bottom).map(path => svg`<path d=${path} fill="#fff59d" fill-opacity="0.65" stroke="#f9d95b" stroke-width="1.5" />`)}
-        ${forecastAreas(day.intervals, 'pv_estimate10', x, pvY, bottom).map(path => svg`<path d=${path} fill="#fbc02d" fill-opacity="0.7" stroke="#e0a800" stroke-width="1.5" />`)}
+          <rect x=${x(hour.start) + 1} y=${Math.min(baseline, priceY(hour.price))}
+            width=${Math.max(0, x(hour.end) - x(hour.start) - 2)} height=${Math.abs(priceY(hour.price) - baseline)} fill="#9e9e9e" opacity="0.6" />`)}
+        ${forecastAreas(day.intervals, 'pv_estimate', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fff59d" fill-opacity="0.4" stroke="#f9d95b" stroke-width="1.5" />`)}
+        ${forecastAreas(day.intervals, 'pv_estimate10', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fbc02d" fill-opacity="0.45" stroke="#e0a800" stroke-width="1.5" />`)}
         ${day.hours.filter((_, index) => index % 3 === 0).map(hour => svg`
           <text x=${x(hour.start)} y="260" text-anchor="middle" class="plan-axis-label">${String(hour.hour).padStart(2, '0')}</text>`)}
         ${day.slots.map((slot, index) => svg`
@@ -2692,10 +2708,12 @@ class VictronChargeControllerCard extends LitElement {
             fill="transparent" tabindex="0" role="img" aria-label=${details(slot)}
             @mouseenter=${() => show(index)} @mouseleave=${hide} @focus=${() => show(index)} @blur=${hide}
             @click=${() => show(index)} @keydown=${e => { if (e.key === 'Escape') hide(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); show(index); } }}>
-            <title>${details(slot)}</title>
           </rect>`)}
+        ${selected ? svg`
+          <foreignObject x=${left + 6} y=${top + 6} width=${right - left - 12} height=${bottom - top - 12} pointer-events="none">
+            ${html`<div class="solar-tooltip" role="status">${details(selected)}</div>`}
+          </foreignObject>` : nothing}
       </svg>
-      ${selected ? html`<div class="solar-tooltip" role="status">${details(selected)}</div>` : nothing}
     `;
   }
 
@@ -3713,15 +3731,29 @@ class VictronChargeControllerCard extends LitElement {
       .forecast-mode-row {
         display: flex;
         align-items: center;
+        justify-content: center;
         flex-wrap: wrap;
         gap: 8px;
         font-size: 0.82em;
-        padding-bottom: 8px;
+        border-top: 1px solid var(--vcc-border, #ddd);
+        padding: 8px 0;
       }
+      .forecast-mode-row .forecast-status { flex-basis: 100%; text-align: center; }
+      .forecast-mode-row .forecast-status:empty { display: none; }
+      .forecast-mode-row ha-icon { --mdc-icon-size: 20px; }
       .forecast-status { color: var(--vcc-text2, #757575); font-size: 0.85em; }
       .solar-slot { cursor: crosshair; }
       .solar-slot:focus { outline: none; stroke: var(--vcc-accent, #03a9f4); stroke-width: 1.5; }
-      .solar-tooltip { font-size: 0.8em; padding: 4px 0; color: var(--vcc-text, #212121); }
+      .solar-tooltip {
+        width: fit-content;
+        font-size: 12px;
+        line-height: 1.4;
+        padding: 6px 8px;
+        border-radius: 4px;
+        color: var(--vcc-text, #212121);
+        background: var(--vcc-bg, #fff);
+        border: 1px solid var(--vcc-border, #ddd);
+      }
       .plan-control-toggle {
         display: flex;
         align-items: center;
