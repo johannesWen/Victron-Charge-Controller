@@ -20,7 +20,8 @@ cp .env.example .env
 ```
 
 Then run **Dev Containers: Rebuild and Reopen in Container** (also after changing
-`.env`). Compose reads this optional file into the editor/bootstrap service only;
+`.env`). Compose reads this optional file into the editor/bootstrap service and
+passes `SOLCAST_API_KEY` to Home Assistant to select the real forecast path;
 the key is never a build argument or part of an image. All dotenv files, including
 nested and environment-specific files, are gitignored except the root
 `.env.example`. Keep the real `.env` private.
@@ -66,8 +67,21 @@ automatically upgraded or replaced.
 When `SOLCAST_API_KEY` is set and no Solcast entry exists, the bootstrap creates
 one through Home Assistant's config-flow API. This stores the key in HA's config
 volume, as normal integration setup does. With a missing/blank key, Solcast code
-is installed but remains unconfigured, and Victron still starts normally. A
-Solcast setup failure also leaves Victron available; finish setup from
+is installed but remains unconfigured. If no saved Solcast entry exists, the
+devcontainer supplies **synthetic PV test data**, so the Plan PV view works
+without a cloud account. Its deterministic central/lower daylight curves include
+zero nights and continuous half-hour intervals for today and tomorrow in HA's
+timezone, including 23/25-hour DST days. The existing five-minute forecast poll
+regenerates the horizon and timestamp, including after midnight; there are no
+network/API requests for synthetic forecasts. Diagnostics, WebSocket `reason`,
+and the provider activation log explicitly label the data synthetic. Disabling
+**Use Solcast forecast** disables this data too.
+
+Only `.devcontainer/docker-compose.yml` mounts `dev/victron_dev_forecast.py` and
+sets `VICTRON_DEV_FORECAST=1`. Standalone Compose and release packages do not
+include the provider. A supplied key or **any** saved Solcast entry always selects
+real Solcast; setup errors, unloaded entries, and query failures never fall back
+to test data. A Solcast setup failure leaves Victron available; finish setup from
 **Settings → Devices & services → Add integration → Solcast PV Forecast**.
 Existing Solcast entries and their keys/settings are preserved on every startup:
 change an existing entry's key in Home Assistant's Solcast configuration UI;

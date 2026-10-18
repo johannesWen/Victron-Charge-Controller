@@ -8,17 +8,25 @@ import * as forecast from '../src/solar-forecast.mjs';
 const source = readFileSync(new URL('../src/victron-charge-controller-card.js', import.meta.url), 'utf8')
   .replace(/^import .*;\r?\n/gm, '').replace(/registerCard\(\);\s*$/, 'globalThis.Card = VictronChargeControllerCard;');
 const template = (strings, ...values) => strings.reduce((text, string, index) => text + string + (values[index] ?? ''), '');
-function card() {
+function card({ now = '2026-10-15T00:15:00+02:00', templates = [] } = {}) {
+  const render = (strings, ...values) => {
+    const rendered = template(strings, ...values);
+    templates.push({ strings, values, rendered });
+    return rendered;
+  };
   const context = vm.createContext({
-    ...forecast, html: template, svg: template, css: template, nothing: '',
+    ...forecast, html: render, svg: render, css: template, nothing: '',
     LitElement: class { requestUpdate() {} },
-    document: { removeEventListener() {} }, window: { removeEventListener() {} },
-    setTimeout, clearTimeout, normalizeView: value => value,
+    document: { addEventListener() {}, removeEventListener() {} }, window: { removeEventListener() {} },
+    setTimeout, clearTimeout,
+    Date: class extends Date { static now() { return Date.parse(typeof now === 'function' ? now() : now); } },
+    normalizeView: value => value,
   });
   vm.runInContext(source, context);
   const result = new context.Card();
   result._state = () => undefined;
-  result._callService = () => assert.fail('PV view must never call an editing service');
+  result.hass = { callService: () => assert.fail('Rendering or switching views must never edit the schedule') };
+  result._val = () => undefined;
   return result;
 }
 
@@ -54,7 +62,7 @@ test('auto-page switch remains visible and explains unavailable forecast without
   assert.match(rendered, /No charge plan data available/);
 });
 
-test('PV view renders both days without prices and includes only forecast interaction handlers', () => {
+test('PV view renders accessible forecasts on both days without prices or editable actions', () => {
   const instance = card();
   const start = '2026-10-15T00:00:00+02:00';
   instance._solarForecast = forecast.normalizeForecast({
@@ -73,8 +81,10 @@ test('PV view renders both days without prices and includes only forecast intera
   assert.match(rendered, /Tomorrow <span class="plan-chart-date">2026-10-16<\/span> - PV 10%: unavailable - PV: unavailable/);
   assert.match(rendered, /Price: unavailable/);
   assert.equal((rendered.match(/Prices not yet available/g) || []).length, 2);
-  assert.doesNotMatch(rendered, /plan-picker|threshold-hit|plan-hatch|Current<|Charge Threshold|_setPlanHourAction/);
+  assert.doesNotMatch(rendered, /class="plan-picker"|threshold-hit|Charge Threshold|_setPlanHourAction/);
   assert.match(rendered, /tabindex="0"/);
+  assert.equal((rendered.match(/data-readonly=true/g) || []).length, 49);
+  assert.doesNotMatch(rendered, /Change hour action/);
 });
 
 for (const prices of [[5, 20], [-10, 20], [-20, -5], [0, 0], []]) {
@@ -106,10 +116,11 @@ for (const prices of [[5, 20], [-10, 20], [-20, -5], [0, 0], []]) {
         assert.ok(points.every(([, y]) => y >= 38 && y <= baseline));
         assert.ok(points.some(([, y]) => y < baseline), 'positive PV extends above zero');
       }
-      const bars = [...rendered.matchAll(/<rect x=\S+ y=(\S+)\s+width=\S+ height=(\S+) fill="#9e9e9e"/g)];
+      const bars = [...rendered.matchAll(/<rect class="plan-price-bar"\s+x="[^"]+" y="([^"]+)" width="[^"]+" height="([^"]+)"/g)];
       assert.equal(bars.length, prices.length);
       bars.forEach(([, y, height], index) => {
-        assert.ok(Math.abs(Number(y) + (prices[index] >= 0 ? Number(height) : 0) - baseline) < 1e-9);
+        if (prices[index] === 0) { assert.equal(Number(y), baseline); assert.equal(Number(height), 1); }
+        else assert.ok(Math.abs(Number(y) + (prices[index] > 0 ? Number(height) : 0) - baseline) < 1e-9);
       });
       const pvTicks = [...rendered.matchAll(/<text x=556 y=(\S+) class="plan-axis-label">([^<]+)</g)];
       assert.equal(pvTicks.length, 5);
@@ -120,3 +131,217 @@ for (const prices of [[5, 20], [-10, 20], [-20, -5], [0, 0], []]) {
     }
   });
 }
+
+// Capture template event bindings so these checks exercise the actual rendered handlers.
+const nodes = (templates, className) => templates.filter(node => node.strings.join('').includes(`class="${className}"`));
+function handler(node, name) {
+  const index = node.strings.findIndex(string => string.endsWith(`@${name}=`));
+  assert.notEqual(index, -1, `${name} binding exists`);
+  return node.values[index];
+}
+const event = (dataset = {}, extra = {}) => ({
+  currentTarget: { dataset, closest: () => null, focus() {} }, preventDefault() {}, stopPropagation() {}, ...extra,
+});
+function chartsFor(plan = [], start = '2026-10-25T00:00:00+02:00', middle = '2026-10-26T00:00:00+01:00', end = '2026-10-27T00:00:00+01:00') {
+  const input = forecast.normalizeForecast({
+    usable: true, time_zone: 'Europe/Vienna',
+    days: [{ date: start.slice(0, 10), start, end: middle }, { date: middle.slice(0, 10), start: middle, end }],
+    intervals: [0, 2, 3].map(hour => ({ start: new Date(Date.parse(start) + hour * 3600000).toISOString(),
+      end: new Date(Date.parse(start) + hour * 3600000 + 1800000).toISOString(), pv_estimate: 2, pv_estimate10: 1 })),
+  });
+  return forecast.buildForecastCharts(input, plan);
+}
+
+test('PV and Price share action colors, PV columns, hatching, and past-hour styling', () => {
+  const instance = card({ now: '2026-10-24T12:00:00Z' });
+  const plan = [
+    { hour: 0, price: 10, action: 'idle' },
+    { hour: 1, price: 12, action: 'charge', blockedDischarging: true },
+    { hour: 2, price: -4, displayAction: 'discharge', blockedCharging: true },
+    { hour: 3, price: 0, displayAction: 'pv_charge' },
+    { hour: 4, price: 3, displayAction: 'blocked', blockedCharging: true, blockedDischarging: true },
+  ].map(entry => ({ date: '2026-10-25', ...entry }));
+  const charts = chartsFor(plan);
+  const pv = instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+  const price = instance._renderPriceChart(plan);
+  for (const rendered of [pv, price]) {
+    assert.match(rendered, /fill="var\(--vcc-success, #4caf50\)"/);
+    assert.match(rendered, /fill="#ff6600"/);
+    assert.match(rendered, /fill="var\(--vcc-disabled, #bdbdbd\)"/);
+    assert.match(rendered, /fill="var\(--vcc-blocked-both, #f44336\)"/);
+    assert.match(rendered, /class="plan-pv-column"/);
+    for (const suffix of ['charging', 'discharging', 'both']) assert.match(rendered, new RegExp(`fill="url\\(#plan-hatch-blocked-${suffix}\\)"`));
+  }
+  const past = card({ now: '2026-10-26T00:00:00+01:00' })._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+  assert.doesNotMatch(past, /fill="url\(#plan-hatch|class="plan-pv-column"/);
+  assert.equal((past.match(/\sopacity="0.35"/g) || []).length, 6, 'both repeated hour bars are past');
+});
+
+for (const now of ['2026-10-25T00:30:00+02:00', '2026-10-25T02:30:00+02:00', '2026-10-25T02:30:00+01:00', '2026-10-25T23:59:00+01:00', '2026-10-26T00:00:00+01:00']) {
+  test(`PV current-hour indicator follows HA timezone and absolute DST interval at ${now}`, () => {
+    const templates = [], instance = card({ now, templates }), charts = chartsFor();
+    charts.days.forEach(day => instance._renderSolarChart(day, charts, 'Europe/Vienna'));
+    const markers = templates.filter(node => node.strings.join('').includes('stroke-dasharray="4,3"'));
+    assert.equal(markers.length, 1, 'only the absolute current interval is marked');
+    const labels = templates.filter(node => node.strings.join('').includes('class="plan-axis-label ') && node.rendered.includes('plan-current-hour'));
+    assert.equal(labels.length, 1);
+    const target = charts.days.flatMap(day => day.hours).find(hour => hour.start <= Date.parse(now) && Date.parse(now) < hour.end);
+    assert.ok(labels[0].rendered.includes(`>${String(target.hour).padStart(2, '0')}</text>`));
+    const chart = charts.days.find(day => day.start <= Date.parse(now) && Date.parse(now) < day.end);
+    const expectedX = 50 + (target.start - chart.start) / (chart.end - chart.start) * 500;
+    assert.ok(markers[0].rendered.includes(`x="${expectedX}"`), 'outline belongs to the correct repeated hour');
+  });
+}
+
+test('PV half-hour tooltip remains on tap; hold, context menu and keyboard map repeated hours to the shared picker', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const templates = [], instance = card({ now: '2026-10-25T01:00:00+02:00', templates });
+  const charts = chartsFor([{ date: '2026-10-25', hour: 2, price: -4, action: 'charge' }]);
+  const day = charts.days[0], chartId = `solar-${day.date}`;
+  instance._renderSolarChart(day, charts, 'Europe/Vienna');
+  const slots = nodes(templates, 'solar-slot');
+  day.slots.forEach((slot, index) => {
+    if (day.hours[slot.hourIndex].hour !== 2) return;
+    handler(slots[index], 'click')(event());
+    assert.equal(instance._solarTooltip.index, index);
+    assert.equal(instance._pickerBar, null);
+    for (const name of ['contextmenu', 'pointerdown', 'keydown']) {
+      handler(slots[index], name)(event({}, { key: 'Enter', button: 0, clientX: 110, clientY: 80 }));
+      if (name === 'pointerdown') t.mock.timers.tick(500);
+      assert.equal(instance._pickerBar.chartId, chartId);
+      assert.equal(instance._pickerBar.index, slot.hourIndex);
+      assert.equal(instance._solarTooltip, null);
+      instance._closePicker();
+      instance._barLongPressFired = false;
+    }
+  });
+});
+
+for (const action of ['charge', 'pv_charge', 'discharge', 'idle']) test(`PV picker sends ${action} with civil date/hour, updates optimistically and rolls back on failure`, async () => {
+  const templates = [], instance = card({ now: '2026-10-24T12:00:00Z', templates });
+  const charts = chartsFor([{ date: '2026-10-25', hour: 2, price: 0, action: 'idle' }]);
+  const hourIndex = charts.days[0].hours.findLastIndex(hour => hour.hour === 2);
+  instance._openPicker('solar-2026-10-25', hourIndex);
+  instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+  const button = nodes(templates, 'plan-picker-btn').find(node => node.rendered.includes(`data-action=${action} `));
+  assert.ok(button);
+  let reject;
+  instance.hass.callService = (domain, service, data) => {
+    assert.equal(domain, 'victron_charge_control'); assert.equal(service, 'set_hour_action');
+    assert.equal(JSON.stringify(data), JSON.stringify({ hour: 2, action, date: '2026-10-25' }));
+    return new Promise((_, fail) => { reject = fail; });
+  };
+  if (action === 'charge') handler(button, 'keydown')(event({}, { key: 'Enter' }));
+  else handler(button, 'click')(event());
+  assert.equal(instance._pendingPlanActions['2026-10-25:2'].action, action);
+  assert.equal(instance._pickerBar, null);
+  const enriched = instance._enrichPlanDisplayState([{ date: '2026-10-25', hour: 2, action: 'idle' }]);
+  assert.equal(enriched[0].displayAction, action);
+  reject(new Error('Test service failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(instance._pendingPlanActions['2026-10-25:2'], undefined);
+  assert.equal(instance._lastServiceError.message, 'Test service failed');
+});
+
+test('unpriced and past PV slots block every editing gesture while retaining forecast tooltips', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const templates = [], instance = card({ now: '2026-10-25T01:00:00+02:00', templates });
+  const charts = chartsFor([{ date: '2026-10-25', hour: 0, price: 1 }]);
+  instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+  nodes(templates, 'solar-slot').forEach((node, index) => {
+    const slot = charts.days[0].slots[index];
+    const dataset = { past: charts.days[0].hours[slot.hourIndex].end <= Date.parse('2026-10-25T01:00:00+02:00') ? 'true' : 'false', readonly: slot.price === null ? 'true' : 'false' };
+    for (const name of ['contextmenu', 'pointerdown', 'keydown']) handler(node, name)(event(dataset, { key: 'Enter', button: 0 }));
+    t.mock.timers.tick(500);
+    assert.equal(instance._pickerBar, null);
+    handler(node, 'click')(event(dataset));
+    assert.equal(instance._solarTooltip.index, index);
+  });
+});
+
+for (const name of ['click', 'keydown']) test(`PV picker rejects an expired hour on ${name} without rerendering`, () => {
+  let now = '2026-10-25T00:59:59+02:00';
+  const templates = [], instance = card({ now: () => now, templates });
+  const charts = chartsFor([{ date: '2026-10-25', hour: 0, price: 1 }]);
+  instance._openPicker('solar-2026-10-25', 0);
+  instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+  const button = nodes(templates, 'plan-picker-btn')[0];
+  assert.ok(button);
+  now = '2026-10-25T01:00:01+02:00';
+  handler(button, name)(event({}, { key: 'Enter' }));
+  assert.equal(instance._pickerBar, null);
+  assert.equal(instance._pickerHideTimer, null);
+  assert.equal(Object.keys(instance._pendingPlanActions).length, 0);
+});
+
+test('Price picker uses shared editing events and rejects missing-price entries', () => {
+  const templates = [], instance = card({ templates });
+  const plan = [{ date: '2026-10-25', hour: 3, price: -2, action: 'charge' }, { date: '2026-10-25', hour: 4, price: null }];
+  const rendered = instance._renderPriceChart(plan);
+  assert.equal(nodes(templates, 'plan-bar-group').length, 1);
+  assert.equal((rendered.match(/class="plan-price-bar"/g) || []).length, 1);
+  handler(nodes(templates, 'plan-bar-group')[0], 'keydown')(event({}, { key: ' ' }));
+  assert.equal(instance._pickerBar.index, 0);
+  assert.match(instance._renderPriceChart(plan), /class="plan-picker"/);
+  let calls = 0;
+  instance.hass.callService = () => { calls++; };
+  handler(nodes(templates, 'plan-picker-btn')[0], 'click')(event());
+  assert.equal(calls, 1, 'entries without an absolute end remain editable');
+  instance._openPicker('today', 1);
+  assert.doesNotMatch(instance._renderPriceChart(plan), /class="plan-picker"/);
+  instance._closePicker();
+});
+
+
+test('PV enrichment uses current schedule and recurring blocks, and clears a confirmed pending override', () => {
+  const instance = card();
+  instance._solarForecast = forecast.normalizeForecast({ usable: true, time_zone: 'UTC',
+    days: [{ date: '2026-10-25', start: '2026-10-25T00:00:00Z', end: '2026-10-26T00:00:00Z' },
+      { date: '2026-10-26', start: '2026-10-26T00:00:00Z', end: '2026-10-27T00:00:00Z' }],
+    intervals: [{ start: '2026-10-25T00:00:00Z', end: '2026-10-25T00:30:00Z', pv_estimate: 0 }],
+  });
+  const plan = [{ date: '2026-10-25', hour: 2, price: 4, action: 'idle' }, { date: '2026-10-26', hour: 2, price: 5, action: 'idle' }];
+  const values = { charge_hours: '2026-10-26: 02', discharge_hours: '', pv_charge_hours: '', blocked_charging_hours: '2', blocked_discharging_hours: '' };
+  instance._val = (_, key) => values[key];
+  instance._state = () => ({ attributes: { plan } });
+  instance._pendingPlanActions['2026-10-25:2'] = { action: 'pv_charge', ts: Date.now() };
+  let days;
+  instance._renderSolarChart = day => { (days ||= []).push(day); return ''; };
+  instance._renderSolarForecast();
+  assert.ok(days[0].hours.filter(hour => hour.hour === 2).every(hour => hour.displayAction === 'pv_charge' && hour.blockedCharging));
+  assert.ok(days[1].hours.filter(hour => hour.hour === 2).every(hour => hour.displayAction === 'charge' && hour.blockedCharging));
+  values.pv_charge_hours = '2026-10-25: 02';
+  instance._renderSolarForecast();
+  assert.equal(instance._pendingPlanActions['2026-10-25:2'], undefined);
+});
+
+for (const key of ['Escape', 'Enter']) test(`picker ${key} restores focus and timeout clears picker state`, t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const templates = [], instance = card({ templates }), plan = [{ date: '2026-10-25', hour: 2, price: 1 }];
+  instance._renderPriceChart(plan);
+  let focused = 0;
+  handler(nodes(templates, 'plan-bar-group')[0], 'keydown')(event({}, { key: 'Enter', currentTarget: { dataset: {}, focus() { focused++; } } }));
+  instance._renderPriceChart(plan);
+  instance.renderRoot = { activeElement: { closest: selector => selector === '.plan-picker' ? {} : null } };
+  instance.hass.callService = () => {};
+  handler(nodes(templates, 'plan-picker-btn')[0], 'keydown')(event({}, { key }));
+  assert.equal(focused, 1);
+  assert.equal(instance._pickerBar, null);
+  instance._openPicker('today', 0);
+  t.mock.timers.tick(15000);
+  assert.equal(instance._pickerBar, null);
+  assert.equal(instance._pickerHideTimer, null);
+});
+
+test('picker timeout preserves focus after the user tabs elsewhere', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const instance = card();
+  let focused = 0;
+  instance._onBarKeyDown(event({}, { key: 'Enter', currentTarget: { dataset: {}, focus() { focused++; } } }), 'today', 0);
+  instance.renderRoot = { activeElement: { closest: () => null } };
+  t.mock.timers.tick(15000);
+  assert.equal(focused, 0);
+  assert.equal(instance._pickerBar, null);
+  assert.equal(instance._pickerTrigger, null);
+  assert.equal(instance._pickerHideTimer, null);
+});

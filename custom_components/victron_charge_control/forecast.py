@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import math
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -187,6 +189,13 @@ class SolcastForecastCoordinator(DataUpdateCoordinator[ForecastSnapshot]):
             key=lambda entry: entry.entry_id,
         )
         if not entries:
+            if (os.environ.get("VICTRON_DEV_FORECAST") == "1"
+                    and not os.environ.get("SOLCAST_API_KEY", "").strip()):
+                # Only the devcontainer mounts this provider and enables its import.
+                provider = await self.hass.async_add_executor_job(
+                    importlib.import_module, "victron_dev_forecast"
+                )
+                return provider.forecast_snapshot(dt_util.utcnow(), dt_util.DEFAULT_TIME_ZONE)
             return replace(snapshot, reason="Solcast integration is not installed")
         registry = er.async_get(self.hass)
         entities = [

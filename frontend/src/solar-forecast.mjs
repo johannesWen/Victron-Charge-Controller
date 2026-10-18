@@ -32,7 +32,7 @@ export function forecastTime(time, timeZone) {
 export function buildForecastCharts(forecast, plan = []) {
   const civilHour = new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, hour: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' });
   const days = forecast.days.map(day => {
-    const prices = new Map(plan.filter(entry => entry.date === day.date && numeric(entry.price)).map(entry => [Number(entry.hour), entry.price]));
+    const entries = new Map(plan.filter(entry => entry.date === day.date).map(entry => [Number(entry.hour), entry]));
     const hours = [];
     let previousHour;
     // Split at civil-hour and offset changes, including partial DST hours.
@@ -42,7 +42,8 @@ export function buildForecastCharts(forecast, plan = []) {
       if (key === previousHour) hours.at(-1).end = end;
       else {
         const hour = localHour(start, forecast.time_zone);
-        hours.push({ start, end, hour, price: prices.get(hour) ?? null });
+        const entry = entries.get(hour);
+        hours.push({ ...entry, date: day.date, start, end, hour, price: numeric(entry?.price) ? entry.price : null });
       }
       previousHour = key;
     }
@@ -51,7 +52,8 @@ export function buildForecastCharts(forecast, plan = []) {
     const boundaries = [...new Set([day.start, day.end, ...hours.flatMap(hour => [hour.start, hour.end]), ...intervals.flatMap(interval => [interval.start, interval.end])])].sort((a, b) => a - b);
     const slots = boundaries.slice(0, -1).map((start, index) => {
       const interval = intervals.find(interval => interval.start <= start && interval.end > start);
-      return { start, end: boundaries[index + 1], price: prices.get(localHour(start, forecast.time_zone)) ?? null, pv_estimate: interval?.pv_estimate ?? null, pv_estimate10: interval?.pv_estimate10 ?? null };
+      const hourIndex = hours.findIndex(hour => hour.start <= start && start < hour.end);
+      return { start, end: boundaries[index + 1], hourIndex, price: hours[hourIndex].price, pv_estimate: interval?.pv_estimate ?? null, pv_estimate10: interval?.pv_estimate10 ?? null };
     });
     const energy = key => intervals.length && intervals.every(interval => numeric(interval[key]))
       ? intervals.reduce((total, interval) => total + interval[key] * (interval.end - interval.start) / HOUR, 0)

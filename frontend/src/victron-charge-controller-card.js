@@ -60,7 +60,7 @@ const HELP_TEXT = {
   plan: [
     { heading: 'Reading the chart',
       items: [
-        'In Price view, each bar shows the scheduled action for one hour (today + tomorrow).',
+        'In Price and PV forecast views, each bar shows the scheduled action for one hour (today + tomorrow).',
         'Tap a Price bar to see price details for that hour.',
       ] },
     { heading: 'PV forecast requirements',
@@ -73,10 +73,10 @@ const HELP_TEXT = {
       items: [
         'On the automatic Plan page, use the Price / PV forecast toggle below Charge Allowed and Discharge Allowed to switch views. Today and Tomorrow use the Home Assistant time zone.',
         'The light-yellow area shows the central Solcast estimate (pv_estimate). The yellow area shows the lower, 10th-percentile estimate (pv_estimate10), not 10% of the central value. Both show power in kW on the right axis; the areas overlap and are not added together.',
-        'Grey hourly bars show prices in ct/kWh on the left axis. Bars and forecast curves share the same zero line, with negative prices below it. Thresholds and scheduled-hour markings are hidden in this view.',
+        'Hourly price bars use the same action colors, blocked-hour hatching and past-hour styling as Price. The current hour has a dashed outline and highlighted label. Bars and forecast curves share the same zero line, with negative prices below it. Price thresholds are shown only in Price view.',
         'Each title shows PV 10% and PV energy in kWh, calculated from the available forecast intervals for that day. These are forecast totals, not measured production; missing intervals are not counted as zero. A missing day or missing lower estimates is shown as unavailable.',
         'Hover, tap or keyboard-focus a time slot to see its time, price and PV estimates in the top-left tooltip. Half-hour forecasts are preserved, and missing values remain gaps. Prices can be unavailable while the PV forecast is still shown.',
-        'This view is read-only and returns to Price if the forecast becomes unusable. Switching views does not enable PV charging or alter charging permissions.',
+        'Right-click or hold a priced current or future hour to change its action, or focus its time slot and press Enter or Space. Hours without prices are read-only. The view returns to Price if the forecast becomes unusable. Switching views does not enable PV charging or alter charging permissions.',
         'Forecast data is read from the integration cache every minute while this page is open. This does not request a Solcast refresh or change the charging schedule.',
       ] },
     { heading: 'Charging modes',
@@ -103,7 +103,7 @@ const HELP_TEXT = {
       items: [
         [
           { text: 'Press and hold', bold: true },
-          { text: ' a Price bar (or right-click) to open the action picker.' },
+          { text: ' a Price or PV forecast bar (or right-click) to open the action picker. Keyboard users can focus a time slot and press Enter or Space.' },
         ],
         'Choose Idle, Charge, Discharge or PV Charge — your choice overrides the schedule.',
         'Use the Recalculate button to restore the automatic plan.',
@@ -1432,23 +1432,6 @@ class VictronChargeControllerCard extends LitElement {
     const barW = plotW / barCount;
     const barGap = 2;
 
-    const actionColor = (action) => {
-      switch (action) {
-        case 'charge':              return 'var(--vcc-success, #4caf50)';
-        case 'pv_charge':           return 'var(--vcc-pv-charge, #ffb74d)';
-        case 'discharge':           return '#ff6600';
-        case 'blocked':             return 'var(--vcc-blocked-both, #f44336)';
-        default:                    return 'var(--vcc-disabled, #bdbdbd)';
-      }
-    };
-
-    const blockedOverlayFill = (entry) => {
-      if (entry.blockedCharging && entry.blockedDischarging) return 'url(#plan-hatch-blocked-both)';
-      if (entry.blockedCharging) return 'url(#plan-hatch-blocked-charging)';
-      if (entry.blockedDischarging) return 'url(#plan-hatch-blocked-discharging)';
-      return null;
-    };
-
     const yPos = (price) => padT + plotH - ((price - scaleMin) / scaleRange) * plotH;
     const zeroInRange = scaleMin <= 0 && scaleMax >= 0;
 
@@ -1460,20 +1443,7 @@ class VictronChargeControllerCard extends LitElement {
 
     return svg`
       <svg class="plan-chart" viewBox="0 0 ${chartW} ${chartH}" preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <pattern id="plan-hatch-blocked-charging" patternUnits="userSpaceOnUse" width="10" height="10">
-            <path d="M-2,12 L12,-2"
-              stroke="var(--vcc-blocked-charging, #2e7d32)" stroke-width="1.8" opacity="0.95" />
-          </pattern>
-          <pattern id="plan-hatch-blocked-discharging" patternUnits="userSpaceOnUse" width="10" height="10">
-            <path d="M-2,12 L12,-2"
-              stroke="var(--vcc-blocked-discharging, #ef6c00)" stroke-width="1.8" opacity="0.95" />
-          </pattern>
-          <pattern id="plan-hatch-blocked-both" patternUnits="userSpaceOnUse" width="10" height="10">
-            <path d="M-2,12 L12,-2"
-              stroke="var(--vcc-bg, #fff)" stroke-width="1.8" opacity="0.95" />
-          </pattern>
-        </defs>
+        ${this._renderPlanPatterns()}
 
         <!-- Grid lines -->
         ${yTicks.map(t => svg`
@@ -1491,7 +1461,7 @@ class VictronChargeControllerCard extends LitElement {
         <!-- Bars -->
         ${enrichedPlan.map((entry, i) => {
           const price = Number(entry.price);
-          if (!Number.isFinite(price)) return nothing;
+          if (entry.price == null || !Number.isFinite(price)) return nothing;
           const h = entry.hour ?? i;
           const x = padL + i * barW + barGap / 2;
           const w = barW - barGap;
@@ -1503,15 +1473,11 @@ class VictronChargeControllerCard extends LitElement {
           const barH = Math.abs(barTop - barBase) || 1;
           const isPast = showCurrentHour && h < currentHour;
           const isCurrent = showCurrentHour && h === currentHour;
-          const displayAction = entry.displayAction || entry.action;
-          const overlayFill = isPast ? null : blockedOverlayFill(entry);
-          const isPvCharge = !isPast && displayAction === 'pv_charge';
-          // Price bar stays grey on PV-charge hours; the light-orange background
-          // column is the PV indicator (avoids confusion with the orange discharge bar).
-          const barFillColor = isPast ? actionColor('idle') : (isPvCharge ? actionColor('idle') : actionColor(displayAction));
           return svg`
             <g class="plan-bar-group"
-              data-past=${isPast ? 'true' : 'false'}
+              data-past=${isPast ? 'true' : 'false'} tabindex="0" role="button"
+              aria-label=${`${String(h).padStart(2, '0')}:00 · ${price.toFixed(2)} ct/kWh${isPast ? '' : ' · Change hour action'}`}
+              @keydown=${e => this._onBarKeyDown(e, chartId, i)}
               @click=${(e) => this._onBarClick(e, chartId, i)}
               @contextmenu=${(e) => this._onBarContextMenu(e, chartId, i)}
               @pointerdown=${(e) => this._onBarPointerDown(e, chartId, i)}
@@ -1524,32 +1490,7 @@ class VictronChargeControllerCard extends LitElement {
               <rect class="plan-bar-hit"
                 x="${colX}" y="${padT}" width="${colW}" height="${plotH}"
                 fill="transparent" pointer-events="all" />
-              ${isPvCharge ? svg`
-                <!-- PV Charge background column (light orange) -->
-                <rect class="plan-pv-column"
-                  x="${colX}" y="${padT}" width="${colW}" height="${plotH}"
-                  fill="var(--vcc-pv-charge, #ffb74d)" opacity="0.10" rx="1.5"
-                  pointer-events="none" />
-              ` : nothing}
-              <rect
-                x="${x}" y="${barY}" width="${w}" height="${barH}"
-                fill="${barFillColor}"
-                opacity="${isPast ? 0.35 : (isCurrent ? 1 : 0.7)}"
-                rx="1.5"
-              />
-              ${overlayFill ? svg`
-                <rect
-                  x="${x}" y="${barY}" width="${w}" height="${barH}"
-                  fill="${overlayFill}"
-                  opacity="${isCurrent ? 1 : 0.9}"
-                  rx="1.5"
-                />
-              ` : nothing}
-              ${isCurrent ? svg`
-                <rect x="${x - 1}" y="${padT}" width="${w + 2}" height="${plotH}"
-                  fill="none" stroke="var(--vcc-accent, #03a9f4)"
-                  stroke-width="1.5" stroke-dasharray="4,3" rx="2" />
-              ` : nothing}
+              ${this._renderPlanBar(entry, { x, w, colX, colW, padT, plotH, barY, barH, isPast, isCurrent })}
             </g>
           `;
         })}
@@ -1615,7 +1556,7 @@ class VictronChargeControllerCard extends LitElement {
           if (index < 0 || index >= enrichedPlan.length) return nothing;
           const entry = enrichedPlan[index];
           const price = Number(entry.price);
-          if (!Number.isFinite(price)) return nothing;
+          if (entry.price == null || !Number.isFinite(price)) return nothing;
           const h = entry.hour ?? index;
           const barCenterX = padL + index * barW + barW / 2;
           const barTopY = yPos(price);
@@ -1644,86 +1585,213 @@ class VictronChargeControllerCard extends LitElement {
         })()}
 
         <!-- Manual action picker -->
-        ${(() => {
-          if (!this._pickerBar || this._pickerBar.chartId !== chartId) return nothing;
-          const { index } = this._pickerBar;
-          if (index < 0 || index >= enrichedPlan.length) return nothing;
-          const entry = enrichedPlan[index];
-          const price = Number(entry.price);
-          if (!Number.isFinite(price)) return nothing;
-          const h = entry.hour ?? index;
-          const entryDate = entry.date;
-          const barCenterX = padL + index * barW + barW / 2;
-          const barTopY = yPos(price);
-          const barBaseY = zeroInRange ? yPos(0) : padT + plotH;
-          const barTop = Math.min(barTopY, barBaseY);
-          const currentAction = entry.displayAction || entry.action || 'idle';
-          const timeLabel = `${String(h).padStart(2, '0')}:00`;
-          const priceLabel = `${price.toFixed(2)} ct/kWh`;
-          const buttons = [
-            { key: 'charge',    label: 'Charge',  color: 'var(--vcc-success, #4caf50)' },
-            { key: 'pv_charge', label: 'PV',      color: 'var(--vcc-pv-charge, #ffb74d)' },
-            { key: 'discharge', label: 'Disch.',  color: '#ff6600' },
-            { key: 'idle',      label: 'Idle',    color: 'var(--vcc-disabled, #9e9e9e)' },
-          ];
-          const btnW = 40;
-          const btnH = 24;
-          const gap = 4;
-          const totalBtnW = btnW * buttons.length + gap * (buttons.length - 1);
-          const pw = Math.max(168, totalBtnW + 16);
-          const ph = 70;
-          let px;
-          let py;
-          if (this._pickerBar.anchorX != null && this._pickerBar.anchorY != null && this._pickerBar.svgEl) {
-            const anchor = this._clientToSvgPoint(this._pickerBar.anchorX, this._pickerBar.anchorY, this._pickerBar.svgEl);
-            px = anchor.x - pw / 2;
-            py = anchor.y - ph / 2;
-          } else {
-            py = barTop - ph - 8;
-            if (py < 2) py = Math.max(barTopY, barBaseY) + 8;
-            px = barCenterX - pw / 2;
-          }
-          px = Math.max(padL, Math.min(px, chartW - padR - pw));
-          py = Math.max(2, Math.min(py, chartH - ph - 2));
-          const btnY = py + 30;
-          const btnStartX = px + (pw - totalBtnW) / 2;
-          return svg`
-            <g class="plan-picker"
-              @contextmenu=${(e) => { e.preventDefault(); e.stopPropagation(); }}
-              @pointerdown=${(e) => e.stopPropagation()}>
-              <rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6"
-                class="plan-picker-bg"
-                fill="var(--vcc-card-bg, var(--card-background-color, #fff))"
-                fill-opacity="0.97"
-                stroke="var(--vcc-border, #e0e0e0)" stroke-width="0.8" />
-              <text x="${px + pw / 2}" y="${py + 16}" text-anchor="middle"
-                class="plan-picker-title">${timeLabel} · ${priceLabel}</text>
-              ${buttons.map((b, bi) => {
-                const bx = btnStartX + bi * (btnW + gap);
-                const isActive = currentAction === b.key;
-                return svg`
-                  <g class="plan-picker-btn"
-                    data-action=${b.key}
-                    @click=${(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      this._setPlanHourAction(h, b.key, entryDate);
-                      this._closePicker();
-                    }}>
-                    <rect x="${bx}" y="${btnY}" width="${btnW}" height="${btnH}" rx="4"
-                      fill=${isActive ? b.color : 'transparent'}
-                      stroke=${b.color} stroke-width="1.5"
-                      pointer-events="all" />
-                    <text x="${bx + btnW / 2}" y="${btnY + 16}" text-anchor="middle"
-                      class="plan-picker-label ${isActive ? 'plan-picker-label-active' : ''}">${b.label}</text>
-                  </g>
-                `;
-              })}
-            </g>
-          `;
-        })()}
+        ${this._renderPlanPicker(enrichedPlan, { chartId, padL, padR, chartW, chartH,
+          position: index => ({ center: padL + index * barW + barW / 2,
+            top: yPos(Number(enrichedPlan[index].price)), base: zeroInRange ? yPos(0) : padT + plotH }) })}
       </svg>
     `;
+  }
+
+  _renderPlanActionLegend() {
+    return html`
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot" style="background: var(--vcc-success)"></span>
+        <span>Charge</span>
+      </div>
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot" style="background: var(--vcc-warning)"></span>
+        <span>Discharge</span>
+      </div>
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot" style="background: var(--vcc-disabled)"></span>
+        <span>Idle</span>
+      </div>
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot" style="background: var(--vcc-pv-charge); opacity: 0.5"></span>
+        <span>PV Charge</span>
+      </div>
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot plan-legend-dot-hatched" style="--legend-base: var(--vcc-success); --legend-hatch: var(--vcc-blocked-discharging)"></span>
+        <span>Charge + Blocked Discharge</span>
+      </div>
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot plan-legend-dot-hatched" style="--legend-base: var(--vcc-warning); --legend-hatch: var(--vcc-blocked-charging)"></span>
+        <span>Discharge + Blocked Charge</span>
+      </div>
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot plan-legend-dot-hatched" style="--legend-base: var(--vcc-blocked-both); --legend-hatch: var(--vcc-bg)"></span>
+        <span>Blocked Both</span>
+      </div>
+      <div class="plan-legend-item">
+        <span class="plan-legend-dot plan-legend-dot-current"></span>
+        <span>Current</span>
+      </div>
+    `;
+  }
+
+  _renderPlanPatterns() {
+    return svg`
+      <defs>
+        <pattern id="plan-hatch-blocked-charging" patternUnits="userSpaceOnUse" width="10" height="10">
+          <path d="M-2,12 L12,-2"
+            stroke="var(--vcc-blocked-charging, #2e7d32)" stroke-width="1.8" opacity="0.95" />
+        </pattern>
+        <pattern id="plan-hatch-blocked-discharging" patternUnits="userSpaceOnUse" width="10" height="10">
+          <path d="M-2,12 L12,-2"
+            stroke="var(--vcc-blocked-discharging, #ef6c00)" stroke-width="1.8" opacity="0.95" />
+        </pattern>
+        <pattern id="plan-hatch-blocked-both" patternUnits="userSpaceOnUse" width="10" height="10">
+          <path d="M-2,12 L12,-2"
+            stroke="var(--vcc-bg, #fff)" stroke-width="1.8" opacity="0.95" />
+        </pattern>
+      </defs>`;
+  }
+
+  _renderPlanBar(entry, { x, w, colX, colW, padT, plotH, barY, barH, isPast, isCurrent }) {
+    const actionColor = (action) => {
+      switch (action) {
+        case 'charge':              return 'var(--vcc-success, #4caf50)';
+        case 'pv_charge':           return 'var(--vcc-pv-charge, #ffb74d)';
+        case 'discharge':           return '#ff6600';
+        case 'blocked':             return 'var(--vcc-blocked-both, #f44336)';
+        default:                    return 'var(--vcc-disabled, #bdbdbd)';
+      }
+    };
+
+    const blockedOverlayFill = (entry) => {
+      if (entry.blockedCharging && entry.blockedDischarging) return 'url(#plan-hatch-blocked-both)';
+      if (entry.blockedCharging) return 'url(#plan-hatch-blocked-charging)';
+      if (entry.blockedDischarging) return 'url(#plan-hatch-blocked-discharging)';
+      return null;
+    };
+
+    const displayAction = entry.displayAction || entry.action;
+    const overlayFill = isPast ? null : blockedOverlayFill(entry);
+    const isPvCharge = !isPast && displayAction === 'pv_charge';
+    // Price bar stays grey on PV-charge hours; the light-orange background
+    // column is the PV indicator (avoids confusion with the orange discharge bar).
+    const barFillColor = isPast ? actionColor('idle') : (isPvCharge ? actionColor('idle') : actionColor(displayAction));
+    return svg`
+      ${isPvCharge ? svg`
+        <!-- PV Charge background column (light orange) -->
+        <rect class="plan-pv-column"
+          x="${colX}" y="${padT}" width="${colW}" height="${plotH}"
+          fill="var(--vcc-pv-charge, #ffb74d)" opacity="0.10" rx="1.5"
+          pointer-events="none" />
+      ` : nothing}
+      ${entry.price != null ? svg`<rect class="plan-price-bar"
+        x="${x}" y="${barY}" width="${w}" height="${barH}"
+        fill="${barFillColor}"
+        opacity="${isPast ? 0.35 : (isCurrent ? 1 : 0.7)}"
+        rx="1.5"
+      />` : nothing}
+      ${entry.price != null && overlayFill ? svg`
+        <rect
+          x="${x}" y="${barY}" width="${w}" height="${barH}"
+          fill="${overlayFill}"
+          opacity="${isCurrent ? 1 : 0.9}"
+          rx="1.5"
+        />
+      ` : nothing}
+      ${isCurrent ? svg`
+        <rect x="${x - 1}" y="${padT}" width="${w + 2}" height="${plotH}"
+          fill="none" stroke="var(--vcc-accent, #03a9f4)"
+          stroke-width="1.5" stroke-dasharray="4,3" rx="2" />
+      ` : nothing}
+    `;
+  }
+
+  _renderPlanPicker(enrichedPlan, { chartId, padL, padR, chartW, chartH, position }) {
+    if (!this._pickerBar || this._pickerBar.chartId !== chartId) return nothing;
+    const { index } = this._pickerBar;
+    if (index < 0 || index >= enrichedPlan.length) return nothing;
+    const entry = enrichedPlan[index];
+    const price = Number(entry.price);
+    if (entry.price == null || !Number.isFinite(price)) return nothing;
+    const h = entry.hour ?? index;
+    const entryDate = entry.date;
+    const { center: barCenterX, top: barTopY, base: barBaseY } = position(index);
+    const barTop = Math.min(barTopY, barBaseY);
+    const currentAction = entry.displayAction || entry.action || 'idle';
+    const timeLabel = `${String(h).padStart(2, '0')}:00`;
+    const priceLabel = `${price.toFixed(2)} ct/kWh`;
+    const buttons = [
+      { key: 'charge',    label: 'Charge',  color: 'var(--vcc-success, #4caf50)' },
+      { key: 'pv_charge', label: 'PV',      color: 'var(--vcc-pv-charge, #ffb74d)' },
+      { key: 'discharge', label: 'Disch.',  color: '#ff6600' },
+      { key: 'idle',      label: 'Idle',    color: 'var(--vcc-disabled, #9e9e9e)' },
+    ];
+    const btnW = 40;
+    const btnH = 24;
+    const gap = 4;
+    const totalBtnW = btnW * buttons.length + gap * (buttons.length - 1);
+    const pw = Math.max(168, totalBtnW + 16);
+    const ph = 70;
+    let px;
+    let py;
+    if (this._pickerBar.anchorX != null && this._pickerBar.anchorY != null && this._pickerBar.svgEl) {
+      const anchor = this._clientToSvgPoint(this._pickerBar.anchorX, this._pickerBar.anchorY, this._pickerBar.svgEl);
+      px = anchor.x - pw / 2;
+      py = anchor.y - ph / 2;
+    } else {
+      py = barTop - ph - 8;
+      if (py < 2) py = Math.max(barTopY, barBaseY) + 8;
+      px = barCenterX - pw / 2;
+    }
+    px = Math.max(padL, Math.min(px, chartW - padR - pw));
+    py = Math.max(2, Math.min(py, chartH - ph - 2));
+    const btnY = py + 30;
+    const btnStartX = px + (pw - totalBtnW) / 2;
+    return svg`
+      <g class="plan-picker"
+        @contextmenu=${(e) => { e.preventDefault(); e.stopPropagation(); }}
+        @pointerdown=${(e) => e.stopPropagation()}>
+        <rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="6"
+          class="plan-picker-bg"
+          fill="var(--vcc-card-bg, var(--card-background-color, #fff))"
+          fill-opacity="0.97"
+          stroke="var(--vcc-border, #e0e0e0)" stroke-width="0.8" />
+        <text x="${px + pw / 2}" y="${py + 16}" text-anchor="middle"
+          class="plan-picker-title">${timeLabel} · ${priceLabel}</text>
+        ${buttons.map((b, bi) => {
+          const bx = btnStartX + bi * (btnW + gap);
+          const isActive = currentAction === b.key;
+          const choose = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (entry.end == null || entry.end > Date.now()) this._setPlanHourAction(h, b.key, entryDate);
+            this._closePicker();
+          };
+          return svg`
+            <g class="plan-picker-btn"
+              data-action=${b.key} tabindex="0" role="button"
+              aria-label=${ACTION_META[b.key].label} aria-pressed=${String(isActive)}
+              @keydown=${e => {
+                if (e.key === 'Escape') { e.preventDefault(); this._closePicker(); }
+                if (e.key === 'Enter' || e.key === ' ') choose(e);
+              }}
+              @click=${choose}>
+              <rect x="${bx}" y="${btnY}" width="${btnW}" height="${btnH}" rx="4"
+                fill=${isActive ? b.color : 'transparent'}
+                stroke=${b.color} stroke-width="1.5"
+                pointer-events="all" />
+              <text x="${bx + btnW / 2}" y="${btnY + 16}" text-anchor="middle"
+                class="plan-picker-label ${isActive ? 'plan-picker-label-active' : ''}">${b.label}</text>
+            </g>
+          `;
+        })}
+      </g>
+    `;
+  }
+
+  _onBarKeyDown(e, chartId, index) {
+    if (e.key === 'Escape') { e.preventDefault(); this._closePicker(); return; }
+    if (!['Enter', ' ', 'ContextMenu'].includes(e.key) && !(e.shiftKey && e.key === 'F10')) return;
+    e.preventDefault();
+    if (e.currentTarget.dataset.past === 'true' || e.currentTarget.dataset.readonly === 'true') return;
+    this._openPicker(chartId, index);
+    this._pickerTrigger = e.currentTarget;
+    this.updateComplete?.then(() => this.renderRoot?.querySelector('.plan-picker-btn')?.focus());
   }
 
   _onBarClick(e, chartId, index) {
@@ -1757,7 +1825,7 @@ class VictronChargeControllerCard extends LitElement {
     e.preventDefault();
     e.stopPropagation();
     const group = e.currentTarget;
-    if (group?.dataset?.past === 'true') return;
+    if (group?.dataset?.past === 'true' || group?.dataset?.readonly === 'true') return;
     const svgEl = group?.closest('svg') || null;
     this._openPicker(chartId, index, e.clientX, e.clientY, svgEl);
   }
@@ -1765,7 +1833,7 @@ class VictronChargeControllerCard extends LitElement {
   _onBarPointerDown(e, chartId, index) {
     if (e.button !== undefined && e.button !== 0) return;
     const group = e.currentTarget;
-    if (group?.dataset?.past === 'true') return;
+    if (group?.dataset?.past === 'true' || group?.dataset?.readonly === 'true') return;
     this._barLongPressFired = false;
     if (this._barHoldTimer) clearTimeout(this._barHoldTimer);
     this._barHoldStart = { x: e.clientX, y: e.clientY };
@@ -1797,18 +1865,9 @@ class VictronChargeControllerCard extends LitElement {
     }
   }
 
-  _onBarPointerMove(e) {
-    if (!this._barHoldStart || !this._barHoldTimer) return;
-    const dx = e.clientX - this._barHoldStart.x;
-    const dy = e.clientY - this._barHoldStart.y;
-    if (dx * dx + dy * dy > 36) {
-      clearTimeout(this._barHoldTimer);
-      this._barHoldTimer = null;
-      this._barHoldStart = null;
-    }
-  }
-
   _openPicker(chartId, index, anchorX = null, anchorY = null, svgEl = null) {
+    this._pickerTrigger = null;
+    this._solarTooltip = null;
     this._pickerBar = { chartId, index, anchorX, anchorY, svgEl };
     if (this._tooltipBar) {
       this._tooltipBar = null;
@@ -1818,16 +1877,14 @@ class VictronChargeControllerCard extends LitElement {
       }
     }
     if (this._pickerHideTimer) clearTimeout(this._pickerHideTimer);
-    this._pickerHideTimer = setTimeout(() => {
-      this._pickerBar = null;
-      this._pickerHideTimer = null;
-      this.requestUpdate();
-    }, 15000);
+    this._pickerHideTimer = setTimeout(() => this._closePicker(), 15000);
     document.addEventListener('pointerdown', this._onDocumentPointerDownBound, true);
     this.requestUpdate();
   }
 
   _closePicker() {
+    if (this.renderRoot?.activeElement?.closest('.plan-picker')) this._pickerTrigger?.focus();
+    this._pickerTrigger = null;
     this._pickerBar = null;
     if (this._pickerHideTimer) {
       clearTimeout(this._pickerHideTimer);
@@ -2656,7 +2713,7 @@ class VictronChargeControllerCard extends LitElement {
   _renderSolarForecast() {
     const forecast = this._solarForecast;
     const plan = this._state('sensor', 'charge_plan')?.attributes?.plan;
-    const charts = buildForecastCharts(forecast, Array.isArray(plan) ? plan : []);
+    const charts = buildForecastCharts(forecast, this._enrichPlanDisplayState(Array.isArray(plan) ? plan : []));
     return html`
       <div class="plan-chart-container">
         ${charts.days.map((day, index) => html`
@@ -2665,7 +2722,7 @@ class VictronChargeControllerCard extends LitElement {
           ${this._renderSolarChart(day, charts, forecast.time_zone)}
         `)}
         <div class="plan-legend">
-          <span class="plan-legend-item"><span class="plan-legend-dot" style="background:#9e9e9e"></span>Price</span>
+          ${this._renderPlanActionLegend()}
           <span class="plan-legend-item"><span class="plan-legend-dot" style="background:#fff59d"></span>PV estimate</span>
           <span class="plan-legend-item"><span class="plan-legend-dot" style="background:#fbc02d"></span>PV lower estimate (10%)</span>
         </div>
@@ -2675,12 +2732,14 @@ class VictronChargeControllerCard extends LitElement {
 
   _renderSolarChart(day, scales, timeZone) {
     const left = 50, right = 550, top = 38, bottom = 240;
+    const now = Date.now();
+    const chartId = `solar-${day.date}`;
     const x = time => left + (time - day.start) / (day.end - day.start) * (right - left);
     const priceY = price => bottom - (price - scales.priceMin) / (scales.priceMax - scales.priceMin) * (bottom - top);
     const baseline = priceY(0);
     const pvY = power => priceY(power / scales.pvMax * scales.priceMax);
     const details = slot => `${forecastTime(slot.start, timeZone)}–${forecastTime(slot.end, timeZone)} · Price: ${slot.price === null ? 'unavailable' : `${slot.price.toFixed(2)} ct/kWh`} · PV: ${slot.pv_estimate === null ? 'unavailable' : `${slot.pv_estimate.toFixed(2)} kW`} · Lower: ${slot.pv_estimate10 === null ? 'unavailable' : `${slot.pv_estimate10.toFixed(2)} kW`}`;
-    const show = index => { this._solarTooltip = { date: day.date, index }; this.requestUpdate(); };
+    const show = index => { if (this._pickerBar) return; this._solarTooltip = { date: day.date, index }; this.requestUpdate(); };
     const hide = () => { this._solarTooltip = null; this.requestUpdate(); };
     const selected = this._solarTooltip?.date === day.date ? day.slots[this._solarTooltip.index] : null;
     return html`
@@ -2696,23 +2755,39 @@ class VictronChargeControllerCard extends LitElement {
         <line x1=${left} x2=${right} y1=${baseline} y2=${baseline} stroke="var(--vcc-text-secondary, #888)" stroke-width="1" />
         <text x=${left} y="22" class="plan-axis-unit">ct/kWh</text>
         <text x=${right} y="22" text-anchor="end" class="plan-axis-unit">kW</text>
-        ${day.hours.filter(hour => hour.price !== null).map(hour => svg`
-          <rect x=${x(hour.start) + 1} y=${Math.min(baseline, priceY(hour.price))}
-            width=${Math.max(0, x(hour.end) - x(hour.start) - 2)} height=${Math.abs(priceY(hour.price) - baseline)} fill="#9e9e9e" opacity="0.6" />`)}
-        ${forecastAreas(day.intervals, 'pv_estimate', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fff59d" fill-opacity="0.4" stroke="#f9d95b" stroke-width="1.5" />`)}
-        ${forecastAreas(day.intervals, 'pv_estimate10', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fbc02d" fill-opacity="0.45" stroke="#e0a800" stroke-width="1.5" />`)}
-        ${day.hours.filter((_, index) => index % 3 === 0).map(hour => svg`
-          <text x=${x(hour.start)} y="260" text-anchor="middle" class="plan-axis-label">${String(hour.hour).padStart(2, '0')}</text>`)}
+        ${this._renderPlanPatterns()}
+        ${day.hours.map(hour => this._renderPlanBar(hour, {
+          x: x(hour.start) + 1, w: Math.max(0, x(hour.end) - x(hour.start) - 2),
+          colX: x(hour.start), colW: x(hour.end) - x(hour.start), padT: top, plotH: bottom - top,
+          barY: Math.min(baseline, priceY(hour.price)), barH: hour.price === null ? 0 : Math.abs(priceY(hour.price) - baseline) || 1,
+          isPast: hour.end <= now, isCurrent: hour.start <= now && now < hour.end,
+        }))}
+        ${forecastAreas(day.intervals, 'pv_estimate', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fff59d" fill-opacity="0.3" stroke="#f9d95b" stroke-width="1.5" />`)}
+        ${forecastAreas(day.intervals, 'pv_estimate10', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fbc02d" fill-opacity="0.35" stroke="#e0a800" stroke-width="1.5" />`)}
+        ${day.hours.filter(hour => hour.hour % 2 === 0 || (hour.start <= now && now < hour.end)).map(hour => svg`
+          <text x=${(x(hour.start) + x(hour.end)) / 2} y="260" text-anchor="middle"
+            class="plan-axis-label ${hour.start <= now && now < hour.end ? 'plan-current-hour' : ''}">${String(hour.hour).padStart(2, '0')}</text>`)}
         ${day.slots.map((slot, index) => svg`
           <rect class="solar-slot" x=${x(slot.start)} y=${top} width=${x(slot.end) - x(slot.start)} height=${bottom - top}
-            fill="transparent" tabindex="0" role="img" aria-label=${details(slot)}
+            fill="transparent" tabindex="0" role=${slot.price !== null && day.hours[slot.hourIndex].end > now ? 'button' : 'img'}
+            data-past=${day.hours[slot.hourIndex].end <= now ? 'true' : 'false'} data-readonly=${slot.price === null ? 'true' : 'false'}
+            aria-label=${`${details(slot)}${slot.price !== null && day.hours[slot.hourIndex].end > now ? ' · Change hour action' : ''}`}
             @mouseenter=${() => show(index)} @mouseleave=${hide} @focus=${() => show(index)} @blur=${hide}
-            @click=${() => show(index)} @keydown=${e => { if (e.key === 'Escape') hide(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); show(index); } }}>
+            @contextmenu=${e => this._onBarContextMenu(e, chartId, slot.hourIndex)}
+            @pointerdown=${e => this._onBarPointerDown(e, chartId, slot.hourIndex)}
+            @pointermove=${e => this._onBarPointerMove(e)} @pointerup=${e => this._onBarPointerUp(e)}
+            @pointercancel=${e => this._onBarPointerUp(e)} @pointerleave=${e => this._onBarPointerUp(e)}
+            @click=${e => { if (this._barLongPressFired) { this._barLongPressFired = false; e.preventDefault(); return; } if (this._pickerBar) this._closePicker(); show(index); }}
+            @keydown=${e => { if (e.key === 'Escape') hide(); this._onBarKeyDown(e, chartId, slot.hourIndex); }}>
           </rect>`)}
         ${selected ? svg`
           <foreignObject x=${left + 6} y=${top + 6} width=${right - left - 12} height=${bottom - top - 12} pointer-events="none">
             ${html`<div class="solar-tooltip" role="status">${details(selected)}</div>`}
           </foreignObject>` : nothing}
+        ${this._pickerBar?.chartId === chartId && day.hours[this._pickerBar.index]?.end > now
+          ? this._renderPlanPicker(day.hours, { chartId, padL: left, padR: 600 - right, chartW: 600, chartH: 280,
+            position: index => ({ center: (x(day.hours[index].start) + x(day.hours[index].end)) / 2,
+              top: priceY(day.hours[index].price), base: baseline }) }) : nothing}
       </svg>
     `;
   }
@@ -2865,38 +2940,7 @@ class VictronChargeControllerCard extends LitElement {
 
         <!-- Legend -->
         <div class="plan-legend">
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot" style="background: var(--vcc-success)"></span>
-            <span>Charge</span>
-          </div>
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot" style="background: var(--vcc-warning)"></span>
-            <span>Discharge</span>
-          </div>
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot" style="background: var(--vcc-disabled)"></span>
-            <span>Idle</span>
-          </div>
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot" style="background: var(--vcc-pv-charge); opacity: 0.5"></span>
-            <span>PV Charge</span>
-          </div>
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot plan-legend-dot-hatched" style="--legend-base: var(--vcc-success); --legend-hatch: var(--vcc-blocked-discharging)"></span>
-            <span>Charge + Blocked Discharge</span>
-          </div>
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot plan-legend-dot-hatched" style="--legend-base: var(--vcc-warning); --legend-hatch: var(--vcc-blocked-charging)"></span>
-            <span>Discharge + Blocked Charge</span>
-          </div>
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot plan-legend-dot-hatched" style="--legend-base: var(--vcc-blocked-both); --legend-hatch: var(--vcc-bg)"></span>
-            <span>Blocked Both</span>
-          </div>
-          <div class="plan-legend-item">
-            <span class="plan-legend-dot plan-legend-dot-current"></span>
-            <span>Current</span>
-          </div>
+          ${this._renderPlanActionLegend()}
           ${ctCharge !== null ? html`
             <div class="plan-legend-item">
               <span class="plan-legend-line" style="border-color: var(--vcc-success)"></span>
@@ -3591,6 +3635,10 @@ class VictronChargeControllerCard extends LitElement {
       }
       .plan-bar-group[data-past="true"] {
         cursor: default;
+      }
+      .plan-bar-group:focus-visible, .plan-picker-btn:focus-visible {
+        outline: 2px solid var(--vcc-accent, #03a9f4);
+        outline-offset: 2px;
       }
       .plan-bar-hit {
         pointer-events: all;

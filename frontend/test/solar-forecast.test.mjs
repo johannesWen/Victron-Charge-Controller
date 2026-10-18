@@ -11,13 +11,21 @@ const fixture = (start = '2026-10-25T00:00:00+02:00', middle = '2026-10-26T00:00
 
 test('DST fall-back uses 25 absolute hours and repeats the existing local-hour price', () => {
   const forecast = normalizeForecast(fixture());
-  const charts = buildForecastCharts(forecast, [{ date: '2026-10-25', hour: 2, price: -5 }]);
+  const charts = buildForecastCharts(forecast, [{ date: '2026-10-25', hour: 2, price: -5, action: 'charge', displayAction: 'pv_charge', blockedCharging: true, blockedDischarging: false }]);
   assert.equal(charts.days[0].hours.length, 25);
   assert.equal(charts.days[1].hours.length, 24);
   assert.equal(charts.days[0].end - charts.days[0].start, 25 * HOUR);
   const repeated = charts.days[0].hours.filter(hour => hour.hour === 2);
   assert.equal(repeated.length, 2);
   assert.deepEqual(repeated.map(hour => hour.price), [-5, -5]);
+  for (const hour of repeated) {
+    assert.equal(hour.date, '2026-10-25');
+    assert.equal(hour.action, 'charge');
+    assert.equal(hour.displayAction, 'pv_charge');
+    assert.equal(hour.blockedCharging, true);
+    assert.equal(hour.blockedDischarging, false);
+    assert.equal(charts.days[0].slots.find(slot => slot.start === hour.start).hourIndex, charts.days[0].hours.indexOf(hour));
+  }
   assert.equal(repeated[1].start - repeated[0].start, HOUR);
   assert.notEqual(forecastTime(repeated[0].start, forecast.time_zone), forecastTime(repeated[1].start, forecast.time_zone));
 });

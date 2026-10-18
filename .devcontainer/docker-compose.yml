@@ -13,10 +13,15 @@ services:
 
   homeassistant:
     container_name: !reset null
+    environment:
+      VICTRON_DEV_FORECAST: "1"
+      SOLCAST_API_KEY: ${SOLCAST_API_KEY:-}
+      PYTHONPATH: /config
     ports: !override
       - "127.0.0.1:8123:8123"
     volumes:
       - homeassistant-data:/config
+      - ./dev/victron_dev_forecast.py:/config/victron_dev_forecast.py:ro
     depends_on:
       solcast-install:
         condition: service_completed_successfully

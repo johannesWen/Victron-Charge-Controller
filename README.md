@@ -173,9 +173,12 @@ view: settings
 In the Plan card, use the switch below **Charge allowed** and **Discharge allowed**
 to change from **Price** to **PV forecast**. Today and tomorrow show Solcast's
 `pv_estimate10` as a yellow filled curve and `pv_estimate` as a light-yellow filled
-curve, with neutral hourly price bars. The left axis is ct/kWh and the right axis
-is kW. Hover, tap, or focus a time slot to inspect values. Forecast charts are
-read-only; switch back to Price to edit hours or thresholds.
+curve, with hourly price bars using the same action colors, blocked-hour markings,
+past-hour styling and current-hour indicator as Price. The left axis is ct/kWh and the right axis
+is kW. Hover, tap, or focus a time slot to inspect values. Right-click or hold a priced
+current or future hour to choose Charge, PV, Discharge or Idle; keyboard users can
+focus a time slot and press Enter or Space. Hours without prices remain read-only.
+Switch back to Price to edit thresholds.
 
 The switch is disabled with an explanation when Solcast is unavailable or its
 forecast is unusable. If the forecast becomes unusable, the card returns to Price.
@@ -363,10 +366,15 @@ provides Settings, Plan, History, and Dev Controls dashboard tabs. See the
 
 The devcontainer also installs pinned Solcast v4.6.1 before Home Assistant starts.
 For automatic Solcast setup, copy `.env.example` to `.env`, fill in
-`SOLCAST_API_KEY`, then rebuild/reopen the container. Without a key, Victron works
-and Solcast remains unconfigured. Existing Solcast entries are preserved; change
-their keys through Home Assistant. Solcast's default daylight cloud updates use
-its 10-call/day allowance; Victron's cache polling makes no extra cloud requests.
+`SOLCAST_API_KEY`, then rebuild/reopen the container. With no key and no saved
+Solcast entry, the devcontainer supplies synthetic PV test data for today's and
+tomorrow's Plan PV view, refreshed every five minutes. Diagnostics and the startup
+log label it synthetic; this provider is mounted/enabled only by the devcontainer
+override and is absent from release packages and standalone Compose. Existing
+Solcast entries always take precedence, including failed entries; change their
+keys through Home Assistant. A supplied key keeps real setup/query failures
+visible. Solcast's default daylight cloud updates use its 10-call/day allowance;
+Victron's cache polling and synthetic data make no extra cloud requests.
 
 ```bash
 cd frontend && npm install && npm run build && cd ..
