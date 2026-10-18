@@ -121,7 +121,10 @@ def configure_solcast(client: Client) -> None:
     """Optionally create Solcast through its user flow without exposing responses."""
     api_key = os.environ.get("SOLCAST_API_KEY", "").strip()
     if not api_key:
-        print("SOLCAST_API_KEY is blank; skipping optional Solcast configuration.")
+        print(
+            "SOLCAST_API_KEY is blank; skipping optional Solcast configuration. "
+            "The devcontainer uses synthetic PV test data when no Solcast entry exists."
+        )
         return
     try:
         if client.request("/api/config/config_entries/entry?domain=solcast_solar"):
