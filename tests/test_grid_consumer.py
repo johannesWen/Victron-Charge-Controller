@@ -10,12 +10,18 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from custom_components.victron_charge_control import (
+    _async_update_listener,
+    async_setup_entry,
+    async_unload_entry,
+)
 from custom_components.victron_charge_control.const import (
     ACTION_CHARGE,
     ACTION_DISCHARGE,
     ACTION_IDLE,
     ACTION_PV_CHARGE,
     CONF_GRID_CONSUMER_ENTITY,
+    DOMAIN,
     MODE_AUTO,
     MODE_FORCE_CHARGE,
     MODE_FORCE_DISCHARGE,
@@ -132,6 +138,36 @@ async def consumer(mock_hass):
         yield coord, switch, clock, change, states
         await coord.async_shutdown()
         await clock.drain()
+
+
+@pytest.fixture
+async def native_consumer(consumer):
+    """Run the real HA debouncer, including eager jobs and cooldown timers."""
+    coord, _, clock, _, _ = consumer
+    hass = coord.hass
+
+    def create_task(coro, name=None, *, eager_start=True):
+        task = asyncio.create_task(coro, name=name, eager_start=eager_start)
+        hass._scheduled_tasks.append(task)
+        return task
+
+    def run_job(job, *args, **kwargs):
+        result = job.target(*args)
+        if asyncio.iscoroutine(result):
+            return create_task(result)
+        return result
+
+    hass.async_create_task.side_effect = create_task
+    hass.async_run_hass_job.side_effect = run_job
+    hass.loop.call_later.side_effect = (
+        lambda delay, callback, *args: clock.call_at(clock.now + delay, callback, *args)
+    )
+    del coord.async_request_refresh
+    yield consumer
+    await clock.drain()
+    for task in hass._scheduled_tasks:
+        if not task.cancelled():
+            assert task.exception() is None
 
 
 @pytest.mark.parametrize(
@@ -425,7 +461,7 @@ async def test_explicit_clear_removes_residual_after_accepted_zero(consumer, ope
     coord.hass.services.async_call.assert_not_called()
 
 
-@pytest.mark.parametrize("operation", ["disable", "invalid", "unload"])
+@pytest.mark.parametrize("operation", ["disable", "invalid"])
 async def test_clear_during_awaited_write_cannot_leave_stale_target(consumer, operation):
     coord, switch, clock, change, states = consumer
     coord.setpoint_deadband = 0
@@ -450,21 +486,126 @@ async def test_clear_during_awaited_write_cannot_leave_stale_target(consumer, op
     coord.setpoint_deadband = 200
     if operation == "disable":
         coord.grid_consumer_enabled = False
-    elif operation == "invalid":
+    else:
         change("unavailable", notify=False)
         # The source listener clears synchronously, before its requested refresh runs.
         coord._sample_grid_consumer()
-    else:
-        await coord.async_shutdown()
-    writes_before_resume = service.call_count
     release.set()
     await updating
     assert coord.grid_consumer_offset == 0
-    if operation == "unload":
-        assert service.call_count == writes_before_resume
-    else:
-        assert float(states["number.grid_setpoint"].state) == previous - 50
-        assert coord.data.target_setpoint == previous - 50
+    assert float(states["number.grid_setpoint"].state) == previous - 50
+    assert coord.data.target_setpoint == previous - 50
+
+
+@pytest.mark.parametrize("reload", [False, True])
+@pytest.mark.parametrize("write_fails", [False, True])
+async def test_entry_unload_drains_write_before_replacement(native_consumer, reload, write_fails):
+    old, switch, clock, change, states = native_consumer
+    hass, entry = old.hass, old.config_entry
+    hass.data[DOMAIN] = {entry.entry_id: old}
+    entry.add_update_listener = MagicMock(return_value=MagicMock())
+    await switch.async_turn_on()
+    await clock.advance(5)
+    assert float(states["number.grid_setpoint"].state) == 3750
+    started, release = asyncio.Event(), asyncio.Event()
+    write = hass.services.async_call.side_effect
+
+    async def delayed_write(domain, service, data, **kwargs):
+        if data.get("value") == 3150:
+            started.set()
+            await release.wait()
+            if write_fails:
+                raise HomeAssistantError("Device write failed")
+        await write(domain, service, data, **kwargs)
+
+    hass.services.async_call.side_effect = delayed_write
+    change("150")
+    await clock.advance(5, drain=False)
+    await asyncio.wait_for(started.wait(), 1)
+    # Also leave a native debouncer request queued behind the active write.
+    await old.async_request_refresh()
+
+    async def restore_controls(*_):
+        new = hass.data[DOMAIN][entry.entry_id]
+        new.control_mode = MODE_FORCE_CHARGE
+        new.grid_consumer_enabled = True
+
+    async def reload_entry(_):
+        assert await async_unload_entry(hass, entry)
+        assert await async_setup_entry(hass, entry)
+
+    hass.config_entries.async_forward_entry_setups.side_effect = restore_controls
+    hass.config_entries.async_reload.side_effect = reload_entry
+    with (
+        patch("custom_components.victron_charge_control.async_register_commands"),
+        patch("custom_components.victron_charge_control._async_register_card", new_callable=AsyncMock),
+        patch.object(old.forecast_coordinator, "async_shutdown", new_callable=AsyncMock),
+    ):
+        if reload:
+            entry.data = dict(MOCK_CONFIG_DATA)
+            stopping = asyncio.create_task(_async_update_listener(hass, entry), eager_start=True)
+        else:
+            stopping = asyncio.create_task(async_unload_entry(hass, entry), eager_start=True)
+        waited_for_write = not stopping.done()
+        setups_before_release = hass.config_entries.async_forward_entry_setups.await_count
+        release.set()
+        await asyncio.wait_for(stopping, 1)
+        await clock.drain()
+        assert waited_for_write
+        assert setups_before_release == 0
+        assert old.last_update_success is not write_fails
+        assert old.grid_consumer_offset == 0
+        if reload:
+            new = hass.data[DOMAIN][entry.entry_id]
+            assert new.grid_consumer_entity is None
+            assert not new.grid_consumer_enabled
+            assert float(states["number.grid_setpoint"].state) == 3000
+            await new.async_refresh()
+            await clock.advance(6)
+            assert float(states["number.grid_setpoint"].state) == 3000
+            assert await async_unload_entry(hass, entry)
+        else:
+            assert entry.entry_id not in hass.data[DOMAIN]
+            # A subsequent controller can set its target after unload returns.
+            states["number.grid_setpoint"] = MockState("3000")
+            writes_after_unload = hass.services.async_call.call_count
+            await clock.advance(6)
+            await old.async_request_refresh()
+            assert float(states["number.grid_setpoint"].state) == 3000
+            assert hass.services.async_call.call_count == writes_after_unload
+
+
+@pytest.mark.parametrize("clear", [False, True])
+async def test_slow_writes_finish_and_recheck_watchdog(native_consumer, clear):
+    coord, switch, clock, change, states = native_consumer
+    await switch.async_turn_on()
+    await clock.advance(5)
+    write = coord.hass.services.async_call.side_effect
+    writes = []
+
+    async def slow_write(domain, service, data, **kwargs):
+        if data.get("entity_id") == "number.grid_setpoint":
+            writes.append(data["value"])
+            if len(writes) <= 12:
+                states["sensor.battery_soc"] = MockState("unavailable")
+                change("unavailable" if clear else ("1200" if len(writes) % 2 else "750"))
+                await clock.advance(6, drain=False)
+        await write(domain, service, data, **kwargs)
+
+    coord.hass.services.async_call.side_effect = slow_write
+    states["number.grid_setpoint"] = MockState("0")
+    await coord.async_refresh()
+    assert coord.last_update_success
+    assert len(writes) == (2 if clear else 1)
+    assert clock.now == (17 if clear else 11)
+    if clear:
+        assert coord.control_mode == MODE_OFF
+    # Ordinary accepted loads yield to the next refresh, including its watchdog.
+    coord.hass.services.async_call.side_effect = write
+    await clock.advance(1)
+    assert coord.control_mode == MODE_OFF
+    assert float(states["number.grid_setpoint"].state) == coord.idle_setpoint
+    assert coord.data.target_setpoint == coord.idle_setpoint
 
 
 @pytest.mark.parametrize("operation", ["disable", "unload"])

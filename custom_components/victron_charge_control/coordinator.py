@@ -1569,8 +1569,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if self._shutdown_requested:
             return self.data
         self._sample_solar_surplus()
-        await self._step_safety()
-        while not self._shutdown_requested:
+        # Allow one immediate correction for a clear during an awaited write.
+        for _ in range(2):
+            await self._step_safety()
+            if self._shutdown_requested:
+                return self.data
             current_price_ct, is_reduced, action, setpoint = self._step_decide()
             generation = self._grid_consumer_generation
             await self._step_apply_setpoint(action, setpoint)
@@ -1584,11 +1587,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if self._shutdown_requested:
                 return self.data
             await self._apply_dc_coupled_feed_in(is_reduced=is_reduced)
-            if generation == self._grid_consumer_generation:
+            if self._shutdown_requested:
+                return self.data
+            if (
+                generation == self._grid_consumer_generation
+                or not self._grid_consumer_clear_pending
+            ):
                 break
-            # A clear during an awaited write must reach the device before publishing.
-        else:
-            return self.data
+        if generation != self._grid_consumer_generation:
+            # A request made during a slow write may have exhausted its debounce timer.
+            self._debounced_refresh.async_schedule_call()
         self._update_cost_tracking(price_view.eur_per_kwh)
         return self._build_snapshot(
             action=action,
@@ -1861,7 +1869,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         await self.forecast_coordinator.async_setup()
 
     async def async_shutdown(self) -> None:
-        """Remove all listeners."""
+        """Stop new refreshes and drain actuation before a replacement can start."""
         await super().async_shutdown()
         self._clear_grid_consumer_offset()
         if self._grid_consumer_unsub is not None:
@@ -1875,3 +1883,5 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._unsub_listeners.clear()
         self._safety_startup_deadline = None
         await self.forecast_coordinator.async_shutdown()
+        async with self._debounced_refresh.async_lock():
+            pass
