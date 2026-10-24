@@ -91,13 +91,13 @@ const HELP_TEXT = {
         ],
         [
           { text: 'PV Charge', bold: true },
-          { text: ' charges the battery from solar surplus without importing any grid power. It runs independently of the Charge Allowed switch and of blocked charging hours, and requires the optional solar surplus sensor to be configured.' },
+          { text: ' charges the battery from solar surplus; an enabled Grid Consumer offset can also request grid import. It runs independently of the Charge Allowed switch and of blocked charging hours, and requires the optional solar surplus sensor to be configured.' },
         ],
         [
           { text: 'PV Charging Battery Share', bold: true },
           { text: ' (Settings card) splits the surplus between the battery and grid export during PV charge hours.' },
         ],
-        'Outside planned hours the controller idles (grid setpoint 0 W).',
+        'Outside planned hours the controller uses Idle Setpoint, normally 0 W; an enabled Grid Consumer adds its load in active control modes.',
       ] },
     { heading: 'Override an hour',
       items: [
@@ -142,8 +142,15 @@ const SETTINGS_HELP = {
     { heading: 'Force Charge', items: ['Requests grid charging at Charge Power without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Charge Allowed and obeys Max SOC, hysteresis and grid setpoint limits.'] },
     { heading: 'Force Discharge', items: ['Requests discharge without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Discharge Allowed and obeys SOC protection, discharge stages and export limits.'] },
   ],
+  grid_consumer: [
+    'Adds the measured consumer load to the raw grid target in Auto, Manual, Force Charge and Force Discharge, including Idle and PV Charge actions, before grid and reduced feed-in limits. Off keeps the configured Idle Setpoint unchanged.',
+    'For example, Charge 3000 W + EV 3000 W = 6000 W, capped to the default Max Grid Setpoint of 5000 W. Discharge −2000 W + consumer 3000 W = 1000 W before limits.',
+    'The first load change starts a fixed five-second window. The latest reading is applied when it expires; further changes do not restart it. Initial enable, restart restore and recovery also wait five seconds. The existing setpoint watt deadband still applies. Disabling, Off or an invalid source clears the offset without delay.',
+    'This adjusts the target, not the energy origin: intentional battery discharge remains possible. The source must measure a load already included in ESS consumption. For multiple loads, select an existing aggregate power sensor.',
+    'Choose the optional Grid consumer power sensor (W or kW) in Settings → Devices & Services → Victron Charge Control → Configure, then enable this switch. It defaults off and is restored after restart. Invalid or unavailable readings use zero offset; the configured switch can still be turned off.',
+  ],
   charge_allowed: [
-    'Allows grid charging in scheduled and Force Charge operation. Turning it off stops the controller from requesting grid charging; it does not erase the schedule.',
+    'Allows grid charging in scheduled and Force Charge operation. Turning it off stops those requests; Grid Consumer can still add import to Idle or PV Charge. It does not erase the schedule.',
     'PV Charge is independent of this switch because it allocates solar surplus. Max SOC protection still applies to both charging actions.',
   ],
   discharge_allowed: [
@@ -178,7 +185,7 @@ const SETTINGS_HELP = {
   ],
   idle_setpoint: [
     'Sets the grid power target when the controller is Idle, including Off, unscheduled hours and SOC-blocked actions. Positive values request grid import; negative values request export; zero targets balanced grid power.',
-    'During active control, the target is clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. It is also the target at 100% PV Charging Battery Share, so changing it affects PV Charge allocation. Idle does not mean the battery is disconnected.',
+    'During active control, an enabled Grid Consumer adds its load before the target is clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. It is also the target at 100% PV Charging Battery Share, so changing it affects PV Charge allocation. Idle does not mean the battery is disconnected.',
   ],
   min_grid_setpoint: [
     'Sets the lowest grid power target the controller may request. Negative values represent export: a more negative limit permits more export, while zero prevents the controller from requesting a negative target.',
@@ -947,7 +954,7 @@ class VictronChargeControllerCard extends LitElement {
     return { min, max, step };
   }
 
-  _renderToggle(label, switchKey) {
+  _renderToggle(label, switchKey, disabled = false) {
     const on = this._val('switch', switchKey) === 'on';
     return html`
       <div class="control-row toggle-row">
@@ -955,9 +962,27 @@ class VictronChargeControllerCard extends LitElement {
         <ha-switch
           aria-label=${label}
           .checked=${on}
-          @change=${() => this._toggleSwitch(switchKey)}
+          .disabled=${disabled}
+          @change=${() => { if (!disabled) this._toggleSwitch(switchKey); }}
         ></ha-switch>
       </div>`;
+  }
+
+  _renderGridConsumer() {
+    const state = this._state('switch', 'grid_consumer');
+    const configured = Boolean(state?.attributes?.source_entity);
+    const disabled = !configured || !['on', 'off'].includes(state?.state);
+    const message = !configured
+      ? 'Configure a Grid consumer power sensor in the integration options to enable Grid Consumer.'
+      : disabled
+        ? 'Grid Consumer switch is unavailable.'
+        : state.state === 'on' && state.attributes.power_w == null
+          ? 'Consumer power is invalid or unavailable; zero offset is applied.'
+          : '';
+    return html`
+      ${this._renderToggle('Grid Consumer', 'grid_consumer', disabled)}
+      ${message ? html`<div class="forecast-status" role="status">${message}</div>` : nothing}
+    `;
   }
 
   _renderTogglePair(items) {
@@ -1338,6 +1363,7 @@ class VictronChargeControllerCard extends LitElement {
 
       <!-- Keep automatic scheduling settings available in every control mode. -->
       ${this._renderSection('Auto Mode', 'mdi:auto-fix', html`
+        ${this._renderGridConsumer()}
         ${this._renderSlider('Cheapest Hours', 'cheapest_hours_auto_charge', ' h')}
         ${this._renderSlider('Expensive Hours', 'expensive_hours_auto_discharge', ' h')}
         ${this._renderSlider('Charge Price Threshold', 'charge_price_threshold', ' ct/kWh')}

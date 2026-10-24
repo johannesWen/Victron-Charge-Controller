@@ -314,6 +314,7 @@ def compute_setpoint(
     solar_surplus_mean: float | None,
     pv_charge_share: float,
     reduced_max_grid_feed_in: float,
+    grid_consumer_offset: float = 0.0,
 ) -> float:
     """Compute the clamped grid setpoint for the given action.
 
@@ -331,17 +332,17 @@ def compute_setpoint(
             surplus = solar_surplus_mean or 0.0
             f = max(0.0, min(1.0, pv_charge_share / 100.0))
             raw = (1.0 - f) * (-surplus) + f * idle_setpoint
-        if is_reduced:
-            raw = max(raw, -reduced_max_grid_feed_in)
     elif action == ACTION_DISCHARGE:
         surplus = solar_surplus_mean or 0.0
         if discharge_solar_only:
             raw = -surplus
         else:
             raw = -(discharge_power + surplus)
-        if is_reduced:
-            raw = max(raw, -reduced_max_grid_feed_in)
     else:
         raw = idle_setpoint
+
+    raw += grid_consumer_offset
+    if is_reduced and action in (ACTION_PV_CHARGE, ACTION_DISCHARGE):
+        raw = max(raw, -reduced_max_grid_feed_in)
 
     return max(min_grid_setpoint, min(raw, max_grid_setpoint))
