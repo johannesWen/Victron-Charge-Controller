@@ -16,6 +16,7 @@ from custom_components.victron_charge_control.const import (
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
+    CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
@@ -80,6 +81,26 @@ class TestConfigFlow:
             data=MOCK_CONFIG_DATA_WITH_SOLAR,
         )
 
+    async def test_grid_consumer_is_optional_power_sensor(self, flow):
+        await flow.async_step_user()
+        schema = flow.async_show_form.call_args.kwargs["data_schema"]
+        selector = schema.schema[CONF_GRID_CONSUMER_ENTITY]
+        assert selector.config["domain"] == ["sensor"]
+        assert selector.config["device_class"] == ["power"]
+        assert CONF_GRID_CONSUMER_ENTITY not in schema(MOCK_CONFIG_DATA)
+        data = {**MOCK_CONFIG_DATA, CONF_GRID_CONSUMER_ENTITY: "sensor.consumer"}
+        await flow.async_step_user(schema(data))
+        assert flow.async_create_entry.call_args.kwargs["data"] == data
+
+    async def test_missing_grid_consumer_is_rejected(self, flow):
+        flow.hass.states.get.side_effect = (
+            lambda entity_id: None if entity_id == "sensor.consumer" else MockState("50")
+        )
+        await flow.async_step_user({**MOCK_CONFIG_DATA, CONF_GRID_CONSUMER_ENTITY: "sensor.consumer"})
+        assert flow.async_show_form.call_args.kwargs["errors"] == {
+            CONF_GRID_CONSUMER_ENTITY: "entity_not_found"
+        }
+
     @pytest.mark.asyncio
     async def test_create_entry_with_dc_feed_in_entity(self, flow):
         await flow.async_step_user(user_input=dict(MOCK_CONFIG_DATA_WITH_DC_FEED_IN))
@@ -93,6 +114,7 @@ class TestConfigFlow:
         user_input = {
             **MOCK_CONFIG_DATA,
             CONF_GRID_CONSUMPTION_ENTITY: "",
+            CONF_GRID_CONSUMER_ENTITY: "",
             CONF_GRID_FEED_IN_ENERGY_ENTITY: "",
             CONF_SOLAR_SURPLUS_ENTITY: "",
             CONF_DC_COUPLED_PV_FEED_IN_ENTITY: "",
@@ -250,6 +272,7 @@ class TestOptionsFlow:
             **MOCK_CONFIG_DATA_WITH_COST,
             **MOCK_CONFIG_DATA_WITH_SOLAR,
             **MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
+            CONF_GRID_CONSUMER_ENTITY: "sensor.consumer",
         }
         options_flow._config_entry.data = {**configured, "unrelated_setting": "preserved"}
         await options_flow.async_step_init()

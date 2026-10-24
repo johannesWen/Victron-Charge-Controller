@@ -7,6 +7,7 @@ Manages the schedule (charge/discharge hours) and computes the target setpoint.
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -16,6 +17,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_state_change_event,
     async_track_time_change,
 )
@@ -33,6 +35,7 @@ from .const import (
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
+    CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
@@ -221,9 +224,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._dc_coupled_pv_feed_in_entity: str | None = (
             entry.data.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY) or None
         )
+        self._grid_consumer_entity: str | None = (
+            entry.data.get(CONF_GRID_CONSUMER_ENTITY) or None
+        )
+        self._grid_consumer_enabled = False
+        self._grid_consumer_offset = 0.0
+        self._grid_consumer_timer: Any = None
+        self._grid_consumer_unsub: Any = None
+        self._grid_consumer_generation = 0
+        self._grid_consumer_clear_pending = False
+        self._grid_consumer_may_be_applied = False
+        self._grid_consumer_ready = False
 
         # --- Configurable parameters (modified by number/select/switch entities) ---
-        self.control_mode: str = MODE_OFF
+        self._control_mode: str = MODE_OFF
         self.charge_allowed: bool = True
         self.discharge_allowed: bool = True
         self.min_soc: float = DEFAULT_MIN_SOC
@@ -384,6 +398,119 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # ------------------------------------------------------------------
 
     @property
+    def control_mode(self) -> str:
+        return self._control_mode
+
+    @control_mode.setter
+    def control_mode(self, mode: str) -> None:
+        self._control_mode = mode
+        self._sample_grid_consumer()
+
+    @property
+    def grid_consumer_entity(self) -> str | None:
+        return self._grid_consumer_entity
+
+    @property
+    def grid_consumer_enabled(self) -> bool:
+        return self._grid_consumer_enabled
+
+    @grid_consumer_enabled.setter
+    def grid_consumer_enabled(self, enabled: bool) -> None:
+        self._grid_consumer_enabled = enabled and self._grid_consumer_entity is not None
+        self._sample_grid_consumer()
+
+    @property
+    def grid_consumer_power(self) -> float | None:
+        """Read finite, nonnegative consumer power in watts."""
+        if self._grid_consumer_entity is None:
+            return None
+        state = self.hass.states.get(self._grid_consumer_entity)
+        if state is None:
+            return None
+        unit = state.attributes.get("unit_of_measurement")
+        if unit not in ("W", "kW"):
+            return None
+        try:
+            power = float(state.state)
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if unit == "kW":
+            power *= 1000
+        return max(0.0, power) if math.isfinite(power) else None
+
+    @property
+    def grid_consumer_offset(self) -> float:
+        return self._grid_consumer_offset
+
+    @callback
+    def _clear_grid_consumer_offset(self) -> None:
+        """Invalidate pending callbacks and retain forced clearing until written."""
+        if self._grid_consumer_timer is None and not self._grid_consumer_may_be_applied:
+            return
+        self._grid_consumer_generation += 1
+        if self._grid_consumer_timer is not None:
+            self._grid_consumer_timer()
+            self._grid_consumer_timer = None
+        # Accepting zero can leave the previous device offset inside the deadband.
+        if self._grid_consumer_may_be_applied:
+            self._grid_consumer_clear_pending = True
+            self._grid_consumer_may_be_applied = False
+        self._grid_consumer_offset = 0.0
+
+    @callback
+    def _sample_grid_consumer(self) -> None:
+        """Batch only the load offset, with a fixed deadline from the first change."""
+        if not self._grid_consumer_ready:
+            return
+        power = self.grid_consumer_power
+        if (
+            self._shutdown_requested
+            or not self.grid_consumer_enabled
+            or self.control_mode == MODE_OFF
+            or power is None
+        ):
+            self._clear_grid_consumer_offset()
+            return
+        if power == self._grid_consumer_offset or self._grid_consumer_timer is not None:
+            return
+        generation = self._grid_consumer_generation
+
+        @callback
+        def _accept_latest(_now: datetime) -> None:
+            if generation != self._grid_consumer_generation or self._shutdown_requested:
+                return
+            self._grid_consumer_timer = None
+            self._grid_consumer_generation += 1
+            latest = self.grid_consumer_power
+            if not self.grid_consumer_enabled or self.control_mode == MODE_OFF or latest is None:
+                self._clear_grid_consumer_offset()
+            else:
+                self._grid_consumer_offset = latest
+                self._grid_consumer_may_be_applied |= latest > 0
+            self.hass.async_create_task(self.async_request_refresh())
+
+        self._grid_consumer_timer = async_call_later(self.hass, 5, _accept_latest)
+
+    @callback
+    def _listen_grid_consumer(self) -> None:
+        if self._grid_consumer_unsub is not None:
+            self._grid_consumer_unsub()
+            self._grid_consumer_unsub = None
+        if self._grid_consumer_entity is None or self._shutdown_requested:
+            return
+
+        @callback
+        def _changed(_event: Any) -> None:
+            self._sample_grid_consumer()
+            self.async_update_listeners()
+            if self._grid_consumer_clear_pending:
+                self.hass.async_create_task(self.async_request_refresh())
+
+        self._grid_consumer_unsub = async_track_state_change_event(
+            self.hass, [self._grid_consumer_entity], _changed
+        )
+
+    @property
     def battery_soc_entity(self) -> str:
         return self._battery_soc_entity
 
@@ -481,6 +608,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._dc_coupled_pv_feed_in_entity = (
             data.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY) or None
         )
+        consumer_entity = data.get(CONF_GRID_CONSUMER_ENTITY) or None
+        if consumer_entity != self._grid_consumer_entity:
+            self._clear_grid_consumer_offset()
+            self._grid_consumer_entity = consumer_entity
+            if consumer_entity is None:
+                self._grid_consumer_enabled = False
+            self._listen_grid_consumer()
+            self._sample_grid_consumer()
+            self.hass.async_create_task(self.async_request_refresh())
 
     def restore_cost_state(
         self,
@@ -1297,6 +1433,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             solar_surplus_mean=self._solar_surplus_mean,
             pv_charge_share=self.pv_charge_share,
             reduced_max_grid_feed_in=self.reduced_max_grid_feed_in,
+            grid_consumer_offset=(
+                self._grid_consumer_offset if self.control_mode != MODE_OFF else 0.0
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -1327,16 +1466,22 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 self._get_battery_soc(),
             )
 
-        self._last_applied_setpoint = await actuation_apply_setpoint(
+        generation = self._grid_consumer_generation
+        clearing = self._grid_consumer_clear_pending
+        applied = await actuation_apply_setpoint(
             self.hass,
             entity_id=self._grid_setpoint_entity,
             target_setpoint=target_setpoint,
             action=action,
-            last_applied_setpoint=self._last_applied_setpoint,
+            last_applied_setpoint=None if clearing else self._last_applied_setpoint,
             setpoint_deadband=self.setpoint_deadband,
             enforce_export_limit=action == ACTION_DISCHARGE and self._discharge_solar_only,
             on_log=_log,
         )
+        if applied is not None:
+            self._last_applied_setpoint = applied
+            if clearing and generation == self._grid_consumer_generation:
+                self._grid_consumer_clear_pending = False
 
     # ------------------------------------------------------------------
     # Grid feed-in control
@@ -1421,16 +1566,29 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         8. ``_update_cost_tracking`` — accumulate cost/revenue/import/export
         9. ``_build_snapshot`` — assemble the ChargeControlData result
         """
+        if self._shutdown_requested:
+            return self.data
         self._sample_solar_surplus()
         await self._step_safety()
-        current_price_ct, is_reduced, action, setpoint = self._step_decide()
-        await self._step_apply_setpoint(action, setpoint)
-        price_view = self._step_load_epex_view()
-        self._clean_expired_slots()
-        feed_in_active, applied_feed_in = await self._apply_grid_feed_in(
-            current_price_ct
-        )
-        await self._apply_dc_coupled_feed_in(is_reduced=is_reduced)
+        while not self._shutdown_requested:
+            current_price_ct, is_reduced, action, setpoint = self._step_decide()
+            generation = self._grid_consumer_generation
+            await self._step_apply_setpoint(action, setpoint)
+            if self._shutdown_requested:
+                return self.data
+            price_view = self._step_load_epex_view()
+            self._clean_expired_slots()
+            feed_in_active, applied_feed_in = await self._apply_grid_feed_in(
+                current_price_ct
+            )
+            if self._shutdown_requested:
+                return self.data
+            await self._apply_dc_coupled_feed_in(is_reduced=is_reduced)
+            if generation == self._grid_consumer_generation:
+                break
+            # A clear during an awaited write must reach the device before publishing.
+        else:
+            return self.data
         self._update_cost_tracking(price_view.eur_per_kwh)
         return self._build_snapshot(
             action=action,
@@ -1503,6 +1661,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         reduced-mode predicate and ``_apply_grid_feed_in`` see the same
         value in the same tick.
         """
+        self._sample_grid_consumer()
         current_price_ct = self._get_current_price_ct()
         is_reduced = self._is_reduced_feed_in_mode(current_price_ct)
         live_action = self._determine_action()
@@ -1649,6 +1808,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 self.hass, entities_to_watch, _state_changed
             )
         )
+        self._listen_grid_consumer()
 
         # Every minute, re-evaluate (catches hour boundaries)
         @callback
@@ -1687,6 +1847,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # over the user's persisted one.
         await self._async_load_schedule()
 
+        self._grid_consumer_ready = True
         await self.async_request_refresh()
 
         # From this point on, public mutators are allowed to write to
@@ -1701,6 +1862,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     async def async_shutdown(self) -> None:
         """Remove all listeners."""
+        await super().async_shutdown()
+        self._clear_grid_consumer_offset()
+        if self._grid_consumer_unsub is not None:
+            self._grid_consumer_unsub()
+            self._grid_consumer_unsub = None
         if self._replan_unsub is not None:
             self._replan_unsub()
             self._replan_unsub = None

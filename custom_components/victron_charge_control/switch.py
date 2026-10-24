@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -45,6 +46,13 @@ SWITCHES: tuple[VictronCCSwitchDescription, ...] = (
         translation_key="grid_feed_in_control_enabled",
         icon="mdi:transmission-tower",
         coordinator_attr="grid_feed_in_control_enabled",
+        default_value=False,
+    ),
+    VictronCCSwitchDescription(
+        key="grid_consumer_enabled",
+        translation_key="grid_consumer_enabled",
+        icon="mdi:power-plug",
+        coordinator_attr="grid_consumer_enabled",
         default_value=False,
     ),
     VictronCCSwitchDescription(
@@ -95,8 +103,26 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
     def is_on(self) -> bool:
         return getattr(self.coordinator, self.entity_description.coordinator_attr)
 
+    @property
+    def available(self) -> bool:
+        if self.entity_description.key == "grid_consumer_enabled":
+            return self.coordinator.grid_consumer_entity is not None
+        return super().available
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.entity_description.key == "grid_consumer_enabled":
+            return {
+                "source_entity": self.coordinator.grid_consumer_entity,
+                "power_w": self.coordinator.grid_consumer_power,
+                "offset_w": self.coordinator.grid_consumer_offset,
+            }
+        return None
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable."""
+        if self.entity_description.key == "grid_consumer_enabled" and not self.available:
+            raise ServiceValidationError("Configure a Grid Consumer power sensor first")
         setattr(self.coordinator, self.entity_description.coordinator_attr, True)
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
