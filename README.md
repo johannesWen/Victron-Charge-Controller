@@ -49,7 +49,7 @@ the system from dashboards or automations.
 - **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
 - **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint. Full discharge switches to surplus-only export at Min SOC. At or below `max(0, Min SOC − SOC Hysteresis)`, discharge stops and the configured Idle Setpoint is applied immediately on the next control update, without the action confirmation delay. Surplus-only export resumes at Min SOC; full discharge resumes strictly above Min SOC + SOC Hysteresis and then continues down to Min SOC again. The averaged surplus can temporarily exceed available solar power and draw from the battery, which is why the lower cutoff is needed. Without the sensor, discharge stops at Min SOC and resumes strictly above Min SOC + SOC Hysteresis.
 - **Conservative discharge startup** starts stopped below Min SOC, surplus-only from Min SOC through Min SOC + SOC Hysteresis, and at full discharge above that upper threshold. Without a surplus sensor it stays stopped until the upper threshold is exceeded. With zero hysteresis, discharge stops at or below Min SOC and can run at full power above it. Stopping uses the configured Idle Setpoint; it does not disable other battery flows managed by Victron.
-- **PV charging** charges the battery from solar surplus without importing from the grid, splitting surplus between battery and export according to a configurable share. PV charging is independent of the **Charge Allowed** switch and of blocked charging hours — it never draws from the grid, so it can stay active even when grid charging is disabled.
+- **PV charging** splits solar surplus between battery and export according to a configurable share. It is independent of **Charge Allowed** and blocked charging hours. Without a Grid Consumer offset it requests no grid import; an enabled Grid Consumer can add import during PV Charge or Idle.
 - **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
 - **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts. The full charge/discharge plan (charge/discharge/pv_charge slots, blocked hours, last update) is also persisted and reloaded on restart — and a restart in auto mode does **not** trigger a replan, so the plan you set up the night before survives HA reboots untouched.
 - **Service API** exposes schedule manipulation for dashboards, scripts, and automations.
@@ -87,10 +87,11 @@ During setup, select the entities that connect this integration to your Victron 
 | Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. | GX Device - ESS max feed-in power |
 | Grid consumption energy sensor | No | Cumulative grid import meter in kWh. | - |
 | Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. | - |
+| Grid consumer power sensor | No | Power sensor in W or kW measuring a load already included in ESS consumption, such as an EV charger. Use an existing aggregate power sensor for multiple loads. | - |
 | Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export, and lets the discharge degrade to a solar-only export at Min SOC instead of stopping. | - |
 | DC coupled PV feed in switch | No | Control the DC coupled PV feed in when in reduced mode. | GX Device - DC-coupled PV - feed in excess |
 
-You can change these entities later from the integration options flow.
+You can change these entities later in **Settings > Devices & Services > Victron Charge Control > Configure**; no YAML is needed.
 
 The options flow also provides a **Safety watchdog grace period** (default
 90 seconds, configurable from 0–600 seconds). During this startup window,
@@ -197,6 +198,32 @@ existing plan's hourly price.
 | :---: | :---: | :---: |
 | ![Settings card screenshot](assets/screenshots/settings_card.png) | ![Plan card screenshot](assets/screenshots/plan_card.png) | ![History card screenshot](assets/screenshots/costs_card.png) |
 
+## Grid Consumer
+
+Select the optional **Grid consumer power sensor** in the integration options, then
+turn on **Grid Consumer** under **Settings → Auto Mode** in the card. The control
+is visible in every mode and disabled until a source is configured. A configured
+source with an invalid or unavailable reading uses zero offset and shows a warning
+while enabled; the switch remains operable so you can turn it off.
+
+In **Auto, Manual, Force Charge and Force Discharge**, the controller adds the
+consumer load to the raw grid target before applying grid setpoint and reduced
+feed-in limits. This includes Idle and PV Charge actions, so those actions can
+request import when the offset is enabled. **Off** is unchanged and uses Idle
+Setpoint directly. Charge `3000 W` + EV `3000 W` = `6000 W`, capped to the default
+Max Grid Setpoint of `5000 W`. Discharge `−2000 W` + consumer `3000 W` = `1000 W`
+before limits.
+
+The first load change starts a fixed **five-second window**; the latest reading
+is applied at expiry, and further changes do not restart the window. Initial
+enable, restore after restart, and recovery also wait five seconds. The existing
+setpoint watt deadband still applies. Disabling the switch, selecting Off, or an
+invalid source clears the offset without delay. The delay is not adjustable.
+
+This adjusts the requested target, not the energy origin: intentional battery
+discharge remains possible. The sensor must measure a load already included in
+ESS consumption. For multiple loads, select an existing aggregate power sensor.
+
 ## Entity Reference
 
 | Entity | Platform | Description |
@@ -204,6 +231,7 @@ existing plan's hourly price.
 | Control Mode | Select | `off`, `auto`, `manual`, `force_charge`, or `force_discharge`. |
 | Charge Allowed | Switch | Master enable for charging from the grid. PV (solar surplus) charging is independent of this switch and stays active even when it is off. |
 | Discharge Allowed | Switch | Master enable for discharging. |
+| Grid Consumer | Switch | Optional measured-load offset; defaults off and restores its state after restart. Always present, unavailable without a configured source. Attributes: `source_entity`, normalized `power_w` (null when invalid), and accepted `offset_w`. |
 | Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
 | Min SOC | Number | Lower battery SOC boundary. |
 | Max SOC | Number | Upper battery SOC boundary. |

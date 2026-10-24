@@ -345,3 +345,87 @@ test('picker timeout preserves focus after the user tabs elsewhere', t => {
   assert.equal(instance._pickerTrigger, null);
   assert.equal(instance._pickerHideTimer, null);
 });
+
+function gridConsumerCard(state, templates = [], mode = 'auto') {
+  const instance = card({ templates });
+  instance.config = { entity_prefix: 'victron_charge_control' };
+  instance._state = (domain, key) => domain === 'switch' && key === 'grid_consumer' ? state : undefined;
+  instance._val = (domain, key) => key === 'control_mode' ? mode : instance._state(domain, key)?.state;
+  return instance;
+}
+
+for (const [name, state, explanation] of [
+  ['missing switch', undefined, /Configure a Grid consumer power sensor/],
+  ['unconfigured source', { state: 'off', attributes: { source_entity: null } }, /Configure a Grid consumer power sensor/],
+  ['unavailable switch', { state: 'unavailable', attributes: { source_entity: 'sensor.ev' } }, /switch is unavailable/],
+  ['unknown switch', { state: 'unknown', attributes: { source_entity: 'sensor.ev' } }, /switch is unavailable/],
+]) test(`Grid Consumer disables ${name} and gates its rendered handler`, () => {
+  const templates = [], instance = gridConsumerCard(state, templates);
+  const rendered = instance._renderGridConsumer();
+  assert.match(rendered, explanation);
+  assert.match(rendered, /role="status"/);
+  const toggle = nodes(templates, 'control-row toggle-row')[0];
+  assert.match(toggle.rendered, /aria-label=Grid Consumer/);
+  assert.match(toggle.rendered, /\.disabled=true/);
+  handler(toggle, 'change')(); // Programmatic change events must also respect disabled state.
+});
+
+for (const state of ['on', 'off']) test(`Grid Consumer ${state} uses the existing switch service wiring`, () => {
+  const templates = [], instance = gridConsumerCard({ state, attributes: { source_entity: 'sensor.ev', power_w: 3000 } }, templates);
+  const calls = [];
+  instance.hass.callService = (...args) => calls.push(args);
+  instance._renderGridConsumer();
+  const toggle = nodes(templates, 'control-row toggle-row')[0];
+  assert.match(toggle.rendered, /\.disabled=false/);
+  assert.match(toggle.rendered, new RegExp(`\\.checked=${state === 'on'}`));
+  handler(toggle, 'change')();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'switch');
+  assert.equal(calls[0][1], state === 'on' ? 'turn_off' : 'turn_on');
+  assert.equal(calls[0][2].entity_id, 'switch.victron_charge_control_grid_consumer');
+});
+
+for (const state of ['on', 'off']) test(`Grid Consumer invalid power warning follows ${state} state without disabling`, () => {
+  const templates = [], instance = gridConsumerCard({ state, attributes: { source_entity: 'sensor.ev', power_w: null } }, templates);
+  const rendered = instance._renderGridConsumer();
+  assert.match(rendered, /\.disabled=false/);
+  if (state === 'on') assert.match(rendered, /invalid or unavailable; zero offset/);
+  else assert.doesNotMatch(rendered, /zero offset/);
+});
+
+test('Grid Consumer accepts a valid zero reading without a warning', () => {
+  const instance = gridConsumerCard({ state: 'on', attributes: { source_entity: 'sensor.ev', power_w: 0 } });
+  assert.doesNotMatch(instance._renderGridConsumer(), /zero offset|invalid or unavailable/);
+});
+
+for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge']) test(`Grid Consumer stays under Auto Mode in ${mode}`, () => {
+  const instance = gridConsumerCard({ state: 'off', attributes: { source_entity: 'sensor.ev', power_w: 0 } }, [], mode);
+  const rendered = instance._renderControlsView();
+  assert.match(rendered, /Grid Consumer/);
+  assert.ok(rendered.indexOf('Auto Mode') < rendered.indexOf('aria-label=Grid Consumer'));
+  assert.ok(rendered.indexOf('aria-label=Grid Consumer') < rendered.indexOf('Grid Feed-in'));
+});
+
+test('Grid Consumer help label opens its accessible topic with limits, timing and energy caveats', () => {
+  const templates = [], instance = gridConsumerCard(undefined, templates);
+  instance._openHelp = (topic, trigger) => {
+    instance._helpOpen = true;
+    instance._helpTopic = topic;
+    instance._helpTrigger = trigger;
+  };
+  instance._renderGridConsumer();
+  const label = templates.find(node => node.rendered.includes('aria-label=Help for Grid Consumer'));
+  assert.match(label.rendered, /aria-haspopup="dialog"/);
+  const trigger = {};
+  handler(label, 'click')({ currentTarget: trigger });
+  assert.equal(instance._helpTopic.key, 'grid_consumer');
+  assert.equal(instance._helpTrigger, trigger);
+  const rendered = instance._renderHelpDialog('controls', 'Settings');
+  assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Grid Consumer/);
+  for (const text of ['Auto, Manual, Force Charge and Force Discharge', 'before grid and reduced feed-in limits',
+    '5000 W', '1000 W before limits', 'five-second window', 'further changes do not restart',
+    'Initial enable, restart restore and recovery', 'watt deadband', 'clears the offset without delay',
+    'intentional battery discharge', 'included in ESS consumption', 'aggregate power sensor']) {
+    assert.ok(rendered.includes(text), text);
+  }
+});
