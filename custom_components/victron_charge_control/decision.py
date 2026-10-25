@@ -1,7 +1,7 @@
 """Decision engine helpers.
 
-Extracted from ``coordinator.py``. The helpers are pure functions
-that take the relevant state and return the new state — the
+Extracted from ``coordinator.py``. The helpers take the relevant
+state and return the new state — the
 coordinator's private methods stay as thin wrappers that apply the
 returned values back to the coordinator instance, which keeps the
 public/test surface (e.g. ``_determine_action()``, ``_charge_blocked_by_soc``)
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Any
 
 from .const import (
@@ -315,6 +316,7 @@ def compute_setpoint(
     pv_charge_share: float,
     reduced_max_grid_feed_in: float,
     grid_consumer_offset: float = 0.0,
+    calculation: dict[str, float] | None = None,
 ) -> float:
     """Compute the clamped grid setpoint for the given action.
 
@@ -322,18 +324,27 @@ def compute_setpoint(
     In that case the PV-Charge and Discharge setpoints are clamped on
     the export side so the integration never asks the ESS to feed more
     into the grid than the active feed-in limit allows.
+    If supplied, ``calculation`` receives the signed additive terms.
     """
+    setting = idle_setpoint
+    pv_charge = surplus_contribution = 0.0
+    surplus = solar_surplus_mean or 0.0
+    if not isfinite(surplus) or surplus < 0.0:
+        surplus = 0.0
     if action == ACTION_CHARGE:
-        raw = charge_power
+        raw = setting = charge_power
     elif action == ACTION_PV_CHARGE:
         if charge_blocked_by_soc:
             raw = idle_setpoint
         else:
-            surplus = solar_surplus_mean or 0.0
             f = max(0.0, min(1.0, pv_charge_share / 100.0))
-            raw = (1.0 - f) * (-surplus) + f * idle_setpoint
+            setting = f * idle_setpoint
+            pv_charge = f * surplus
+            surplus_contribution = -surplus
+            raw = (1.0 - f) * (-surplus) + setting
     elif action == ACTION_DISCHARGE:
-        surplus = solar_surplus_mean or 0.0
+        surplus_contribution = -surplus
+        setting = 0.0 if discharge_solar_only else -discharge_power
         if discharge_solar_only:
             raw = -surplus
         else:
@@ -342,7 +353,17 @@ def compute_setpoint(
         raw = idle_setpoint
 
     raw += grid_consumer_offset
+    unclamped = raw
     if is_reduced and action in (ACTION_PV_CHARGE, ACTION_DISCHARGE):
         raw = max(raw, -reduced_max_grid_feed_in)
 
-    return max(min_grid_setpoint, min(raw, max_grid_setpoint))
+    target = max(min_grid_setpoint, min(raw, max_grid_setpoint))
+    if calculation is not None:
+        calculation.update(
+            setting_w=setting,
+            pv_charge_w=pv_charge,
+            surplus_w=surplus_contribution,
+            grid_consumer_w=grid_consumer_offset,
+            limits_w=target - unclamped,
+        )
+    return target

@@ -359,12 +359,14 @@ for (const [name, state, explanation] of [
   ['unconfigured source', { state: 'off', attributes: { source_entity: null } }, /Configure a Grid consumer power sensor/],
   ['unavailable switch', { state: 'unavailable', attributes: { source_entity: 'sensor.ev' } }, /switch is unavailable/],
   ['unknown switch', { state: 'unknown', attributes: { source_entity: 'sensor.ev' } }, /switch is unavailable/],
-]) test(`Grid Consumer disables ${name} and gates its rendered handler`, () => {
+]) test(`Grid Consumer explains ${name} on hover and gates its disabled handler`, () => {
   const templates = [], instance = gridConsumerCard(state, templates);
   const rendered = instance._renderGridConsumer();
   assert.match(rendered, explanation);
-  assert.match(rendered, /role="status"/);
+  assert.doesNotMatch(rendered, /role="status"/);
   const toggle = nodes(templates, 'control-row toggle-row')[0];
+  assert.ok(toggle.values.some((value, index) => toggle.strings[index].endsWith('title=') && explanation.test(value)));
+  assert.match(toggle.rendered, /tabindex=0/);
   assert.match(toggle.rendered, /aria-label=Grid Consumer/);
   assert.match(toggle.rendered, /\.disabled=true/);
   handler(toggle, 'change')(); // Programmatic change events must also respect disabled state.
@@ -377,6 +379,7 @@ for (const state of ['on', 'off']) test(`Grid Consumer ${state} uses the existin
   instance._renderGridConsumer();
   const toggle = nodes(templates, 'control-row toggle-row')[0];
   assert.match(toggle.rendered, /\.disabled=false/);
+  assert.doesNotMatch(toggle.rendered, /tabindex=0|Configure a Grid consumer power sensor|switch is unavailable/);
   assert.match(toggle.rendered, new RegExp(`\\.checked=${state === 'on'}`));
   handler(toggle, 'change')();
   assert.equal(calls.length, 1);
@@ -429,3 +432,46 @@ test('Grid Consumer help label opens its accessible topic with limits, timing an
     assert.ok(rendered.includes(text), text);
   }
 });
+
+test('Settings shows signed server calculation and setpoint below it without a duplicate action', () => {
+  const instance = card();
+  instance._state = (domain, key) => key === 'target_setpoint' ? {
+    state: '-450', attributes: { calculation: {
+      setting_w: 50, pv_charge_w: 1000, surplus_w: -2000, grid_consumer_w: 500, limits_w: 0,
+    } },
+  } : undefined;
+  instance._val = (domain, key) => key === 'desired_action' ? 'pv_charge' : undefined;
+  const rendered = instance._renderControlsView();
+  for (const label of ['Setting', 'PV charge', 'Surplus', 'Grid consumer', 'Grid setpoint']) {
+    assert.ok(rendered.includes(label), label);
+  }
+  assert.match(rendered, /\+50 W/);
+  assert.match(rendered, /−2,000 W/);
+  assert.match(rendered, /<strong>−450 W<\/strong>/);
+  assert.doesNotMatch(rendered, /<dt>Limits<\/dt>|<span>PV Charge<\/span>/);
+  assert.ok(rendered.indexOf('calculation-terms') < rendered.indexOf('setpoint-result'));
+});
+
+for (const [target, setting, consumer, limit, expected] of [
+  ['5000', 3000, 3000, -1000, '5,000 W (6,000 W)'],
+  ['-500', -3000, 500, 2000, '−500 W (−2,500 W)'],
+]) test(`capped setpoint ${target} shows the uncapped calculation in brackets`, () => {
+  const instance = card();
+  instance._state = () => ({ state: target, attributes: { calculation: {
+    setting_w: setting, pv_charge_w: 0, surplus_w: 0, grid_consumer_w: consumer, limits_w: limit,
+  } } });
+  const rendered = instance._renderSetpointCalculation();
+  assert.doesNotMatch(rendered, /<dt>Limits<\/dt>/);
+  assert.ok(rendered.includes(`<strong>${expected}</strong>`));
+});
+
+for (const state of [undefined, 'unavailable', 'unknown', '', ' ', null, 'NaN', '0']) {
+  test(`setpoint calculation handles missing data with state ${state}`, () => {
+    const instance = card();
+    instance._state = () => state === undefined ? undefined : { state, attributes: {} };
+    const rendered = instance._renderSetpointCalculation();
+    assert.match(rendered, /Calculation unavailable/);
+    assert.ok(rendered.includes(state === '0' ? '<strong>0 W</strong>' : '<strong>—</strong>'));
+    assert.doesNotMatch(rendered, /NaN W|undefined W/);
+  });
+}

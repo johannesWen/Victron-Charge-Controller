@@ -4,13 +4,14 @@ Extracted from ``coordinator.py`` to keep that file focused on
 orchestration. The sampling logic is a pure function that mutates a
 caller-provided ``deque`` of ``(timestamp, value)`` samples and returns
 the recomputed 15-minute sliding mean. Negative values are clamped to
-zero, unavailable or non-numeric entity states are silently skipped.
+zero; unavailable, non-numeric, or nonfinite entity states are silently skipped.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from datetime import datetime, timedelta
+from math import isfinite
 from typing import Any
 
 SOLAR_WINDOW_MINUTES = 15
@@ -39,6 +40,9 @@ def sample_solar_surplus(
     try:
         value = float(state.state)
     except (ValueError, TypeError):
+        return _recompute_mean(samples)
+
+    if not isfinite(value):
         return _recompute_mean(samples)
 
     if value < 0.0:

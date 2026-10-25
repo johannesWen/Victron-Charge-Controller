@@ -87,13 +87,21 @@ def test_conservative_startup(discharge_controller, has_solar, soc):
         controller._solar_surplus_entity = None
         controller._solar_surplus_mean = None
     set_soc(controller, states, soc)
-    _, _, action, setpoint = controller._step_decide()
+    calculation = {}
+    _, _, action, setpoint = controller._step_decide(calculation=calculation)
+    assert sum(calculation.values()) == pytest.approx(setpoint)
     if soc > 22:
         assert (action, setpoint) == (ACTION_DISCHARGE, -4500 if has_solar else -3000)
+        assert calculation["setting_w"] == -3000
+        assert calculation["surplus_w"] == (-1500 if has_solar else 0)
     elif has_solar and soc >= 20:
         assert (action, setpoint) == (ACTION_DISCHARGE, -1500)
+        assert calculation["setting_w"] == 0
+        assert calculation["surplus_w"] == -1500
     else:
         assert (action, setpoint) == (ACTION_IDLE, 50)
+        assert calculation["setting_w"] == 50
+        assert calculation["surplus_w"] == 0
 
 
 @pytest.mark.parametrize("has_solar", [True, False])

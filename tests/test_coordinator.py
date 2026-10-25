@@ -1230,6 +1230,7 @@ class TestSolarSurplus:
             MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
         )
         assert coord.solar_surplus_entity == "sensor.solar_surplus"
+        coord.async_request_refresh = AsyncMock()
         coord.update_entity_references({**MOCK_CONFIG_DATA, CONF_SOLAR_SURPLUS_ENTITY: ""})
         assert coord.solar_surplus_entity is None
 
@@ -1272,6 +1273,53 @@ class TestSolarSurplus:
         coord.hass.states.get.return_value = MockState("-500")
         coord._sample_solar_surplus()
         assert coord._solar_surplus_mean == 0.0
+
+    @pytest.mark.parametrize("invalid", ["NaN", "inf", "-inf"])
+    @pytest.mark.parametrize("valid_samples", [(), (1000, 2000)])
+    def test_nonfinite_solar_samples_skipped(self, mock_hass, invalid, valid_samples):
+        coord = VictronChargeControlCoordinator(
+            mock_hass,
+            MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
+        )
+        for value in valid_samples:
+            coord.hass.states.get.return_value = MockState(str(value))
+            coord._sample_solar_surplus()
+        samples = list(coord._solar_samples)
+
+        coord.hass.states.get.return_value = MockState(invalid)
+        coord._sample_solar_surplus()
+
+        assert list(coord._solar_samples) == samples
+        assert coord._solar_surplus_mean == (1500.0 if valid_samples else None)
+
+    @pytest.mark.parametrize("surplus", [float("nan"), float("inf"), float("-inf"), -500.0])
+    @pytest.mark.parametrize("offset", [0.0, 750.0])
+    @pytest.mark.parametrize(
+        ("action", "solar_only", "expected"),
+        [(ACTION_DISCHARGE, True, 0.0),
+         (ACTION_DISCHARGE, False, -3000.0),
+         (ACTION_PV_CHARGE, False, 25.0)],
+    )
+    def test_invalid_solar_mean_contributes_no_export(
+        self, coordinator, surplus, offset, action, solar_only, expected
+    ):
+        coordinator.control_mode = MODE_MANUAL
+        coordinator.discharge_power = 3000.0
+        coordinator.idle_setpoint = 50.0
+        coordinator.pv_charge_share = 50.0
+        coordinator.min_grid_setpoint = -5000.0
+        coordinator.max_grid_setpoint = 5000.0
+        coordinator._discharge_solar_only = solar_only
+        coordinator._solar_surplus_mean = surplus
+        coordinator._grid_consumer_offset = offset
+        calculation = {}
+
+        target = coordinator._compute_setpoint(action, calculation=calculation)
+
+        assert target == expected + offset
+        assert calculation["surplus_w"] == 0.0
+        assert calculation["pv_charge_w"] == 0.0
+        assert sum(calculation.values()) == target
 
     def test_old_samples_trimmed(self, mock_hass):
         from datetime import datetime, timedelta, timezone

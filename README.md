@@ -206,18 +206,32 @@ is visible in every mode and disabled until a source is configured. A configured
 source with an invalid or unavailable reading uses zero offset and shows a warning
 while enabled; the switch remains operable so you can turn it off.
 
-In **Auto, Manual, Force Charge and Force Discharge**, the controller adds the
-consumer load to the raw grid target before applying grid setpoint and reduced
-feed-in limits. This includes Idle and PV Charge actions, so those actions can
+In **Auto, Manual, Force Charge and Force Discharge**, the controller subtracts
+the current **Solar surplus sensor** reading from the consumer load and adds only
+the remaining shortfall to the raw grid target, before applying grid setpoint and
+reduced feed-in limits. Surplus equal to or above the consumer load adds no offset.
+This uses the current reading, not the 15-minute solar average. Without a configured
+solar sensor, or when its reading is invalid or unavailable, the full consumer
+load is used. This includes Idle and PV Charge actions, so those actions can
 request import when the offset is enabled. **Off** is unchanged and uses Idle
-Setpoint directly. Charge `3000 W` + EV `3000 W` = `6000 W`, capped to the default
-Max Grid Setpoint of `5000 W`. Discharge `−2000 W` + consumer `3000 W` = `1000 W`
-before limits.
+Setpoint directly. Without solar surplus, Charge `3000 W` + EV `3000 W` = `6000 W`,
+capped to the default Max Grid Setpoint of `5000 W`.
+Discharge `−2000 W` + consumer `3000 W` = `1000 W`
+before limits. With a `3000 W` consumer and `2000 W` solar surplus, the offset is
+only `1000 W`.
 
-The first load change starts a fixed **five-second window**; the latest reading
-is applied at expiry, and further changes do not restart the window. Initial
-enable, restore after restart, and recovery also wait five seconds. The existing
-setpoint watt deadband still applies. Disabling the switch, selecting Off, or an
+The Settings card shows the live setpoint calculation below the mode switches:
+**Setting**, **PV charge**, **Surplus**, and **Grid consumer**, with the final
+**Grid setpoint** on its own row. These signed contributions include the accepted
+consumer shortfall. When grid or feed-in limits cap the setpoint, the uncapped
+calculation appears in brackets after it, for example **5,000 W (6,000 W)**.
+The Surplus term uses the 15-minute mean for PV Charge and Discharge, while the
+consumer shortfall uses the current solar reading. The top chip shows the action.
+
+The first change to the shortfall starts a fixed **five-second window**; the latest
+load and solar readings are applied at expiry, and further changes do not restart
+the window. Initial enable, restore after restart, and recovery also wait five
+seconds. The existing setpoint watt deadband still applies. Disabling the switch, selecting Off, or an
 invalid source clears the offset without delay. The delay is not adjustable.
 
 This adjusts the requested target, not the energy origin: intentional battery

@@ -156,6 +156,7 @@ class ChargeControlData:
 
     desired_action: str = ACTION_IDLE
     target_setpoint: float = 0.0
+    setpoint_calculation: dict[str, float] | None = None
     charge_hours: list[dict[str, Any]] = field(default_factory=list)
     discharge_hours: list[dict[str, Any]] = field(default_factory=list)
     pv_charge_hours: list[dict[str, Any]] = field(default_factory=list)
@@ -442,6 +443,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def grid_consumer_offset(self) -> float:
         return self._grid_consumer_offset
 
+    def _grid_consumer_requested_offset(self) -> float | None:
+        """Request only the load not covered by instantaneous solar watts."""
+        power = self.grid_consumer_power
+        if power is None or self._solar_surplus_entity is None:
+            return power
+        state = self.hass.states.get(self._solar_surplus_entity)
+        if state is None or state.attributes.get("unit_of_measurement") != "W":
+            return power
+        try:
+            surplus = float(state.state)
+        except (ValueError, TypeError, OverflowError):
+            return power
+        return max(0.0, power - max(0.0, surplus)) if math.isfinite(surplus) else power
+
     @callback
     def _clear_grid_consumer_offset(self) -> None:
         """Invalidate pending callbacks and retain forced clearing until written."""
@@ -462,7 +477,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Batch only the load offset, with a fixed deadline from the first change."""
         if not self._grid_consumer_ready:
             return
-        power = self.grid_consumer_power
+        power = self._grid_consumer_requested_offset()
         if (
             self._shutdown_requested
             or not self.grid_consumer_enabled
@@ -481,7 +496,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 return
             self._grid_consumer_timer = None
             self._grid_consumer_generation += 1
-            latest = self.grid_consumer_power
+            latest = self._grid_consumer_requested_offset()
             if not self.grid_consumer_enabled or self.control_mode == MODE_OFF or latest is None:
                 self._clear_grid_consumer_offset()
             else:
@@ -506,8 +521,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if self._grid_consumer_clear_pending:
                 self.hass.async_create_task(self.async_request_refresh())
 
+        entities = [self._grid_consumer_entity]
+        if self._solar_surplus_entity is not None:
+            entities.append(self._solar_surplus_entity)
         self._grid_consumer_unsub = async_track_state_change_event(
-            self.hass, [self._grid_consumer_entity], _changed
+            self.hass, entities, _changed
         )
 
     @property
@@ -604,14 +622,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_feed_in_energy_entity = (
             data.get(CONF_GRID_FEED_IN_ENERGY_ENTITY) or None
         )
-        self._solar_surplus_entity = data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
+        solar_entity = data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
         self._dc_coupled_pv_feed_in_entity = (
             data.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY) or None
         )
         consumer_entity = data.get(CONF_GRID_CONSUMER_ENTITY) or None
-        if consumer_entity != self._grid_consumer_entity:
+        if (
+            consumer_entity != self._grid_consumer_entity
+            or solar_entity != self._solar_surplus_entity
+        ):
             self._clear_grid_consumer_offset()
             self._grid_consumer_entity = consumer_entity
+            self._solar_surplus_entity = solar_entity
             if consumer_entity is None:
                 self._grid_consumer_enabled = False
             self._listen_grid_consumer()
@@ -1418,7 +1440,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._pending_action_since = result.state.pending_action_since
         return result.published_action
 
-    def _compute_setpoint(self, action: str, *, is_reduced: bool = False) -> float:
+    def _compute_setpoint(
+        self, action: str, *, is_reduced: bool = False,
+        calculation: dict[str, float] | None = None,
+    ) -> float:
         """Compute the clamped grid setpoint for the given action."""
         return decision_compute_setpoint(
             action,
@@ -1436,6 +1461,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             grid_consumer_offset=(
                 self._grid_consumer_offset if self.control_mode != MODE_OFF else 0.0
             ),
+            calculation=calculation,
         )
 
     # ------------------------------------------------------------------
@@ -1574,7 +1600,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             await self._step_safety()
             if self._shutdown_requested:
                 return self.data
-            current_price_ct, is_reduced, action, setpoint = self._step_decide()
+            calculation: dict[str, float] = {}
+            current_price_ct, is_reduced, action, setpoint = self._step_decide(
+                calculation=calculation
+            )
             generation = self._grid_consumer_generation
             await self._step_apply_setpoint(action, setpoint)
             if self._shutdown_requested:
@@ -1604,6 +1633,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             price_view=price_view,
             feed_in_active=feed_in_active,
             applied_feed_in=applied_feed_in,
+            calculation=calculation,
         )
 
     async def _step_safety(self) -> None:
@@ -1662,7 +1692,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 remaining,
             )
 
-    def _step_decide(self) -> tuple[float | None, bool, str, float]:
+    def _step_decide(
+        self, *, calculation: dict[str, float] | None = None,
+    ) -> tuple[float | None, bool, str, float]:
         """Read the current price, pick an action, and compute the setpoint.
 
         The current price is read once here (in ct/kWh) so both the
@@ -1674,7 +1706,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         is_reduced = self._is_reduced_feed_in_mode(current_price_ct)
         live_action = self._determine_action()
         action = self._resolve_published_action(live_action)
-        setpoint = self._compute_setpoint(action, is_reduced=is_reduced)
+        if self.control_mode == MODE_OFF:
+            # OFF writes idle directly, bypassing the normal setpoint limits.
+            setpoint = self.idle_setpoint
+            if calculation is not None:
+                calculation.update(
+                    setting_w=setpoint, pv_charge_w=0.0, surplus_w=0.0,
+                    grid_consumer_w=0.0, limits_w=0.0,
+                )
+        else:
+            setpoint = self._compute_setpoint(
+                action, is_reduced=is_reduced, calculation=calculation
+            )
         return current_price_ct, is_reduced, action, setpoint
 
     async def _step_apply_setpoint(self, action: str, setpoint: float) -> None:
@@ -1754,11 +1797,17 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         price_view: EpexPriceView,
         feed_in_active: bool,
         applied_feed_in: float | None,
+        calculation: dict[str, float] | None = None,
     ) -> ChargeControlData:
         """Assemble the per-tick ``ChargeControlData`` returned to entities."""
         return ChargeControlData(
             desired_action=action,
             target_setpoint=setpoint,
+            setpoint_calculation=(
+                calculation if calculation is not None
+                and all(math.isfinite(value) for value in calculation.values())
+                else None
+            ),
             charge_hours=[{"date": d, "hour": h} for d, h in self._charge_hours],
             discharge_hours=[{"date": d, "hour": h} for d, h in self._discharge_hours],
             pv_charge_hours=[{"date": d, "hour": h} for d, h in self._pv_charge_hours],
