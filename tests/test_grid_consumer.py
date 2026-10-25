@@ -205,6 +205,7 @@ async def test_instantaneous_solar_shortfall(solar_consumer, value, unit, expect
     assert coord.grid_consumer_power == 750
     assert coord.grid_consumer_offset == expected
     assert coord.data.target_setpoint == coord.charge_power + expected
+    assert coord.data.setpoint_calculation["grid_consumer_w"] == expected
 
 
 async def test_solar_only_changes_batch_to_first_deadline(solar_consumer):
@@ -320,6 +321,20 @@ async def test_solar_offset_obeys_setpoint_limits(solar_consumer):
     assert coord._compute_setpoint(ACTION_DISCHARGE) == -100
 
 
+@pytest.mark.parametrize("solar", ["NaN", "inf", "-inf"])
+async def test_nonfinite_solar_mean_does_not_publish_invalid_calculation(solar_consumer, solar):
+    coord, _, _, change, _ = solar_consumer
+    coord.control_mode = MODE_FORCE_DISCHARGE
+    coord._last_published_action = None
+    change(solar, source="sensor.solar", notify=False)
+    await coord.async_request_refresh()
+    if solar == "-inf":
+        # The existing mean sampler clamps negative values to zero.
+        assert coord.data.setpoint_calculation["surplus_w"] == 0
+    else:
+        assert coord.data.setpoint_calculation is None
+
+
 @pytest.mark.parametrize("replace_source", [False, True])
 async def test_solar_change_during_awaited_write_is_reconciled(native_consumer, replace_source):
     coord, switch, clock, change, states = native_consumer
@@ -425,13 +440,59 @@ async def test_burst_uses_first_deadline_and_latest_value(consumer):
     assert clock.pending == [first]
     assert coord.grid_consumer_offset == 0
     assert coord.data.target_setpoint == coord.charge_power
+    before = coord.data.setpoint_calculation
+    assert before["grid_consumer_w"] == 0
     await clock.advance(0.1)
     assert coord.grid_consumer_offset == 900
     assert coord.data.target_setpoint == coord.charge_power + 900
+    assert coord.data.setpoint_calculation["grid_consumer_w"] == 900
+    assert before["grid_consumer_w"] == 0
     sensor = TargetSetpointSensor(coord, MockConfigEntry())
     sensor.async_write_ha_state = MagicMock()
     sensor._handle_coordinator_update()
     assert sensor.native_value == coord.charge_power + 900
+
+
+@pytest.mark.parametrize("idle", [-500, 500])
+async def test_off_snapshot_shows_actual_unclamped_idle(consumer, idle):
+    coord, switch, clock, _, states = consumer
+    await switch.async_turn_on()
+    await clock.advance(5)
+    coord.min_grid_setpoint = -100
+    coord.max_grid_setpoint = 100
+    coord.idle_setpoint = idle
+    coord.control_mode = MODE_OFF
+    await coord.async_request_refresh()
+    assert coord.data.target_setpoint == idle
+    assert float(states["number.grid_setpoint"].state) == idle
+    assert coord.data.setpoint_calculation == {
+        "setting_w": idle, "pv_charge_w": 0, "surplus_w": 0,
+        "grid_consumer_w": 0, "limits_w": 0,
+    }
+
+
+async def test_calculation_does_not_read_new_settings_after_awaited_write(consumer):
+    coord, switch, clock, _, _ = consumer
+    started, release = asyncio.Event(), asyncio.Event()
+    write = coord.hass.services.async_call.side_effect
+
+    async def delayed_write(*args, **kwargs):
+        started.set()
+        await release.wait()
+        await write(*args, **kwargs)
+
+    await switch.async_turn_on()
+    coord.hass.services.async_call.side_effect = delayed_write
+    await clock.advance(5, drain=False)
+    await asyncio.wait_for(started.wait(), 1)
+    coord.charge_power = 6000
+    release.set()
+    await clock.drain()
+    assert coord.data.target_setpoint == 3750
+    assert coord.data.setpoint_calculation == {
+        "setting_w": 3000, "pv_charge_w": 0, "surplus_w": 0,
+        "grid_consumer_w": 750, "limits_w": 0,
+    }
 
 
 async def test_continuous_noise_does_not_starve_timer(consumer):

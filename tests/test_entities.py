@@ -180,6 +180,28 @@ class TestTargetSetpointSensor:
         sensor = TargetSetpointSensor(coordinator, entry)
         assert sensor.native_value == 0.0
 
+    def test_calculation_from_same_snapshot(self, coordinator):
+        calculation = {
+            "setting_w": 3000.0, "pv_charge_w": 0.0, "surplus_w": 0.0,
+            "grid_consumer_w": 250.0, "limits_w": 0.0,
+        }
+        coordinator.data = ChargeControlData(
+            target_setpoint=3250.0, setpoint_calculation=calculation,
+        )
+        coordinator.charge_power = 5000.0
+        sensor = TargetSetpointSensor(coordinator, MockConfigEntry())
+        sensor.async_write_ha_state = MagicMock()
+        sensor._handle_coordinator_update()
+        assert sensor.native_value == 3250.0
+        assert sensor.extra_state_attributes == {"calculation": calculation}
+        coordinator.data = None
+        sensor._handle_coordinator_update()
+        assert sensor.extra_state_attributes == {"calculation": None}
+
+    def test_calculation_before_first_update(self, coordinator):
+        sensor = TargetSetpointSensor(coordinator, MockConfigEntry())
+        assert sensor.extra_state_attributes == {"calculation": None}
+
 
 class TestScheduleSensor:
     """Tests for the ScheduleSensor."""

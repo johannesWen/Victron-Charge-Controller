@@ -471,6 +471,11 @@ class TargetSetpointSensor(VictronCCBaseSensor):
         data = self.coordinator.data
         return data.target_setpoint if data else 0.0
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data
+        return {"calculation": data.setpoint_calculation if data else None}
+
 
 class CurrentPriceSensor(VictronCCBaseSensor):
     """Sensor showing the current EPEX spot price."""
