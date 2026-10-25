@@ -1230,6 +1230,7 @@ class TestSolarSurplus:
             MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_SOLAR)),
         )
         assert coord.solar_surplus_entity == "sensor.solar_surplus"
+        coord.async_request_refresh = AsyncMock()
         coord.update_entity_references({**MOCK_CONFIG_DATA, CONF_SOLAR_SURPLUS_ENTITY: ""})
         assert coord.solar_surplus_entity is None
 

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from custom_components.victron_charge_control import (
     _async_update_listener,
@@ -21,6 +22,7 @@ from custom_components.victron_charge_control.const import (
     ACTION_IDLE,
     ACTION_PV_CHARGE,
     CONF_GRID_CONSUMER_ENTITY,
+    CONF_SOLAR_SURPLUS_ENTITY,
     DOMAIN,
     MODE_AUTO,
     MODE_FORCE_CHARGE,
@@ -168,6 +170,193 @@ async def native_consumer(consumer):
     for task in hass._scheduled_tasks:
         if not task.cancelled():
             assert task.exception() is None
+
+
+@pytest.fixture
+async def solar_consumer(consumer):
+    coord, _, clock, change, _ = consumer
+    change("0", source="sensor.solar")
+    coord.update_entity_references({
+        **coord.config_entry.data, CONF_SOLAR_SURPLUS_ENTITY: "sensor.solar",
+    })
+    await clock.drain()
+    return consumer
+
+
+@pytest.mark.parametrize(
+    ("value", "unit", "expected"),
+    [
+        ("1000", "W", 0), ("750", "W", 0), ("250", "W", 500),
+        ("749.5", "W", 0.5), ("0", "W", 750), ("-100", "W", 750),
+        (None, "W", 750), ("unavailable", "W", 750), ("unknown", "W", 750),
+        ("bad", "W", 750), ("NaN", "W", 750), ("inf", "W", 750),
+        ("-inf", "W", 750), ("1e309", "W", 750),
+        ("1000", None, 750), ("1000", "kWh", 750), ("1000", "kW", 750),
+    ],
+)
+async def test_instantaneous_solar_shortfall(solar_consumer, value, unit, expected):
+    coord, switch, clock, change, _ = solar_consumer
+    change("0.75", "kW")
+    change(value, unit, source="sensor.solar")
+    # An old mean must never decide the consumer offset.
+    coord._solar_samples.append((dt_util.now(), 10000))
+    await switch.async_turn_on()
+    await clock.advance(5)
+    assert coord.grid_consumer_power == 750
+    assert coord.grid_consumer_offset == expected
+    assert coord.data.target_setpoint == coord.charge_power + expected
+
+
+async def test_solar_only_changes_batch_to_first_deadline(solar_consumer):
+    coord, switch, clock, change, _ = solar_consumer
+    await switch.async_turn_on()
+    await clock.advance(5)
+    change("250", source="sensor.solar")
+    first = clock.pending[0]
+    await clock.advance(2)
+    change("1000", source="sensor.solar")
+    await clock.advance(2.99)
+    change("500", source="sensor.solar")
+    assert clock.pending == [first]
+    assert coord.grid_consumer_offset == 750
+    await clock.advance(0.01)
+    assert coord.grid_consumer_offset == 250
+    change("750", source="sensor.solar")
+    await clock.advance(5)
+    assert coord.grid_consumer_offset == 0
+    change("unavailable", source="sensor.solar")
+    await clock.advance(4.99)
+    assert coord.grid_consumer_offset == 0
+    await clock.advance(0.01)
+    assert coord.grid_consumer_offset == 750
+
+
+async def test_expiry_rereads_solar_without_event(solar_consumer):
+    coord, switch, clock, change, _ = solar_consumer
+    await switch.async_turn_on()
+    change("1000", source="sensor.solar", notify=False)
+    await clock.advance(5)
+    assert coord.grid_consumer_offset == 0
+    change("250", source="sensor.solar")
+    change("unavailable", source="sensor.solar", notify=False)
+    await clock.advance(5)
+    assert coord.grid_consumer_offset == 750
+
+
+@pytest.mark.parametrize("replacement", [None, "sensor.solar_replacement"])
+async def test_solar_source_change_cancels_old_batch_and_rebinds(solar_consumer, replacement):
+    coord, switch, clock, change, _ = solar_consumer
+    await switch.async_turn_on()
+    await clock.advance(5)
+    change("1000", source="sensor.solar")
+    stale = clock.pending[0]
+    change("250", source="sensor.solar_replacement")
+    coord.update_entity_references({
+        **coord.config_entry.data, CONF_SOLAR_SURPLUS_ENTITY: replacement,
+    })
+    assert stale.cancelled
+    stale.fire()
+    await clock.drain()
+    assert coord.grid_consumer_offset == 0
+    await clock.advance(4.99)
+    assert coord.grid_consumer_offset == 0
+    await clock.advance(0.01)
+    assert coord.grid_consumer_offset == (500 if replacement else 750)
+    change("0", source="sensor.solar")
+    assert not clock.pending
+    if replacement:
+        change("1000", source=replacement)
+        await clock.advance(5)
+        assert coord.grid_consumer_offset == 0
+
+
+@pytest.mark.parametrize("solar", ["250", "750", "1000"])
+async def test_restored_switch_uses_current_solar(solar_consumer, solar):
+    coord, switch, clock, change, _ = solar_consumer
+    change(solar, source="sensor.solar")
+    switch.async_get_last_state = AsyncMock(return_value=MockState("on"))
+    with patch.object(CoordinatorEntity, "async_added_to_hass", AsyncMock()):
+        await switch.async_added_to_hass()
+    await clock.advance(4.99)
+    assert coord.grid_consumer_offset == 0
+    await clock.advance(0.01)
+    assert coord.grid_consumer_offset == max(750 - float(solar), 0)
+
+
+@pytest.mark.parametrize("operation", ["invalid", "off", "disable"])
+async def test_solar_batch_cannot_survive_consumer_clear(solar_consumer, operation):
+    coord, switch, clock, change, _ = solar_consumer
+    await switch.async_turn_on()
+    await clock.advance(5)
+    change("250", source="sensor.solar")
+    stale = clock.pending[0]
+    if operation == "invalid":
+        change("unavailable")
+    elif operation == "off":
+        coord.control_mode = MODE_OFF
+        await coord.async_request_refresh()
+    else:
+        await switch.async_turn_off()
+    assert coord.grid_consumer_offset == 0
+    assert stale.cancelled
+    stale.fire()
+    await clock.advance(5)
+    await clock.drain()
+    assert coord.grid_consumer_offset == 0
+    assert coord.data.target_setpoint == (
+        coord.idle_setpoint if operation == "off" else coord.charge_power
+    )
+
+
+async def test_solar_offset_obeys_setpoint_limits(solar_consumer):
+    coord, switch, clock, change, _ = solar_consumer
+    change("250", source="sensor.solar")
+    coord.max_grid_setpoint = coord.charge_power + 100
+    await switch.async_turn_on()
+    await clock.advance(5)
+    assert coord.grid_consumer_offset == 500
+    assert coord.data.target_setpoint == coord.max_grid_setpoint
+    coord.min_grid_setpoint = -100
+    assert coord._compute_setpoint(ACTION_DISCHARGE) == -100
+
+
+@pytest.mark.parametrize("replace_source", [False, True])
+async def test_solar_change_during_awaited_write_is_reconciled(native_consumer, replace_source):
+    coord, switch, clock, change, states = native_consumer
+    change("0", source="sensor.solar")
+    coord.update_entity_references({
+        **coord.config_entry.data, CONF_SOLAR_SURPLUS_ENTITY: "sensor.solar",
+    })
+    await clock.drain()
+    await switch.async_turn_on()
+    await clock.advance(5)
+    started, release = asyncio.Event(), asyncio.Event()
+    write = coord.hass.services.async_call.side_effect
+
+    async def delayed_write(domain, service, data, **kwargs):
+        if data.get("value") == coord.charge_power + 1000:
+            started.set()
+            await release.wait()
+        await write(domain, service, data, **kwargs)
+
+    coord.hass.services.async_call.side_effect = delayed_write
+    change("1000")
+    await clock.advance(5, drain=False)
+    await asyncio.wait_for(started.wait(), 1)
+    if replace_source:
+        change("800", source="sensor.replacement")
+        coord.update_entity_references({
+            **coord.config_entry.data, CONF_SOLAR_SURPLUS_ENTITY: "sensor.replacement",
+        })
+    else:
+        change("800", source="sensor.solar")
+    await clock.advance(5, drain=False)
+    release.set()
+    await clock.drain()
+    await clock.advance(6)
+    assert coord.grid_consumer_offset == 200
+    assert coord.data.target_setpoint == coord.charge_power + 200
+    assert float(states["number.grid_setpoint"].state) == coord.charge_power + 200
 
 
 @pytest.mark.parametrize(

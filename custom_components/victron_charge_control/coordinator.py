@@ -442,6 +442,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def grid_consumer_offset(self) -> float:
         return self._grid_consumer_offset
 
+    def _grid_consumer_requested_offset(self) -> float | None:
+        """Request only the load not covered by instantaneous solar watts."""
+        power = self.grid_consumer_power
+        if power is None or self._solar_surplus_entity is None:
+            return power
+        state = self.hass.states.get(self._solar_surplus_entity)
+        if state is None or state.attributes.get("unit_of_measurement") != "W":
+            return power
+        try:
+            surplus = float(state.state)
+        except (ValueError, TypeError, OverflowError):
+            return power
+        return max(0.0, power - max(0.0, surplus)) if math.isfinite(surplus) else power
+
     @callback
     def _clear_grid_consumer_offset(self) -> None:
         """Invalidate pending callbacks and retain forced clearing until written."""
@@ -462,7 +476,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Batch only the load offset, with a fixed deadline from the first change."""
         if not self._grid_consumer_ready:
             return
-        power = self.grid_consumer_power
+        power = self._grid_consumer_requested_offset()
         if (
             self._shutdown_requested
             or not self.grid_consumer_enabled
@@ -481,7 +495,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 return
             self._grid_consumer_timer = None
             self._grid_consumer_generation += 1
-            latest = self.grid_consumer_power
+            latest = self._grid_consumer_requested_offset()
             if not self.grid_consumer_enabled or self.control_mode == MODE_OFF or latest is None:
                 self._clear_grid_consumer_offset()
             else:
@@ -506,8 +520,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             if self._grid_consumer_clear_pending:
                 self.hass.async_create_task(self.async_request_refresh())
 
+        entities = [self._grid_consumer_entity]
+        if self._solar_surplus_entity is not None:
+            entities.append(self._solar_surplus_entity)
         self._grid_consumer_unsub = async_track_state_change_event(
-            self.hass, [self._grid_consumer_entity], _changed
+            self.hass, entities, _changed
         )
 
     @property
@@ -604,14 +621,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_feed_in_energy_entity = (
             data.get(CONF_GRID_FEED_IN_ENERGY_ENTITY) or None
         )
-        self._solar_surplus_entity = data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
+        solar_entity = data.get(CONF_SOLAR_SURPLUS_ENTITY) or None
         self._dc_coupled_pv_feed_in_entity = (
             data.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY) or None
         )
         consumer_entity = data.get(CONF_GRID_CONSUMER_ENTITY) or None
-        if consumer_entity != self._grid_consumer_entity:
+        if (
+            consumer_entity != self._grid_consumer_entity
+            or solar_entity != self._solar_surplus_entity
+        ):
             self._clear_grid_consumer_offset()
             self._grid_consumer_entity = consumer_entity
+            self._solar_surplus_entity = solar_entity
             if consumer_entity is None:
                 self._grid_consumer_enabled = False
             self._listen_grid_consumer()
