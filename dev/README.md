@@ -36,7 +36,7 @@ integration. Wait for the **Development dashboard ready** message, then sign in:
 - Dashboard: <http://localhost:8123/victron-dev/settings> (**Victron Dev** in the sidebar)
 
 These credentials are for local development only; the devcontainer publishes
-Home Assistant on `127.0.0.1` only. The dashboard includes **Settings**, **Plan**,
+Home Assistant on `127.0.0.1` only. The dashboard includes **Overview**, **Settings**, **Plan**,
 **History**, and **Dev Controls** tabs. Costs collect from startup; use the backfill
 command below when you want historical sample data.
 

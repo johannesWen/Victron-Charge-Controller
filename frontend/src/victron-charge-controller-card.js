@@ -34,6 +34,17 @@ const FEED_IN_META = {
 };
 
 const HELP_TEXT = {
+  overview: [
+    { heading: 'Mode and permissions', items: [
+      'Select Off, Auto, Manual, Force Charge or Force Discharge. The question mark beside Mode explains each mode.',
+      'Charge Allowed and Discharge Allowed control permission for grid charging and battery discharge. PV charging operates independently of Charge Allowed. Click a switch name for details.',
+      'Use Settings to adjust powers, battery limits, price thresholds and schedules.',
+    ] },
+    { heading: 'Grid setpoint calculation', items: [
+      'The signed values show the mode setting, PV charging battery share, solar surplus and grid consumer offset reported by the controller.',
+      'Grid setpoint is the computed target after limits. When it is capped, the uncapped calculation appears in parentheses. Unavailable calculation data is not treated as zero.',
+    ] },
+  ],
   settings: [
     { heading: 'Help for each input',
       items: [
@@ -380,7 +391,7 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   getCardSize() {
-    return 12;
+    return this.config?.view === 'overview' ? 6 : 12;
   }
 
   static getConfigElement() {
@@ -501,13 +512,16 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _toggleSwitch(key) {
-    const on = this._val('switch', key) === 'on';
+    const state = this._val('switch', key);
+    if (state !== 'on' && state !== 'off') return;
+    const on = state === 'on';
     this._callService('switch', on ? 'turn_off' : 'turn_on', {
       entity_id: this._eid('switch', key),
     });
   }
 
   _selectMode(mode) {
+    if (!CONTROL_MODES.includes(this._val('select', 'control_mode')) || !CONTROL_MODES.includes(mode)) return;
     this._callService('select', 'select_option', {
       entity_id: this._eid('select', 'control_mode'),
       option: mode,
@@ -994,13 +1008,16 @@ class VictronChargeControllerCard extends LitElement {
     return html`
       <div class="control-row toggle-pair">
         ${items.map(({ label, key }) => {
-          const on = this._val('switch', key) === 'on';
+          const state = this._val('switch', key);
+          const on = state === 'on';
+          const disabled = state !== 'on' && state !== 'off';
           return html`
             <div class="toggle-pair-item">
               ${this._renderHelpLabel(label, key)}
               <ha-switch
                 aria-label=${label}
                 .checked=${on}
+                .disabled=${disabled}
                 @change=${() => this._toggleSwitch(key)}
               ></ha-switch>
             </div>
@@ -1313,31 +1330,34 @@ class VictronChargeControllerCard extends LitElement {
     const valid = available && calculation && [...terms.map(([key]) => key), 'limits_w']
       .every(key => typeof calculation[key] === 'number' && Number.isFinite(calculation[key]));
     const uncapped = valid ? terms.reduce((sum, [key]) => sum + calculation[key], 0) : 0;
+    const gridConsumer = this._state('switch', 'grid_consumer');
+    const visibleTerms = terms.filter(([key]) => key !== 'grid_consumer_w'
+      || (gridConsumer?.state === 'on' && gridConsumer.attributes?.source_entity));
     const watts = value => `${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} W`;
+    const direction = value => value > 0 ? 'charge' : value < 0 ? 'discharge' : 'idle';
 
     return html`
       <div class="setpoint-calculation" role="group" aria-label="Grid setpoint calculation">
+        <div class="setpoint-result" data-direction=${direction(available ? Number(state.state) : 0)}>
+          <strong>${available ? `${Number(state.state) < 0 ? '−' : ''}${watts(Number(state.state))}` : '—'}${valid && calculation.limits_w !== 0 ? ` (${uncapped < 0 ? '−' : ''}${watts(uncapped)})` : ''}</strong>
+        </div>
         ${valid ? html`
           <dl class="calculation-terms">
-            ${terms.map(([key, label, detail]) => html`
-              <div class="calculation-term">
+            ${visibleTerms.map(([key, label, detail]) => html`
+              <div class="calculation-term" data-direction=${direction(calculation[key])}>
                 <dt>${label}</dt>
                 <dd>${calculation[key] < 0 ? '−' : calculation[key] > 0 ? '+' : ''}${watts(calculation[key])}</dd>
                 <span>${detail}</span>
               </div>`)}
           </dl>
         ` : html`<div class="calculation-unavailable">Calculation unavailable</div>`}
-        <div class="setpoint-result">
-          <span><ha-icon icon="mdi:flash"></ha-icon> Grid setpoint</span>
-          <strong>${available ? `${Number(state.state) < 0 ? '−' : ''}${watts(Number(state.state))}` : '—'}${valid && calculation.limits_w !== 0 ? ` (${uncapped < 0 ? '−' : ''}${watts(uncapped)})` : ''}</strong>
-        </div>
       </div>`;
   }
 
-  _renderControlsView() {
-    const mode     = this._val('select', 'control_mode') || 'off';
+  _renderModeSection(showStatus = false) {
+    const mode     = this._val('select', 'control_mode');
+    const disabled = !CONTROL_MODES.includes(mode);
     const spotPrice = this._val('sensor', 'current_price');
-    const feedIn   = this._val('switch', 'grid_feed_in_control') === 'on';
 
     return html`
       <!-- Mode & Status -->
@@ -1349,6 +1369,8 @@ class VictronChargeControllerCard extends LitElement {
               <button
                 class="mode-btn ${mode === m ? 'active' : ''}"
                 data-mode=${m}
+                ?disabled=${disabled}
+                aria-pressed=${mode === m}
                 @click=${() => this._selectMode(m)}
                 title=${meta.label}
               >
@@ -1357,14 +1379,32 @@ class VictronChargeControllerCard extends LitElement {
               </button>`;
           })}
         </div>
-        <div class="status-row">
+        ${showStatus ? html`<div class="status-row">
           <div class="status-item">
             <ha-icon icon="mdi:currency-eur"></ha-icon>
             <span>${spotPrice != null && spotPrice !== 'unavailable' && spotPrice !== 'unknown' ? `${(parseFloat(spotPrice) * 100).toFixed(2)} ct/kWh` : '—'}</span>
           </div>
         </div>
-        ${this._renderSetpointCalculation()}
-      `, 'control_mode')}
+        ` : nothing}
+      `, 'control_mode')}`;
+  }
+
+  _renderOverviewView() {
+    return html`
+      ${this._renderModeSection(true)}
+      ${this._renderSection('Grid Setpoint', 'mdi:transmission-tower', this._renderSetpointCalculation())}
+      ${this._renderSection('Charge / Discharge', 'mdi:battery-charging', html`
+        ${this._renderTogglePair([
+          { label: 'Charge Allowed', key: 'charge_allowed' },
+          { label: 'Discharge Allowed', key: 'discharge_allowed' },
+        ])}
+      `)}`;
+  }
+
+  _renderControlsView() {
+    const feedIn = this._val('switch', 'grid_feed_in_control') === 'on';
+    return html`
+      ${this._renderModeSection()}
 
       <!-- Charge / Discharge -->
       ${this._renderSection('Charge / Discharge', 'mdi:battery-charging', html`
@@ -3040,10 +3080,10 @@ class VictronChargeControllerCard extends LitElement {
     const feedInStatus = this._val('sensor', 'grid_feed_in_status') || 'default';
     const feedInMeta = FEED_IN_META[feedInStatus] || FEED_IN_META.default;
     const view = normalizeView(this.config.view);
-    const viewTitle = view === 'plan' ? 'Plan' : (view === 'history' ? 'History' : 'Settings');
+    const viewTitle = view === 'overview' ? 'Overview' : (view === 'plan' ? 'Plan' : (view === 'history' ? 'History' : 'Settings'));
     const viewIcon = view === 'plan'
       ? 'mdi:calendar'
-      : (view === 'history' ? 'mdi:chart-bar' : 'mdi:battery-charging-wireless');
+      : (view === 'history' ? 'mdi:chart-bar' : (view === 'overview' ? 'mdi:view-dashboard' : 'mdi:battery-charging-wireless'));
 
     return html`
       <ha-card>
@@ -3078,7 +3118,7 @@ class VictronChargeControllerCard extends LitElement {
           </div>
         </div>
         <div class="card-content">
-          ${view === 'plan'
+          ${view === 'overview' ? this._renderOverviewView() : view === 'plan'
             ? this._renderPlanView()
             : (view === 'history' ? this._renderHistoryView() : this._renderControlsView())}
         </div>
@@ -3368,7 +3408,8 @@ class VictronChargeControllerCard extends LitElement {
         transition: all 0.15s ease;
       }
       .mode-btn ha-icon { --mdc-icon-size: 16px; }
-      .mode-btn:hover { border-color: var(--vcc-accent); color: var(--vcc-accent); }
+      .mode-btn:hover:not(:disabled) { border-color: var(--vcc-accent); color: var(--vcc-accent); }
+      .mode-btn:disabled { cursor: not-allowed; opacity: 0.5; }
 
       .mode-btn[data-mode="off"].active            { background: rgba(158,158,158,0.12); border-color: var(--vcc-disabled); color: var(--vcc-disabled); font-weight: 600; }
       .mode-btn[data-mode="auto"].active            { background: rgba(33,150,243,0.12);  border-color: var(--vcc-info);     color: var(--vcc-info);     font-weight: 600; }
@@ -3392,23 +3433,23 @@ class VictronChargeControllerCard extends LitElement {
       .toggle-tooltip[title] ha-switch { pointer-events: none; }
 
       .setpoint-calculation {
-        margin-top: 12px; border-top: 1px solid var(--vcc-border);
         color: var(--vcc-text); font-variant-numeric: tabular-nums;
       }
       .calculation-terms {
         display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-        gap: 12px; margin: 12px 0;
+        gap: 12px; margin: 12px 0 0;
       }
-      .calculation-term dt { font-size: 0.78em; color: var(--vcc-text2); }
-      .calculation-term dd { margin: 4px 0; font-size: 1em; font-weight: 600; }
-      .calculation-term span { font-size: 0.7em; color: var(--vcc-text2); }
+      .calculation-term dt { font-size: 0.7em; color: var(--vcc-text2); }
+      .calculation-term dd { margin: 4px 0; font-size: 0.85em; font-weight: 600; }
+      .calculation-term span { font-size: 0.65em; color: var(--vcc-text2); }
       .setpoint-result {
-        display: flex; justify-content: space-between; align-items: center;
-        gap: 12px; padding-top: 12px; border-top: 1px solid var(--vcc-border);
+        margin: 0; padding-bottom: 12px; font-size: 1em;
+        border-bottom: 1px solid var(--vcc-border);
       }
-      .setpoint-result > span { display: flex; align-items: center; gap: 4px; font-size: 0.88em; }
-      .setpoint-result ha-icon { --mdc-icon-size: 18px; color: var(--vcc-accent); }
-      .setpoint-result strong { font-size: 1.2em; text-align: right; }
+      .setpoint-result strong { font-weight: 600; }
+      .setpoint-calculation [data-direction="idle"] :is(dd, strong) { color: var(--vcc-disabled); }
+      .setpoint-calculation [data-direction="charge"] :is(dd, strong) { color: var(--vcc-success); }
+      .setpoint-calculation [data-direction="discharge"] :is(dd, strong) { color: var(--vcc-error); }
       .calculation-unavailable { padding: 12px 0; font-size: 0.8em; color: var(--vcc-text2); }
 
       /* ── Slider ────────────────────────────────── */
@@ -4182,6 +4223,7 @@ class VictronChargeControllerCardEditor extends LitElement {
             .value=${this.config.view || 'settings'}
             @change=${(e) => this._changed('view', e.target.value)}
           >
+            <option value="overview" ?selected=${this.config.view === 'overview'}>Overview</option>
             <option value="settings" ?selected=${(this.config.view || 'settings') === 'settings'}>Settings</option>
             <option value="plan" ?selected=${this.config.view === 'plan'}>Plan</option>
             <option value="history" ?selected=${this.config.view === 'history'}>History</option>

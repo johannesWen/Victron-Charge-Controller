@@ -1,5 +1,5 @@
 const DEFAULT_VIEW = 'settings';
-const CARD_VIEWS = new Set([DEFAULT_VIEW, 'plan', 'history']);
+const CARD_VIEWS = new Set([DEFAULT_VIEW, 'overview', 'plan', 'history']);
 
 export function normalizeView(view) {
   if (typeof view !== 'string') return DEFAULT_VIEW;

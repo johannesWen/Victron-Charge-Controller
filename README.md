@@ -167,9 +167,16 @@ view: settings
 
 | View | Purpose |
 | --- | --- |
+| `overview` | Select the control mode, toggle Charge Allowed and Discharge Allowed, and monitor the grid setpoint calculation. |
 | `settings` | Operate the controller, adjust limits, configure price thresholds, tune grid feed-in behavior, and recalculate schedules. |
 | `plan` | Inspect the EPEX Spot based plan for today and tomorrow, view blocked hours, set manual actions for future hours, and manage fixed plans (recurring 24-hour charge/discharge/PV-charge patterns with a per-plan activate check mark). |
 | `history` | Review grid cost, revenue, import, and export statistics by day, week, month, or year. |
+
+Choose **Overview** in the card editor, or set `view: overview` in YAML, for a
+compact control panel. It shows the signed mode-power, PV-charge, solar-surplus,
+and grid-consumer contributions to the grid setpoint. When limits cap the result,
+the uncapped calculation appears in parentheses. Missing calculation data is
+shown as unavailable. Settings remains the default view.
 
 In the Plan card, use the switch below **Charge allowed** and **Discharge allowed**
 to change from **Price** to **PV forecast**. Today and tomorrow show Solcast's

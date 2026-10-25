@@ -433,15 +433,15 @@ test('Grid Consumer help label opens its accessible topic with limits, timing an
   }
 });
 
-test('Settings shows signed server calculation and setpoint below it without a duplicate action', () => {
+test('Overview shows the setpoint above its signed calculation without a duplicate action', () => {
   const instance = card();
   instance._state = (domain, key) => key === 'target_setpoint' ? {
     state: '-450', attributes: { calculation: {
       setting_w: 50, pv_charge_w: 1000, surplus_w: -2000, grid_consumer_w: 500, limits_w: 0,
     } },
-  } : undefined;
+  } : key === 'grid_consumer' ? { state: 'on', attributes: { source_entity: 'sensor.ev_power' } } : undefined;
   instance._val = (domain, key) => key === 'desired_action' ? 'pv_charge' : undefined;
-  const rendered = instance._renderControlsView();
+  const rendered = instance._renderOverviewView();
   for (const label of ['Setting', 'PV charge', 'Surplus', 'Grid consumer', 'Grid setpoint']) {
     assert.ok(rendered.includes(label), label);
   }
@@ -449,7 +449,7 @@ test('Settings shows signed server calculation and setpoint below it without a d
   assert.match(rendered, /−2,000 W/);
   assert.match(rendered, /<strong>−450 W<\/strong>/);
   assert.doesNotMatch(rendered, /<dt>Limits<\/dt>|<span>PV Charge<\/span>/);
-  assert.ok(rendered.indexOf('calculation-terms') < rendered.indexOf('setpoint-result'));
+  assert.ok(rendered.indexOf('setpoint-result') < rendered.indexOf('calculation-terms'));
 });
 
 for (const [target, setting, consumer, limit, expected] of [
