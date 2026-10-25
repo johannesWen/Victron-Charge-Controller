@@ -359,12 +359,14 @@ for (const [name, state, explanation] of [
   ['unconfigured source', { state: 'off', attributes: { source_entity: null } }, /Configure a Grid consumer power sensor/],
   ['unavailable switch', { state: 'unavailable', attributes: { source_entity: 'sensor.ev' } }, /switch is unavailable/],
   ['unknown switch', { state: 'unknown', attributes: { source_entity: 'sensor.ev' } }, /switch is unavailable/],
-]) test(`Grid Consumer disables ${name} and gates its rendered handler`, () => {
+]) test(`Grid Consumer explains ${name} on hover and gates its disabled handler`, () => {
   const templates = [], instance = gridConsumerCard(state, templates);
   const rendered = instance._renderGridConsumer();
   assert.match(rendered, explanation);
-  assert.match(rendered, /role="status"/);
+  assert.doesNotMatch(rendered, /role="status"/);
   const toggle = nodes(templates, 'control-row toggle-row')[0];
+  assert.ok(toggle.values.some((value, index) => toggle.strings[index].endsWith('title=') && explanation.test(value)));
+  assert.match(toggle.rendered, /tabindex=0/);
   assert.match(toggle.rendered, /aria-label=Grid Consumer/);
   assert.match(toggle.rendered, /\.disabled=true/);
   handler(toggle, 'change')(); // Programmatic change events must also respect disabled state.
@@ -377,6 +379,7 @@ for (const state of ['on', 'off']) test(`Grid Consumer ${state} uses the existin
   instance._renderGridConsumer();
   const toggle = nodes(templates, 'control-row toggle-row')[0];
   assert.match(toggle.rendered, /\.disabled=false/);
+  assert.doesNotMatch(toggle.rendered, /tabindex=0|Configure a Grid consumer power sensor|switch is unavailable/);
   assert.match(toggle.rendered, new RegExp(`\\.checked=${state === 'on'}`));
   handler(toggle, 'change')();
   assert.equal(calls.length, 1);
@@ -449,15 +452,17 @@ test('Settings shows signed server calculation and setpoint below it without a d
   assert.ok(rendered.indexOf('calculation-terms') < rendered.indexOf('setpoint-result'));
 });
 
-test('setpoint calculation shows limits and uses the authoritative target', () => {
+for (const [target, setting, consumer, limit, expected] of [
+  ['5000', 3000, 3000, -1000, '5,000 W (6,000 W)'],
+  ['-500', -3000, 500, 2000, '−500 W (−2,500 W)'],
+]) test(`capped setpoint ${target} shows the uncapped calculation in brackets`, () => {
   const instance = card();
-  instance._state = () => ({ state: '5000', attributes: { calculation: {
-    setting_w: 3000, pv_charge_w: 0, surplus_w: 0, grid_consumer_w: 3000, limits_w: -1000,
+  instance._state = () => ({ state: target, attributes: { calculation: {
+    setting_w: setting, pv_charge_w: 0, surplus_w: 0, grid_consumer_w: consumer, limits_w: limit,
   } } });
   const rendered = instance._renderSetpointCalculation();
-  assert.match(rendered, /<dt>Limits<\/dt>/);
-  assert.match(rendered, /−1,000 W/);
-  assert.match(rendered, /<strong>5,000 W<\/strong>/);
+  assert.doesNotMatch(rendered, /<dt>Limits<\/dt>/);
+  assert.ok(rendered.includes(`<strong>${expected}</strong>`));
 });
 
 for (const state of [undefined, 'unavailable', 'unknown', '', ' ', null, 'NaN', '0']) {

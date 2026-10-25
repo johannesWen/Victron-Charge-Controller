@@ -223,7 +223,8 @@ only `1000 W`.
 The Settings card shows the live setpoint calculation below the mode switches:
 **Setting**, **PV charge**, **Surplus**, and **Grid consumer**, with the final
 **Grid setpoint** on its own row. These signed contributions include the accepted
-consumer shortfall; **Limits** appears when grid or feed-in limits adjust the sum.
+consumer shortfall. When grid or feed-in limits cap the setpoint, the uncapped
+calculation appears in brackets after it, for example **5,000 W (6,000 W)**.
 The Surplus term uses the 15-minute mean for PV Charge and Discharge, while the
 consumer shortfall uses the current solar reading. The top chip shows the action.
 

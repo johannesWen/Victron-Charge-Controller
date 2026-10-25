@@ -954,17 +954,22 @@ class VictronChargeControllerCard extends LitElement {
     return { min, max, step };
   }
 
-  _renderToggle(label, switchKey, disabled = false) {
+  _renderToggle(label, switchKey, disabled = false, disabledReason = '') {
     const on = this._val('switch', switchKey) === 'on';
     return html`
       <div class="control-row toggle-row">
         ${this._renderHelpLabel(label, switchKey)}
-        <ha-switch
-          aria-label=${label}
-          .checked=${on}
-          .disabled=${disabled}
-          @change=${() => { if (!disabled) this._toggleSwitch(switchKey); }}
-        ></ha-switch>
+        <span class="toggle-tooltip" title=${disabledReason || nothing}
+          tabindex=${disabledReason ? '0' : nothing}
+          role=${disabledReason ? 'group' : nothing}
+          aria-label=${disabledReason ? `${label}: ${disabledReason}` : nothing}>
+          <ha-switch
+            aria-label=${label}
+            .checked=${on}
+            .disabled=${disabled}
+            @change=${() => { if (!disabled) this._toggleSwitch(switchKey); }}
+          ></ha-switch>
+        </span>
       </div>`;
   }
 
@@ -980,8 +985,8 @@ class VictronChargeControllerCard extends LitElement {
           ? 'Consumer power is invalid or unavailable; zero offset is applied.'
           : '';
     return html`
-      ${this._renderToggle('Grid Consumer', 'grid_consumer', disabled)}
-      ${message ? html`<div class="forecast-status" role="status">${message}</div>` : nothing}
+      ${this._renderToggle('Grid Consumer', 'grid_consumer', disabled, disabled ? message : '')}
+      ${message && !disabled ? html`<div class="forecast-status" role="status">${message}</div>` : nothing}
     `;
   }
 
@@ -1307,7 +1312,7 @@ class VictronChargeControllerCard extends LitElement {
     ];
     const valid = available && calculation && [...terms.map(([key]) => key), 'limits_w']
       .every(key => typeof calculation[key] === 'number' && Number.isFinite(calculation[key]));
-    if (valid && calculation.limits_w !== 0) terms.push(['limits_w', 'Limits', 'Grid / feed-in']);
+    const uncapped = valid ? terms.reduce((sum, [key]) => sum + calculation[key], 0) : 0;
     const watts = value => `${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} W`;
 
     return html`
@@ -1324,7 +1329,7 @@ class VictronChargeControllerCard extends LitElement {
         ` : html`<div class="calculation-unavailable">Calculation unavailable</div>`}
         <div class="setpoint-result">
           <span><ha-icon icon="mdi:flash"></ha-icon> Grid setpoint</span>
-          <strong>${available ? `${Number(state.state) < 0 ? '−' : ''}${watts(Number(state.state))}` : '—'}</strong>
+          <strong>${available ? `${Number(state.state) < 0 ? '−' : ''}${watts(Number(state.state))}` : '—'}${valid && calculation.limits_w !== 0 ? ` (${uncapped < 0 ? '−' : ''}${watts(uncapped)})` : ''}</strong>
         </div>
       </div>`;
   }
@@ -3383,6 +3388,8 @@ class VictronChargeControllerCard extends LitElement {
         font-size: 0.88em; color: var(--vcc-text2);
       }
       .status-item ha-icon { --mdc-icon-size: 16px; }
+      .toggle-tooltip { display: inline-flex; }
+      .toggle-tooltip[title] ha-switch { pointer-events: none; }
 
       .setpoint-calculation {
         margin-top: 12px; border-top: 1px solid var(--vcc-border);
@@ -3401,7 +3408,7 @@ class VictronChargeControllerCard extends LitElement {
       }
       .setpoint-result > span { display: flex; align-items: center; gap: 4px; font-size: 0.88em; }
       .setpoint-result ha-icon { --mdc-icon-size: 18px; color: var(--vcc-accent); }
-      .setpoint-result strong { font-size: 1.2em; }
+      .setpoint-result strong { font-size: 1.2em; text-align: right; }
       .calculation-unavailable { padding: 12px 0; font-size: 0.8em; color: var(--vcc-text2); }
 
       /* ── Slider ────────────────────────────────── */
