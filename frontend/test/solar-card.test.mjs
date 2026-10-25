@@ -429,3 +429,44 @@ test('Grid Consumer help label opens its accessible topic with limits, timing an
     assert.ok(rendered.includes(text), text);
   }
 });
+
+test('Settings shows signed server calculation and setpoint below it without a duplicate action', () => {
+  const instance = card();
+  instance._state = (domain, key) => key === 'target_setpoint' ? {
+    state: '-450', attributes: { calculation: {
+      setting_w: 50, pv_charge_w: 1000, surplus_w: -2000, grid_consumer_w: 500, limits_w: 0,
+    } },
+  } : undefined;
+  instance._val = (domain, key) => key === 'desired_action' ? 'pv_charge' : undefined;
+  const rendered = instance._renderControlsView();
+  for (const label of ['Setting', 'PV charge', 'Surplus', 'Grid consumer', 'Grid setpoint']) {
+    assert.ok(rendered.includes(label), label);
+  }
+  assert.match(rendered, /\+50 W/);
+  assert.match(rendered, /−2,000 W/);
+  assert.match(rendered, /<strong>−450 W<\/strong>/);
+  assert.doesNotMatch(rendered, /<dt>Limits<\/dt>|<span>PV Charge<\/span>/);
+  assert.ok(rendered.indexOf('calculation-terms') < rendered.indexOf('setpoint-result'));
+});
+
+test('setpoint calculation shows limits and uses the authoritative target', () => {
+  const instance = card();
+  instance._state = () => ({ state: '5000', attributes: { calculation: {
+    setting_w: 3000, pv_charge_w: 0, surplus_w: 0, grid_consumer_w: 3000, limits_w: -1000,
+  } } });
+  const rendered = instance._renderSetpointCalculation();
+  assert.match(rendered, /<dt>Limits<\/dt>/);
+  assert.match(rendered, /−1,000 W/);
+  assert.match(rendered, /<strong>5,000 W<\/strong>/);
+});
+
+for (const state of [undefined, 'unavailable', 'unknown', '', ' ', null, 'NaN', '0']) {
+  test(`setpoint calculation handles missing data with state ${state}`, () => {
+    const instance = card();
+    instance._state = () => state === undefined ? undefined : { state, attributes: {} };
+    const rendered = instance._renderSetpointCalculation();
+    assert.match(rendered, /Calculation unavailable/);
+    assert.ok(rendered.includes(state === '0' ? '<strong>0 W</strong>' : '<strong>—</strong>'));
+    assert.doesNotMatch(rendered, /NaN W|undefined W/);
+  });
+}

@@ -207,7 +207,9 @@
       [e('select','control_mode')]:            { state: 'auto', attributes: { options: ['off','auto','manual','force_charge','force_discharge'] } },
       // sensors
       [e('sensor','desired_action')]:           { state: 'charge', attributes: {} },
-      [e('sensor','target_setpoint')]:          { state: '1500', attributes: {} },
+      [e('sensor','target_setpoint')]:          { state: '1500', attributes: { calculation: {
+        setting_w: 1500, pv_charge_w: 0, surplus_w: 0, grid_consumer_w: 0, limits_w: 0,
+      } } },
       [e('sensor','current_price')]:             { state: '0.142', attributes: {} },
       [e('sensor','charge_hours')]:              { state: `${todayDate}:6,8|${tomorrowDate}:6,8`, attributes: {} },
       [e('sensor','discharge_hours')]:           { state: `${todayDate}:7,9|${tomorrowDate}:7,9`, attributes: {} },

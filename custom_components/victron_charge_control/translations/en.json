@@ -22,9 +22,9 @@
           "max_grid_feed_in_entity": "Select the writable Victron ESS maximum feed-in power limit in watts (W), for example GX Device - ESS max feed-in power. Used to limit grid export when price-based feed-in control is enabled.",
           "grid_consumption_entity": "Select a cumulative grid import energy meter in kilowatt-hours (kWh) for energy and cost tracking. Leave empty to skip import tracking.",
           "grid_feed_in_energy_entity": "Select a cumulative grid export energy meter in kilowatt-hours (kWh) for energy and revenue tracking. Leave empty to skip export tracking.",
-          "solar_surplus_entity": "Select a power sensor measuring available solar surplus in watts (W). Its 15-minute average supports surplus-aware discharge and PV charging. Leave empty if you do not use these features.",
+          "solar_surplus_entity": "Select a power sensor measuring available solar surplus in watts (W). Its current reading offsets Grid Consumer power, and its 15-minute average supports surplus-aware discharge and PV charging. Leave empty if you do not use these features.",
           "dc_coupled_pv_feed_in_entity": "Select the Victron DC-coupled PV feed-in switch, for example GX Device - DC-coupled PV - feed in excess. This is an on/off switch with no unit. When DC feed-in control is enabled, it is turned off in reduced feed-in mode and on in normal mode. Leave empty to skip this control.",
-          "grid_consumer_entity": "Select the power sensor for a load to supply from the grid. When Grid Consumer is enabled, its nonnegative power is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Invalid readings immediately remove the offset. Leave empty to disable this feature."
+          "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature."
         }
       }
     },
@@ -60,11 +60,11 @@
           "max_grid_feed_in_entity": "Select the writable Victron ESS maximum feed-in power limit in watts (W), for example GX Device - ESS max feed-in power. Used to limit grid export when price-based feed-in control is enabled.",
           "grid_consumption_entity": "Select a cumulative grid import energy meter in kilowatt-hours (kWh) for energy and cost tracking. Leave empty to skip import tracking.",
           "grid_feed_in_energy_entity": "Select a cumulative grid export energy meter in kilowatt-hours (kWh) for energy and revenue tracking. Leave empty to skip export tracking.",
-          "solar_surplus_entity": "Select a power sensor measuring available solar surplus in watts (W). Its 15-minute average supports surplus-aware discharge and PV charging. Leave empty if you do not use these features.",
+          "solar_surplus_entity": "Select a power sensor measuring available solar surplus in watts (W). Its current reading offsets Grid Consumer power, and its 15-minute average supports surplus-aware discharge and PV charging. Leave empty if you do not use these features.",
           "dc_coupled_pv_feed_in_entity": "Select the Victron DC-coupled PV feed-in switch, for example GX Device - DC-coupled PV - feed in excess. This is an on/off switch with no unit. When DC feed-in control is enabled, it is turned off in reduced feed-in mode and on in normal mode. Leave empty to skip this control.",
           "safety_startup_grace_seconds": "Startup grace period in seconds (0-600; default 90). Temporarily tolerates missing or unavailable battery SOC and grid setpoint states after startup or reload. Ends early when both report valid states. Set to 0 to disable startup grace.",
           "use_solcast_forecast": "Automatically discover Solcast and read its cached combined forecast for today and tomorrow. Enabled by default, including existing installations. Forecast diagnostics do not change charging or schedules.",
-          "grid_consumer_entity": "Select the power sensor for a load to supply from the grid. When Grid Consumer is enabled, its nonnegative power is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Invalid readings immediately remove the offset. Leave empty to disable this feature."
+          "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature."
         }
       }
     },

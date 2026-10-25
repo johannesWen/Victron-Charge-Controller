@@ -97,7 +97,7 @@ const HELP_TEXT = {
           { text: 'PV Charging Battery Share', bold: true },
           { text: ' (Settings card) splits the surplus between the battery and grid export during PV charge hours.' },
         ],
-        'Outside planned hours the controller uses Idle Setpoint, normally 0 W; an enabled Grid Consumer adds its load in active control modes.',
+        'Outside planned hours the controller uses Idle Setpoint, normally 0 W; an enabled Grid Consumer adds the consumer shortfall after solar surplus in active control modes.',
       ] },
     { heading: 'Override an hour',
       items: [
@@ -143,11 +143,11 @@ const SETTINGS_HELP = {
     { heading: 'Force Discharge', items: ['Requests discharge without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Discharge Allowed and obeys SOC protection, discharge stages and export limits.'] },
   ],
   grid_consumer: [
-    'Adds the measured consumer load to the raw grid target in Auto, Manual, Force Charge and Force Discharge, including Idle and PV Charge actions, before grid and reduced feed-in limits. Off keeps the configured Idle Setpoint unchanged.',
-    'For example, Charge 3000 W + EV 3000 W = 6000 W, capped to the default Max Grid Setpoint of 5000 W. Discharge −2000 W + consumer 3000 W = 1000 W before limits.',
-    'The first load change starts a fixed five-second window. The latest reading is applied when it expires; further changes do not restart it. Initial enable, restart restore and recovery also wait five seconds. The existing setpoint watt deadband still applies. Disabling, Off or an invalid source clears the offset without delay.',
+    'Subtracts the current solar surplus from the measured consumer load and adds only the remaining shortfall to the raw grid target in Auto, Manual, Force Charge and Force Discharge, including Idle and PV Charge actions, before grid and reduced feed-in limits. Off keeps the configured Idle Setpoint unchanged.',
+    'Without solar surplus, Charge 3000 W + EV 3000 W = 6000 W, capped to the default Max Grid Setpoint of 5000 W. Discharge −2000 W + consumer 3000 W = 1000 W before limits. With a 3000 W consumer and 2000 W solar surplus, only 1000 W is added. Surplus equal to or above the load adds zero. Missing or invalid solar readings use the full consumer load.',
+    'The first shortfall change starts a fixed five-second window. The latest consumer and solar readings are applied when it expires; further changes do not restart it. Initial enable, restart restore and recovery also wait five seconds. The existing setpoint watt deadband still applies. Disabling, Off or an invalid source clears the offset without delay.',
     'This adjusts the target, not the energy origin: intentional battery discharge remains possible. The source must measure a load already included in ESS consumption. For multiple loads, select an existing aggregate power sensor.',
-    'Choose the optional Grid consumer power sensor (W or kW) in Settings → Devices & Services → Victron Charge Control → Configure, then enable this switch. It defaults off and is restored after restart. Invalid or unavailable readings use zero offset; the configured switch can still be turned off.',
+    'Choose the optional Grid consumer power sensor (W or kW) in Settings → Devices & Services → Victron Charge Control → Configure, then enable this switch. It defaults off and is restored after restart. Invalid or unavailable consumer readings use zero offset; the configured switch can still be turned off.',
   ],
   charge_allowed: [
     'Allows grid charging in scheduled and Force Charge operation. Turning it off stops those requests; Grid Consumer can still add import to Idle or PV Charge. It does not erase the schedule.',
@@ -185,7 +185,7 @@ const SETTINGS_HELP = {
   ],
   idle_setpoint: [
     'Sets the grid power target when the controller is Idle, including Off, unscheduled hours and SOC-blocked actions. Positive values request grid import; negative values request export; zero targets balanced grid power.',
-    'During active control, an enabled Grid Consumer adds its load before the target is clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. It is also the target at 100% PV Charging Battery Share, so changing it affects PV Charge allocation. Idle does not mean the battery is disconnected.',
+    'During active control, an enabled Grid Consumer adds the consumer shortfall after solar surplus before the target is clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. It is also the target at 100% PV Charging Battery Share, so changing it affects PV Charge allocation. Idle does not mean the battery is disconnected.',
   ],
   min_grid_setpoint: [
     'Sets the lowest grid power target the controller may request. Negative values represent export: a more negative limit permits more export, while zero prevents the controller from requesting a negative target.',
@@ -1294,11 +1294,43 @@ class VictronChargeControllerCard extends LitElement {
 
   // ── Controls view ───────────────────────────────────────
 
+  _renderSetpointCalculation() {
+    const state = this._state('sensor', 'target_setpoint');
+    const calculation = state?.attributes?.calculation;
+    const available = typeof state?.state === 'string' && state.state.trim() !== ''
+      && Number.isFinite(Number(state.state));
+    const terms = [
+      ['setting_w', 'Setting', 'Mode power'],
+      ['pv_charge_w', 'PV charge', 'Battery share'],
+      ['surplus_w', 'Surplus', '15-minute mean'],
+      ['grid_consumer_w', 'Grid consumer', 'After solar surplus'],
+    ];
+    const valid = available && calculation && [...terms.map(([key]) => key), 'limits_w']
+      .every(key => typeof calculation[key] === 'number' && Number.isFinite(calculation[key]));
+    if (valid && calculation.limits_w !== 0) terms.push(['limits_w', 'Limits', 'Grid / feed-in']);
+    const watts = value => `${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} W`;
+
+    return html`
+      <div class="setpoint-calculation" role="group" aria-label="Grid setpoint calculation">
+        ${valid ? html`
+          <dl class="calculation-terms">
+            ${terms.map(([key, label, detail]) => html`
+              <div class="calculation-term">
+                <dt>${label}</dt>
+                <dd>${calculation[key] < 0 ? '−' : calculation[key] > 0 ? '+' : ''}${watts(calculation[key])}</dd>
+                <span>${detail}</span>
+              </div>`)}
+          </dl>
+        ` : html`<div class="calculation-unavailable">Calculation unavailable</div>`}
+        <div class="setpoint-result">
+          <span><ha-icon icon="mdi:flash"></ha-icon> Grid setpoint</span>
+          <strong>${available ? `${Number(state.state) < 0 ? '−' : ''}${watts(Number(state.state))}` : '—'}</strong>
+        </div>
+      </div>`;
+  }
+
   _renderControlsView() {
     const mode     = this._val('select', 'control_mode') || 'off';
-    const action   = this._val('sensor', 'desired_action') || 'idle';
-    const actMeta  = ACTION_META[action] || ACTION_META.idle;
-    const setpoint = this._val('sensor', 'target_setpoint') || '0';
     const spotPrice = this._val('sensor', 'current_price');
     const feedIn   = this._val('switch', 'grid_feed_in_control') === 'on';
 
@@ -1322,18 +1354,11 @@ class VictronChargeControllerCard extends LitElement {
         </div>
         <div class="status-row">
           <div class="status-item">
-            <ha-icon .icon=${actMeta.icon}></ha-icon>
-            <span>${actMeta.label}</span>
-          </div>
-          <div class="status-item">
-            <ha-icon icon="mdi:flash"></ha-icon>
-            <span>${setpoint} W</span>
-          </div>
-          <div class="status-item">
             <ha-icon icon="mdi:currency-eur"></ha-icon>
             <span>${spotPrice != null && spotPrice !== 'unavailable' && spotPrice !== 'unknown' ? `${(parseFloat(spotPrice) * 100).toFixed(2)} ct/kWh` : '—'}</span>
           </div>
         </div>
+        ${this._renderSetpointCalculation()}
       `, 'control_mode')}
 
       <!-- Charge / Discharge -->
@@ -3358,6 +3383,26 @@ class VictronChargeControllerCard extends LitElement {
         font-size: 0.88em; color: var(--vcc-text2);
       }
       .status-item ha-icon { --mdc-icon-size: 16px; }
+
+      .setpoint-calculation {
+        margin-top: 12px; border-top: 1px solid var(--vcc-border);
+        font-variant-numeric: tabular-nums;
+      }
+      .calculation-terms {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+        gap: 12px; margin: 12px 0;
+      }
+      .calculation-term dt { font-size: 0.78em; color: var(--vcc-text2); }
+      .calculation-term dd { margin: 4px 0; font-size: 1em; font-weight: 600; }
+      .calculation-term span { font-size: 0.7em; color: var(--vcc-text2); }
+      .setpoint-result {
+        display: flex; justify-content: space-between; align-items: center;
+        gap: 12px; padding-top: 12px; border-top: 1px solid var(--vcc-border);
+      }
+      .setpoint-result > span { display: flex; align-items: center; gap: 4px; font-size: 0.88em; }
+      .setpoint-result ha-icon { --mdc-icon-size: 18px; color: var(--vcc-accent); }
+      .setpoint-result strong { font-size: 1.2em; }
+      .calculation-unavailable { padding: 12px 0; font-size: 0.8em; color: var(--vcc-text2); }
 
       /* ── Slider ────────────────────────────────── */
       .slider-wrap {
