@@ -1,5 +1,13 @@
 title: Victron Dashboard Dev
 views:
+  - title: Overview
+    path: overview
+    cards:
+      - type: custom:victron-charge-controller-card
+        entity_prefix: victron_charge_control
+        view: overview
+        title: Charge Control Overview
+
   - title: Settings
     path: settings
     cards:

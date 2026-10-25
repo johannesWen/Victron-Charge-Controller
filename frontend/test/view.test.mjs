@@ -4,12 +4,14 @@ import test from 'node:test';
 import { normalizeView } from '../src/view.mjs';
 
 test('keeps supported card views', () => {
+  assert.equal(normalizeView('overview'), 'overview');
   assert.equal(normalizeView('settings'), 'settings');
   assert.equal(normalizeView('plan'), 'plan');
   assert.equal(normalizeView('history'), 'history');
 });
 
 test('normalizes view values saved with whitespace or different casing', () => {
+  assert.equal(normalizeView(' Overview '), 'overview');
   assert.equal(normalizeView(' Settings '), 'settings');
   assert.equal(normalizeView('PLAN'), 'plan');
 });
