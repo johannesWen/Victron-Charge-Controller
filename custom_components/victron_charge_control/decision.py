@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 from typing import Any
 
 from .const import (
@@ -327,20 +328,21 @@ def compute_setpoint(
     """
     setting = idle_setpoint
     pv_charge = surplus_contribution = 0.0
+    surplus = solar_surplus_mean or 0.0
+    if not isfinite(surplus) or surplus < 0.0:
+        surplus = 0.0
     if action == ACTION_CHARGE:
         raw = setting = charge_power
     elif action == ACTION_PV_CHARGE:
         if charge_blocked_by_soc:
             raw = idle_setpoint
         else:
-            surplus = solar_surplus_mean or 0.0
             f = max(0.0, min(1.0, pv_charge_share / 100.0))
             setting = f * idle_setpoint
             pv_charge = f * surplus
             surplus_contribution = -surplus
             raw = (1.0 - f) * (-surplus) + setting
     elif action == ACTION_DISCHARGE:
-        surplus = solar_surplus_mean or 0.0
         surplus_contribution = -surplus
         setting = 0.0 if discharge_solar_only else -discharge_power
         if discharge_solar_only:

@@ -328,11 +328,7 @@ async def test_nonfinite_solar_mean_does_not_publish_invalid_calculation(solar_c
     coord._last_published_action = None
     change(solar, source="sensor.solar", notify=False)
     await coord.async_request_refresh()
-    if solar == "-inf":
-        # The existing mean sampler clamps negative values to zero.
-        assert coord.data.setpoint_calculation["surplus_w"] == 0
-    else:
-        assert coord.data.setpoint_calculation is None
+    assert coord.data.setpoint_calculation["surplus_w"] == 0
 
 
 @pytest.mark.parametrize("replace_source", [False, True])
