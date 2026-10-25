@@ -3386,7 +3386,7 @@ class VictronChargeControllerCard extends LitElement {
 
       .setpoint-calculation {
         margin-top: 12px; border-top: 1px solid var(--vcc-border);
-        font-variant-numeric: tabular-nums;
+        color: var(--vcc-text); font-variant-numeric: tabular-nums;
       }
       .calculation-terms {
         display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
