@@ -201,9 +201,13 @@ existing plan's hourly price.
 | --- | --- | --- | --- |
 | `view` | string | `settings` | Card view: `settings`, `plan`, or `history`. |
 
-| Settings | Plan | History |
-| :---: | :---: | :---: |
-| ![Settings card screenshot](assets/screenshots/settings_card.png) | ![Plan card screenshot](assets/screenshots/plan_card.png) | ![History card screenshot](assets/screenshots/costs_card.png) |
+| Plan | History |
+| :---: | :---: |
+| ![Plan card screenshot](assets/screenshots/plan_card.png) | ![History card screenshot](assets/screenshots/costs_card.png) |
+
+| Settings | Overview |
+| :---: | :---: |
+| ![Settings card screenshot](assets/screenshots/settings_card.png) | ![Overview card screenshot](assets/screenshots/overview_card.png) |
 
 ## Grid Consumer
 

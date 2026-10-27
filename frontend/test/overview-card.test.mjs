@@ -51,14 +51,14 @@ const switches = templates => templates.filter(node => node.strings.join('').inc
 test('Overview routes from normalized configuration, shows compact controls and server calculation without writes', () => {
   const { card, calls } = setup();
   const rendered = card.render();
-  for (const label of ['Overview', 'Mode', 'Charge Allowed', 'Discharge Allowed', 'Setting', 'PV charge', 'Surplus', 'Grid consumer', 'Grid setpoint']) {
+  for (const label of ['Overview', 'Mode', 'Settings', 'Charge Allowed', 'Discharge Allowed', 'Grid Consumer', 'Setting', 'PV charge', 'Surplus', 'Grid consumer', 'Grid setpoint']) {
     assert.ok(rendered.includes(label), label);
   }
   assert.match(rendered, /\+50 W/);
   assert.match(rendered, /−2,000 W/);
   assert.match(rendered, /<strong>−450 W<\/strong>/);
   assert.match(rendered, /10\.00 ct\/kWh/);
-  assert.doesNotMatch(rendered, /Battery Limits|Blocked Hours|Replan Hours|slider-row/);
+  assert.doesNotMatch(rendered, /Charge \/ Discharge|Battery Limits|Blocked Hours|Replan Hours|slider-row/);
   assert.equal(card.getCardSize(), 6);
   assert.equal(calls.length, 0);
   card.setConfig({});

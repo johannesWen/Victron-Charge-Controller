@@ -1393,11 +1393,12 @@ class VictronChargeControllerCard extends LitElement {
     return html`
       ${this._renderModeSection(true)}
       ${this._renderSection('Grid Setpoint', 'mdi:transmission-tower', this._renderSetpointCalculation())}
-      ${this._renderSection('Charge / Discharge', 'mdi:battery-charging', html`
+      ${this._renderSection('Settings', 'mdi:cog', html`
         ${this._renderTogglePair([
           { label: 'Charge Allowed', key: 'charge_allowed' },
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
         ])}
+        ${this._renderGridConsumer()}
       `)}`;
   }
 
