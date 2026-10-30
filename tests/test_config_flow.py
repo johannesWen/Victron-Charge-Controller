@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant import loader
+from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigEntryState
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import frame
+
+from custom_components import victron_charge_control as integration
 
 from custom_components.victron_charge_control.config_flow import (
     OPTIONAL_ENTITY_KEYS,
@@ -12,6 +19,7 @@ from custom_components.victron_charge_control.config_flow import (
     VictronChargeControlOptionsFlow,
 )
 from custom_components.victron_charge_control.const import (
+    CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
@@ -34,6 +42,120 @@ from .conftest import (
     MOCK_CONFIG_DATA_WITH_SOLAR,
     MockState,
 )
+
+
+@pytest.fixture
+async def flow_hass(tmp_path, monkeypatch):
+    """Exercise HA entry and flow lifecycles without platforms or device I/O."""
+    hass = HomeAssistant(str(tmp_path))
+    loader.async_setup(hass)
+    monkeypatch.setattr(frame._hass, "hass", hass)
+    hass.config_entries = ConfigEntries(hass, {})
+    hass.config.components.add(DOMAIN)
+    loaded = MagicMock(domain=DOMAIN)
+    loaded.async_get_component = AsyncMock(return_value=integration)
+    loaded.async_get_platform = AsyncMock()
+    with (
+        patch("homeassistant.loader.async_get_integration", return_value=loaded),
+        patch("homeassistant.config_entries.async_process_deps_reqs", new_callable=AsyncMock),
+        patch.object(hass.config_entries, "_async_schedule_save"),
+        patch.object(hass.config_entries, "async_update_issues"),
+        patch.object(hass.config_entries, "async_forward_entry_setups", new_callable=AsyncMock),
+        patch.object(hass.config_entries, "async_unload_platforms", return_value=True),
+        patch.object(integration, "async_register_commands"),
+        patch.object(integration, "_async_register_card", new_callable=AsyncMock),
+        patch.object(integration, "async_setup_services", new_callable=AsyncMock),
+        patch.object(integration, "async_unload_services", new_callable=AsyncMock),
+        patch.object(integration, "VictronChargeControlCoordinator") as coordinator,
+    ):
+        coordinator.return_value.async_setup = AsyncMock()
+        coordinator.return_value.async_shutdown = AsyncMock()
+        for entity_id in MOCK_CONFIG_DATA.values():
+            hass.states.async_set(entity_id, "50")
+        yield hass, coordinator
+        await hass.async_block_till_done()
+        await hass.async_stop()
+
+
+@pytest.mark.parametrize("route", ["options", "reconfigure"])
+@pytest.mark.parametrize("scenario", ["legacy", "data_only", "unchanged", "loaded"])
+async def test_ram_recovery_reloads_once_after_saving(flow_hass, mock_store, route, scenario):
+    """Both forms recover failed entries and reload loaded entries exactly once."""
+    hass, coordinator = flow_hass
+    data = {**MOCK_CONFIG_DATA, "custom_setting": 123}
+    options = {
+        CONF_USE_SOLCAST_FORECAST: True,
+        CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
+        "custom_option": "preserved",
+    }
+    if scenario != "loaded":
+        data.pop(CONF_AC_GRID_SETPOINT_ENTITY)
+    entry = ConfigEntry(
+        domain=DOMAIN, title="Victron Charge Control", data=data,
+        options={} if scenario == "legacy" else options,
+        version=1, minor_version=1, source="user", unique_id=DOMAIN,
+        discovery_keys=MappingProxyType({}), subentries_data=None,
+    )
+    mock_store._data = {"charge_hours": [{"date": "2026-10-30", "hour": 12}]}
+    await hass.config_entries.async_add(entry)
+    if scenario != "loaded":
+        assert entry.state is ConfigEntryState.SETUP_ERROR
+        assert entry.error_reason_translation_key == "ram_setpoint_required"
+        coordinator.assert_not_called()
+    else:
+        assert entry.state is ConfigEntryState.LOADED
+    if scenario == "unchanged":
+        # A previous submission already saved the RAM entity but never retried setup.
+        hass.config_entries.async_update_entry(entry, data={**data, **MOCK_CONFIG_DATA})
+    coordinator.reset_mock()
+    saved_options = dict(entry.options)
+    submitted = dict(MOCK_CONFIG_DATA)
+    if scenario == "loaded":
+        submitted[CONF_BATTERY_SOC_ENTITY] = "sensor.new_soc"
+        hass.states.async_set("sensor.new_soc", "50")
+    if route == "options":
+        submitted[CONF_SAFETY_STARTUP_GRACE_SECONDS] = 90 if scenario == "loaded" else 45
+        saved_options |= {
+            CONF_USE_SOLCAST_FORECAST: True,
+            CONF_SAFETY_STARTUP_GRACE_SECONDS: submitted[CONF_SAFETY_STARTUP_GRACE_SECONDS],
+        }
+        manager = hass.config_entries.options
+        result = await manager.async_init(entry.entry_id)
+    else:
+        manager = hass.config_entries.flow
+        result = await manager.async_init(
+            DOMAIN, context={"source": "reconfigure", "entry_id": entry.entry_id}
+        )
+    assert result["type"] == "form"
+    observed = []
+    coordinator.side_effect = lambda _hass, current: (
+        observed.append((dict(current.data), dict(current.options))) or coordinator.return_value
+    )
+    with patch.object(hass.config_entries, "async_reload", wraps=hass.config_entries.async_reload) as reload:
+        previous_data, previous_options = dict(entry.data), dict(entry.options)
+        result = await manager.async_configure(
+            result["flow_id"],
+            {**submitted, CONF_AC_GRID_SETPOINT_ENTITY: MOCK_CONFIG_DATA[CONF_GRID_SETPOINT_ENTITY]},
+        )
+        assert result["type"] == "form"
+        assert result["errors"] == {CONF_AC_GRID_SETPOINT_ENTITY: "distinct_setpoints"}
+        assert entry.data == previous_data
+        assert entry.options == previous_options
+        reload.assert_not_called()
+        result = await manager.async_configure(result["flow_id"], submitted)
+        assert result["type"] == ("create_entry" if route == "options" else "abort")
+        await hass.async_block_till_done()
+        reload.assert_awaited_once_with(entry.entry_id)
+    expected_data = {**MOCK_CONFIG_DATA, "custom_setting": 123}
+    if scenario == "loaded":
+        expected_data[CONF_BATTERY_SOC_ENTITY] = "sensor.new_soc"
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.config_entries.async_entries(DOMAIN) == [entry]
+    assert entry.data == expected_data
+    assert entry.options == saved_options
+    assert observed == [(expected_data, saved_options)]
+    assert mock_store._data == {"charge_hours": [{"date": "2026-10-30", "hour": 12}]}
+    assert not mock_store.save_calls
 
 
 class TestConfigFlow:

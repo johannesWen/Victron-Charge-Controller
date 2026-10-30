@@ -12,7 +12,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from custom_components.victron_charge_control import (
-    _async_update_listener,
     async_setup_entry,
     async_unload_entry,
 )
@@ -794,7 +793,7 @@ async def test_entry_unload_drains_write_before_replacement(native_consumer, rel
     ):
         if reload:
             entry.data = dict(MOCK_CONFIG_DATA)
-            stopping = asyncio.create_task(_async_update_listener(hass, entry), eager_start=True)
+            stopping = asyncio.create_task(hass.config_entries.async_reload(entry.entry_id), eager_start=True)
         else:
             stopping = asyncio.create_task(async_unload_entry(hass, entry), eager_start=True)
         waited_for_write = not stopping.done()

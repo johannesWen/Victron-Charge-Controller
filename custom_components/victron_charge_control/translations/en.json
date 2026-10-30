@@ -74,7 +74,7 @@
         "description": "Update your Victron and EPEX Spot entities. Fields marked required must be configured. Optional fields can be left empty. The expected units are shown in each label.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
-          "grid_setpoint_entity": "AC power setpoint (permanent idle fallback, required, W)",
+          "grid_setpoint_entity": "AC power setpoint (required, W)",
           "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
@@ -84,7 +84,7 @@
           "safety_startup_grace_seconds": "Safety watchdog grace period (optional, s)",
           "use_solcast_forecast": "Use Solcast forecast",
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
-          "ac_grid_setpoint_entity": "AC grid setpoint (RAM active control, required, W)"
+          "ac_grid_setpoint_entity": "AC grid setpoint (required, W)"
         },
         "data_description": {
           "battery_soc_entity": "Choose the sensor that shows the battery charge level (0-100%). Used to keep the battery within your charge limits.",
