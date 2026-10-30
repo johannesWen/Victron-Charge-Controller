@@ -6,30 +6,62 @@
         "description": "Select your Victron and EPEX Spot entities. Fields marked required must be configured. Optional fields can be left empty. The expected units are shown in each label.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
-          "grid_setpoint_entity": "Grid setpoint entity (required, W)",
+          "grid_setpoint_entity": "AC power setpoint (required, W)",
           "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
           "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional, kWh)",
           "solar_surplus_entity": "Solar surplus sensor (optional, W)",
           "dc_coupled_pv_feed_in_entity": "DC coupled PV feed-in switch (optional, on/off)",
-          "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)"
+          "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
+          "ac_grid_setpoint_entity": "AC grid setpoint (required, W)"
         },
         "data_description": {
           "battery_soc_entity": "Select the battery state of charge sensor in percent (0-100%), for example GX Device - DC battery charge. Used to enforce the minimum and maximum battery charge levels.",
-          "grid_setpoint_entity": "Select the writable Victron ESS AC power setpoint in watts (W), for example GX Device - AC power setpoint. Positive values request grid import; negative values request grid export.",
+          "grid_setpoint_entity": "Select the permanent Victron ESS AC power setpoint number in watts. This is kept at Idle Setpoint and written only when correction is necessary, before active control starts.",
           "epex_spot_entity": "Select the EPEX Spot market price sensor in ct/kWh or EUR/kWh, for example EPEX Spot Data - Market Price. It must also provide the forecast price data in its attributes for automatic scheduling.",
           "max_grid_feed_in_entity": "Select the writable Victron ESS maximum feed-in power limit in watts (W), for example GX Device - ESS max feed-in power. Used to limit grid export when price-based feed-in control is enabled.",
           "grid_consumption_entity": "Select a cumulative grid import energy meter in kilowatt-hours (kWh) for energy and cost tracking. Leave empty to skip import tracking.",
           "grid_feed_in_energy_entity": "Select a cumulative grid export energy meter in kilowatt-hours (kWh) for energy and revenue tracking. Leave empty to skip export tracking.",
           "solar_surplus_entity": "Select a power sensor measuring available solar surplus in watts (W). Its current reading offsets Grid Consumer power, and its 15-minute average supports surplus-aware discharge and PV charging. Leave empty if you do not use these features.",
           "dc_coupled_pv_feed_in_entity": "Select the Victron DC-coupled PV feed-in switch, for example GX Device - DC-coupled PV - feed in excess. This is an on/off switch with no unit. When DC feed-in control is enabled, it is turned off in reduced feed-in mode and on in normal mode. Leave empty to skip this control.",
-          "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature."
+          "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature.",
+          "ac_grid_setpoint_entity": "Select the distinct Victron AC grid setpoint number in watts from the built-in Victron GX integration. All active control uses this RAM value through number.set_value (MQTT). It is refreshed every 5 seconds; the Venus OS 3.85 timeout has not been verified. An inactive unknown RAM value is allowed, but unavailable triggers the safety watchdog."
+        }
+      },
+      "reconfigure": {
+        "title": "Victron Charge Control",
+        "description": "Select both distinct setpoint entities to resume control. Existing schedules and settings are preserved. The permanent AC power setpoint is the idle fallback; active targets use the RAM AC grid setpoint.",
+        "data": {
+          "battery_soc_entity": "Battery SOC sensor (required, %)",
+          "grid_setpoint_entity": "AC power setpoint (required, W)",
+          "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
+          "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
+          "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
+          "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional, kWh)",
+          "solar_surplus_entity": "Solar surplus sensor (optional, W)",
+          "dc_coupled_pv_feed_in_entity": "DC coupled PV feed-in switch (optional, on/off)",
+          "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
+          "ac_grid_setpoint_entity": "AC grid setpoint (required, W)"
+        },
+        "data_description": {
+          "battery_soc_entity": "Select the battery state of charge sensor in percent (0-100%), for example GX Device - DC battery charge. Used to enforce the minimum and maximum battery charge levels.",
+          "grid_setpoint_entity": "Select the permanent Victron ESS AC power setpoint number in watts. This is kept at Idle Setpoint and written only when correction is necessary, before active control starts.",
+          "epex_spot_entity": "Select the EPEX Spot market price sensor in ct/kWh or EUR/kWh, for example EPEX Spot Data - Market Price. It must also provide the forecast price data in its attributes for automatic scheduling.",
+          "max_grid_feed_in_entity": "Select the writable Victron ESS maximum feed-in power limit in watts (W), for example GX Device - ESS max feed-in power. Used to limit grid export when price-based feed-in control is enabled.",
+          "grid_consumption_entity": "Select a cumulative grid import energy meter in kilowatt-hours (kWh) for energy and cost tracking. Leave empty to skip import tracking.",
+          "grid_feed_in_energy_entity": "Select a cumulative grid export energy meter in kilowatt-hours (kWh) for energy and revenue tracking. Leave empty to skip export tracking.",
+          "solar_surplus_entity": "Select a power sensor measuring available solar surplus in watts (W). Its current reading offsets Grid Consumer power, and its 15-minute average supports surplus-aware discharge and PV charging. Leave empty if you do not use these features.",
+          "dc_coupled_pv_feed_in_entity": "Select the Victron DC-coupled PV feed-in switch, for example GX Device - DC-coupled PV - feed in excess. This is an on/off switch with no unit. When DC feed-in control is enabled, it is turned off in reduced feed-in mode and on in normal mode. Leave empty to skip this control.",
+          "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature.",
+          "ac_grid_setpoint_entity": "Select the distinct Victron AC grid setpoint number in watts from the built-in Victron GX integration. All active control uses this RAM value through number.set_value (MQTT). It is refreshed every 5 seconds; the Venus OS 3.85 timeout has not been verified. An inactive unknown RAM value is allowed, but unavailable triggers the safety watchdog."
         }
       }
     },
     "error": {
-      "entity_not_found": "Entity not found. Make sure it exists."
+      "entity_not_found": "Entity not found. Make sure it exists.",
+      "number_required": "Select a number entity.",
+      "distinct_setpoints": "Select different entities for the permanent AC power setpoint and RAM AC grid setpoint."
     },
     "abort": {
       "already_configured": "Already configured. Only one instance is supported."
@@ -42,7 +74,7 @@
         "description": "Update your Victron and EPEX Spot entities. Fields marked required must be configured. Optional fields can be left empty. The expected units are shown in each label.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
-          "grid_setpoint_entity": "Grid setpoint entity (required, W)",
+          "grid_setpoint_entity": "AC power setpoint (required, W)",
           "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
@@ -51,11 +83,12 @@
           "dc_coupled_pv_feed_in_entity": "DC coupled PV feed-in switch (optional, on/off)",
           "safety_startup_grace_seconds": "Safety watchdog grace period (optional, s)",
           "use_solcast_forecast": "Use Solcast forecast",
-          "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)"
+          "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
+          "ac_grid_setpoint_entity": "AC grid setpoint (required, W)"
         },
         "data_description": {
           "battery_soc_entity": "Select the battery state of charge sensor in percent (0-100%), for example GX Device - DC battery charge. Used to enforce the minimum and maximum battery charge levels.",
-          "grid_setpoint_entity": "Select the writable Victron ESS AC power setpoint in watts (W), for example GX Device - AC power setpoint. Positive values request grid import; negative values request grid export.",
+          "grid_setpoint_entity": "Select the permanent Victron ESS AC power setpoint number in watts. This is kept at Idle Setpoint and written only when correction is necessary, before active control starts.",
           "epex_spot_entity": "Select the EPEX Spot market price sensor in ct/kWh or EUR/kWh, for example EPEX Spot Data - Market Price. It must also provide the forecast price data in its attributes for automatic scheduling.",
           "max_grid_feed_in_entity": "Select the writable Victron ESS maximum feed-in power limit in watts (W), for example GX Device - ESS max feed-in power. Used to limit grid export when price-based feed-in control is enabled.",
           "grid_consumption_entity": "Select a cumulative grid import energy meter in kilowatt-hours (kWh) for energy and cost tracking. Leave empty to skip import tracking.",
@@ -64,12 +97,15 @@
           "dc_coupled_pv_feed_in_entity": "Select the Victron DC-coupled PV feed-in switch, for example GX Device - DC-coupled PV - feed in excess. This is an on/off switch with no unit. When DC feed-in control is enabled, it is turned off in reduced feed-in mode and on in normal mode. Leave empty to skip this control.",
           "safety_startup_grace_seconds": "Startup grace period in seconds (0-600; default 90). Temporarily tolerates missing or unavailable battery SOC and grid setpoint states after startup or reload. Ends early when both report valid states. Set to 0 to disable startup grace.",
           "use_solcast_forecast": "Automatically discover Solcast and read its cached combined forecast for today and tomorrow. Enabled by default, including existing installations. Forecast diagnostics do not change charging or schedules.",
-          "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature."
+          "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature.",
+          "ac_grid_setpoint_entity": "Select the distinct Victron AC grid setpoint number in watts from the built-in Victron GX integration. All active control uses this RAM value through number.set_value (MQTT). It is refreshed every 5 seconds; the Venus OS 3.85 timeout has not been verified. An inactive unknown RAM value is allowed, but unavailable triggers the safety watchdog."
         }
       }
     },
     "error": {
-      "entity_not_found": "Entity not found. Make sure it exists."
+      "entity_not_found": "Entity not found. Make sure it exists.",
+      "number_required": "Select a number entity.",
+      "distinct_setpoints": "Select different entities for the permanent AC power setpoint and RAM AC grid setpoint."
     }
   },
   "entity": {
@@ -244,6 +280,11 @@
       "replan_hours": {
         "name": "Replan Hours"
       }
+    }
+  },
+  "exceptions": {
+    "ram_setpoint_required": {
+      "message": "Reconfigure this integration and select a distinct AC grid setpoint (RAM) number entity. The existing AC power setpoint remains the permanent idle fallback. Schedules and settings are preserved."
     }
   }
 }

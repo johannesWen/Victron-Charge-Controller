@@ -228,13 +228,14 @@ def resolve_published_action(
     state: DebounceState,
     now: datetime,
     discharge_blocked_by_soc: bool = False,
+    charge_blocked_by_soc: bool = False,
 ) -> DebounceResult:
     """Apply the action-change debounce to a live decision-engine result.
 
     A new ``live_action`` must persist for ``action_confirm_seconds``
     before it replaces the currently published one. MODE_OFF bypasses
     the debounce and forces ``ACTION_IDLE`` immediately. SOC-blocked
-    discharge also stops immediately and clears pending transitions.
+    charge/discharge also stops immediately and clears pending transitions.
     The first call also publishes immediately (no prior state to confirm
     against).
     """
@@ -243,6 +244,12 @@ def resolve_published_action(
         and (
             live_action == ACTION_DISCHARGE
             or state.last_published_action == ACTION_DISCHARGE
+        )
+    ) or (
+        charge_blocked_by_soc
+        and (
+            live_action in (ACTION_CHARGE, ACTION_PV_CHARGE)
+            or state.last_published_action in (ACTION_CHARGE, ACTION_PV_CHARGE)
         )
     ):
         return DebounceResult(

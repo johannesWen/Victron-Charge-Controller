@@ -59,10 +59,10 @@ the system from dashboards or automations.
 | Component | Purpose |
 | --- | --- |
 | Home Assistant | Runs the custom integration and exposes entities/services. |
-| [Victron Venus MQTT](https://github.com/tomer-w/ha-victron-mqtt) | Provides battery SOC, writable ESS grid setpoint and Victron telemetry. |
+| Built-in Home Assistant **Victron GX** (`victron_gx`) | Provides battery SOC and distinct permanent AC power and RAM AC grid setpoint numbers over MQTT. |
 | [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly day-ahead electricity prices. |
 
-The config flow requires a battery SOC sensor, writable grid setpoint number, EPEX Spot price sensor, and writable max grid feed-in number. Grid import/export energy sensors are optional and enable cost and energy tracking.
+The config flow requires a battery SOC sensor, two distinct writable setpoint numbers (permanent AC power and RAM AC grid), EPEX Spot price sensor, and writable max grid feed-in number. Grid import/export energy sensors are optional and enable cost and energy tracking.
 
 ## Installation
 
@@ -82,7 +82,8 @@ During setup, select the entities that connect this integration to your Victron 
 | Field | Required | Description | HA Entity |
 | --- | --- | --- | --- |
 | Battery SOC sensor | Yes | Battery state of charge in percent. | GX Device - DC battery charge |
-| Grid setpoint entity | Yes | Writable ESS grid setpoint in watts. | GX Device - AC power setpoint |
+| AC power setpoint | Yes | Permanent idle fallback in watts; retain the existing selection when upgrading. | GX Device - AC power setpoint |
+| AC grid setpoint | Yes | Distinct RAM actuator in watts for all active targets. | GX Device - AC grid setpoint |
 | EPEX Spot price sensor | Yes | Hourly electricity price data. | EPEX Spot Data - Market Price |
 | Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. | GX Device - ESS max feed-in power |
 | Grid consumption energy sensor | No | Cumulative grid import meter in kWh. | - |
@@ -91,13 +92,36 @@ During setup, select the entities that connect this integration to your Victron 
 | Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export, and lets the discharge degrade to a solar-only export at Min SOC instead of stopping. | - |
 | DC coupled PV feed in switch | No | Control the DC coupled PV feed in when in reduced mode. | GX Device - DC-coupled PV - feed in excess |
 
+Existing installations must use **Reconfigure** to select the additional **AC grid
+setpoint (RAM)** number before the controller can start. Keep the existing **AC
+power setpoint** selection for the permanent fallback. The entry, schedules, and
+restored settings are preserved; there is no automatic entity remapping.
+
+The permanent AC power setpoint holds **Idle Setpoint** and is corrected only when
+necessary, before active RAM control. Scheduled charging/discharging, PV and
+surplus control, and Grid Consumer adjustments all use the RAM AC grid setpoint
+via Home Assistant's `number.set_value` service (Victron GX publishes over MQTT).
+An Idle action with a non-idle adjustment also counts as active control.
+
+Active RAM targets are recomputed and refreshed every **5 seconds**, including
+unchanged values and changes within the deadband. This interval is an explicit
+operating assumption: the RAM timeout on **Venus OS 3.85 has not been verified**.
+Event updates retain the deadband, with safety corrections and offset clears
+bypassing it. Idle, Off, and safety stops immediately write Idle Setpoint to RAM
+and stop active refreshes; failed idle corrections retry. Unload cancels timers,
+drains in-flight writes, and attempts an idle reset. An inactive RAM value can be
+`unknown`/null and still writable; `unavailable` or a missing entity is a connection
+fault subject to the startup grace period. Service success confirms Home Assistant
+accepted the write, not that physical hardware acknowledged it.
+
 You can change these entities later in **Settings > Devices & Services > Victron Charge Control > Configure**; no YAML is needed.
 
 The options flow also provides a **Safety watchdog grace period** (default
 90 seconds, configurable from 0–600 seconds). During this startup window,
 missing, unknown, or unavailable battery SOC and grid setpoint entities do not
-switch the restored control mode to OFF. Grace ends early once both entities
-report real states. After grace ends, a missing, unknown, or unavailable
+switch the restored control mode to OFF. The RAM entity must exist and be
+available, but may be inactive/unknown. Grace ends early when the SOC and
+permanent setpoint report valid states and the RAM entity is available. After grace ends, a missing, unknown, or unavailable
 critical entity triggers the safety stop and notification. The notification lists
 each affected entity and whether it is missing, unavailable, or unknown, along
 with the previous control mode and instructions to resume. Set the period to
@@ -242,7 +266,7 @@ consumer shortfall uses the current solar reading. The top chip shows the action
 The first change to the shortfall starts a fixed **five-second window**; the latest
 load and solar readings are applied at expiry, and further changes do not restart
 the window. Initial enable, restore after restart, and recovery also wait five
-seconds. The existing setpoint watt deadband still applies. Disabling the switch, selecting Off, or an
+seconds. The setpoint watt deadband applies to event updates; the five-second active RAM refresh bypasses it. Disabling the switch, selecting Off, or an
 invalid source clears the offset without delay. The delay is not adjustable.
 
 This adjusts the requested target, not the energy origin: intentional battery

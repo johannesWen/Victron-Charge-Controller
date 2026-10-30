@@ -9,8 +9,10 @@ to the coordinator's private attributes (``_last_applied_setpoint``,
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
+from homeassistant.exceptions import HomeAssistantError
 from .const import ACTION_IDLE, DEFAULT_DEADBAND, MODE_OFF
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,45 +48,59 @@ async def apply_setpoint(
     last_applied_setpoint: float | None,
     setpoint_deadband: float,
     enforce_export_limit: bool = False,
+    force: bool = False,
+    allow_unknown: bool = False,
     on_log: Any = None,
-) -> float | None:
+) -> bool:
     """Write the target setpoint to the grid setpoint entity.
 
-    Returns the new ``last_applied_setpoint`` (equal to the input when
-    the call was skipped, or ``target_setpoint`` after a successful
-    write). With ``enforce_export_limit``, reducing an excessive export
+    Returns True only after a successful service call. With
+    ``enforce_export_limit``, reducing an excessive export
     request bypasses the deadband so SOC protection reaches the device.
     """
     state = hass.states.get(entity_id)
-    if state is None or state.state in ("unavailable", "unknown"):
+    if state is None or state.state == "unavailable" or (
+        state.state in ("unknown", None, "null") and not allow_unknown
+    ):
         _LOGGER.warning(
             "Grid setpoint entity %s is unavailable — skipping actuation",
             entity_id,
         )
-        return last_applied_setpoint
+        return False
 
     try:
         current = float(state.state)
     except (ValueError, TypeError):
-        current = 0.0
+        current = math.nan
 
     if (
-        action != ACTION_IDLE
-        and not (enforce_export_limit and current < target_setpoint)
+        not force
+        and action != ACTION_IDLE
+        and not (
+            enforce_export_limit
+            and (
+                current < target_setpoint
+                or (last_applied_setpoint is not None and last_applied_setpoint < target_setpoint)
+            )
+        )
         and last_applied_setpoint is not None
         and abs(target_setpoint - current) <= setpoint_deadband
     ):
-        return last_applied_setpoint
+        return False
 
-    await hass.services.async_call(
-        "number",
-        "set_value",
-        {"entity_id": entity_id, "value": target_setpoint},
-        blocking=True,
-    )
+    try:
+        await hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": entity_id, "value": target_setpoint},
+            blocking=True,
+        )
+    except HomeAssistantError:
+        _LOGGER.warning("Failed to write grid setpoint %s", entity_id, exc_info=True)
+        return False
     if on_log is not None:
         on_log(current, target_setpoint)
-    return target_setpoint
+    return True
 
 
 async def apply_grid_feed_in(

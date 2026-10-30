@@ -16,6 +16,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
@@ -32,6 +33,7 @@ from .const import (
 )
 
 REQUIRED_ENTITY_KEYS = (
+    CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
@@ -48,6 +50,9 @@ OPTIONAL_ENTITY_KEYS = (
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
+        vol.Required(CONF_AC_GRID_SETPOINT_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="number"),
+        ),
         vol.Required(CONF_BATTERY_SOC_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor"),
         ),
@@ -92,10 +97,16 @@ def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
     """Validate required entities and optional entities when configured."""
     errors: dict[str, str] = {}
     for key in REQUIRED_ENTITY_KEYS:
-        entity_id = user_input[key]
-        state = hass.states.get(entity_id)
+        entity_id = user_input.get(key)
+        state = hass.states.get(entity_id) if entity_id else None
         if state is None:
             errors[key] = "entity_not_found"
+
+    ram_entity = user_input.get(CONF_AC_GRID_SETPOINT_ENTITY, "")
+    if not isinstance(ram_entity, str) or not ram_entity.startswith("number."):
+        errors[CONF_AC_GRID_SETPOINT_ENTITY] = "number_required"
+    elif ram_entity == user_input.get(CONF_GRID_SETPOINT_ENTITY):
+        errors[CONF_AC_GRID_SETPOINT_ENTITY] = "distinct_setpoints"
 
     for key in OPTIONAL_ENTITY_KEYS:
         entity_id = user_input.get(key)
@@ -112,6 +123,28 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Victron Charge Control."""
 
     VERSION = 1
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Add the RAM actuator without replacing the entry or stored plan."""
+        entry = self._get_reconfigure_entry()
+        errors = {}
+        if user_input is not None:
+            data = _clean_entity_data({
+                **{key: value for key, value in entry.data.items() if key not in OPTIONAL_ENTITY_KEYS},
+                **user_input,
+            })
+            errors = _validate_entities(self.hass, data)
+            if not errors:
+                return self.async_update_reload_and_abort(entry, data=data)
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_USER_DATA_SCHEMA, {**entry.data, **(user_input or {})}
+            ),
+            errors=errors,
+        )
 
     @staticmethod
     @callback
@@ -208,6 +241,12 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
         current_options = {**self._config_entry.options, **(user_input or {})}
         schema = vol.Schema(
             {
+                vol.Required(
+                    CONF_AC_GRID_SETPOINT_ENTITY,
+                    default=current.get(CONF_AC_GRID_SETPOINT_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="number"),
+                ),
                 vol.Required(
                     CONF_BATTERY_SOC_ENTITY,
                     default=current.get(CONF_BATTERY_SOC_ENTITY, ""),
