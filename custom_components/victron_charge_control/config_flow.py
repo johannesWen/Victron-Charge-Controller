@@ -210,31 +210,30 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     for key, value in self._config_entry.data.items()
                     if key not in OPTIONAL_ENTITY_KEYS
                 }
+                options = {
+                    **self._config_entry.options,
+                    CONF_USE_SOLCAST_FORECAST: user_input.get(
+                        CONF_USE_SOLCAST_FORECAST,
+                        self._config_entry.options.get(CONF_USE_SOLCAST_FORECAST, True),
+                    ),
+                    CONF_SAFETY_STARTUP_GRACE_SECONDS: int(
+                        user_input.get(
+                            CONF_SAFETY_STARTUP_GRACE_SECONDS,
+                            self._config_entry.options.get(
+                                CONF_SAFETY_STARTUP_GRACE_SECONDS,
+                                DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
+                            ),
+                        )
+                    ),
+                }
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
                     data=_clean_entity_data({**current_data, **data_update}),
+                    options=options,
                 )
-                # Options (e.g. grace period) are returned via async_create_entry
-                # so they land in entry.options rather than entry.data.
-                return self.async_create_entry(
-                    title="",
-                    data={
-                        **self._config_entry.options,
-                        CONF_USE_SOLCAST_FORECAST: user_input.get(
-                            CONF_USE_SOLCAST_FORECAST,
-                            self._config_entry.options.get(CONF_USE_SOLCAST_FORECAST, True),
-                        ),
-                        CONF_SAFETY_STARTUP_GRACE_SECONDS: int(
-                            user_input.get(
-                                CONF_SAFETY_STARTUP_GRACE_SECONDS,
-                                self._config_entry.options.get(
-                                    CONF_SAFETY_STARTUP_GRACE_SECONDS,
-                                    DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
-                                ),
-                            )
-                        ),
-                    },
-                )
+                # Retry failed setup even if a previous submission already saved these values.
+                self.hass.config_entries.async_schedule_reload(self._config_entry.entry_id)
+                return self.async_create_entry(title="", data=options)
 
         # Pre-fill with current values
         current = user_input if user_input is not None else self._config_entry.data
