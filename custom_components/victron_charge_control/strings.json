@@ -6,7 +6,7 @@
         "description": "Select your Victron and EPEX Spot entities. Fields marked required must be configured. Optional fields can be left empty. The expected units are shown in each label.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
-          "grid_setpoint_entity": "AC power setpoint (permanent idle fallback, required, W)",
+          "grid_setpoint_entity": "AC power setpoint (required, W)",
           "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
@@ -14,7 +14,7 @@
           "solar_surplus_entity": "Solar surplus sensor (optional, W)",
           "dc_coupled_pv_feed_in_entity": "DC coupled PV feed-in switch (optional, on/off)",
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
-          "ac_grid_setpoint_entity": "AC grid setpoint (RAM active control, required, W)"
+          "ac_grid_setpoint_entity": "AC grid setpoint (required, W)"
         },
         "data_description": {
           "battery_soc_entity": "Select the battery state of charge sensor in percent (0-100%), for example GX Device - DC battery charge. Used to enforce the minimum and maximum battery charge levels.",
@@ -34,7 +34,7 @@
         "description": "Select both distinct setpoint entities to resume control. Existing schedules and settings are preserved. The permanent AC power setpoint is the idle fallback; active targets use the RAM AC grid setpoint.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
-          "grid_setpoint_entity": "AC power setpoint (permanent idle fallback, required, W)",
+          "grid_setpoint_entity": "AC power setpoint (required, W)",
           "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
@@ -42,7 +42,7 @@
           "solar_surplus_entity": "Solar surplus sensor (optional, W)",
           "dc_coupled_pv_feed_in_entity": "DC coupled PV feed-in switch (optional, on/off)",
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
-          "ac_grid_setpoint_entity": "AC grid setpoint (RAM active control, required, W)"
+          "ac_grid_setpoint_entity": "AC grid setpoint (required, W)"
         },
         "data_description": {
           "battery_soc_entity": "Select the battery state of charge sensor in percent (0-100%), for example GX Device - DC battery charge. Used to enforce the minimum and maximum battery charge levels.",
@@ -74,7 +74,7 @@
         "description": "Update your Victron and EPEX Spot entities. Fields marked required must be configured. Optional fields can be left empty. The expected units are shown in each label.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
-          "grid_setpoint_entity": "AC power setpoint (permanent idle fallback, required, W)",
+          "grid_setpoint_entity": "AC power setpoint (required, W)",
           "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
@@ -84,7 +84,7 @@
           "safety_startup_grace_seconds": "Safety watchdog grace period (optional, s)",
           "use_solcast_forecast": "Use Solcast forecast",
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
-          "ac_grid_setpoint_entity": "AC grid setpoint (RAM active control, required, W)"
+          "ac_grid_setpoint_entity": "AC grid setpoint (required, W)"
         },
         "data_description": {
           "battery_soc_entity": "Select the battery state of charge sensor in percent (0-100%), for example GX Device - DC battery charge. Used to enforce the minimum and maximum battery charge levels.",
