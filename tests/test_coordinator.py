@@ -128,7 +128,10 @@ class TestForecastLifecycle:
         await coord.async_shutdown()
         coord.async_request_refresh.assert_awaited_once()
         assert coord.forecast_coordinator._unsub_polling is None
-        mock_hass.services.async_call.assert_not_awaited()
+        # Unload independently attempts to reset the RAM actuator to idle.
+        assert mock_hass.services.async_call.call_args.args[2] == {
+            "entity_id": "number.ac_grid_setpoint", "value": coord.idle_setpoint,
+        }
 
 
 # ======================================================================
@@ -617,6 +620,7 @@ class TestDetermineAction:
         """Set up battery SOC mock."""
         coordinator.hass.states.get.side_effect = lambda eid: {
             "sensor.battery_soc": MockState(str(soc_value)),
+            "number.ac_grid_setpoint": MockState("0"),
             "number.grid_setpoint": MockState("0"),
             "sensor.epex_spot": MockState("10"),
         }.get(eid)
@@ -1482,6 +1486,7 @@ class TestPVCharging:
     def _set_soc_and_time(self, coord, soc_value, mock_dt_util, when):
         coord.hass.states.get.side_effect = lambda eid: {
             "sensor.battery_soc": MockState(str(soc_value)),
+            "number.ac_grid_setpoint": MockState("0"),
             "number.grid_setpoint": MockState("0"),
             "sensor.epex_spot": MockState("10"),
             "sensor.solar_surplus": MockState("2000"),
@@ -1675,6 +1680,7 @@ class TestPVCharging:
         coordinator._pv_charge_hours = [("2026-04-28", 12)]
         coordinator.hass.states.get.side_effect = lambda eid: {
             "sensor.battery_soc": MockState("50"),
+            "number.ac_grid_setpoint": MockState("0"),
             "number.grid_setpoint": MockState("0"),
             "sensor.epex_spot": MockState("10"),
         }.get(eid)
@@ -1931,6 +1937,7 @@ class TestSafetyWatchdog:
         assert coordinator._get_unsafe_entities() == {
             "sensor.battery_soc": "missing",
             "number.grid_setpoint": "missing",
+            "number.ac_grid_setpoint": "missing",
         }
 
     @pytest.mark.parametrize(
@@ -1942,6 +1949,7 @@ class TestSafetyWatchdog:
         coordinator._safety_startup_deadline = None
         coordinator.hass.states.get.side_effect = {
             "sensor.battery_soc": MockState(state) if state is not None else None,
+            "number.ac_grid_setpoint": MockState("0"),
             "number.grid_setpoint": MockState("0"),
         }.get
 
@@ -1967,6 +1975,7 @@ class TestSafetyWatchdog:
         coordinator._safety_startup_deadline = None
         coordinator.hass.states.get.side_effect = {
             "sensor.battery_soc": None,
+            "number.ac_grid_setpoint": MockState("0"),
             "number.grid_setpoint": MockState("unknown"),
         }.get
 
@@ -2024,6 +2033,7 @@ class TestSafetyStartupGrace:
         coordinator.control_mode = MODE_AUTO
         states = {
             "sensor.battery_soc": MockState("50"),
+            "number.ac_grid_setpoint": MockState("0"),
             "number.grid_setpoint": MockState("0"),
         }
         coordinator.hass.states.get.side_effect = states.get
@@ -2072,6 +2082,7 @@ class TestSafetyStartupGrace:
         coordinator.control_mode = MODE_AUTO
         states = {
             "sensor.battery_soc": MockState("50"),
+            "number.ac_grid_setpoint": MockState("0"),
             "number.grid_setpoint": MockState("0"),
         }
         states[entity_id] = None
@@ -2218,7 +2229,7 @@ class TestApplySetpoint:
         coordinator.hass.services.async_call.assert_called_once_with(
             "number",
             "set_value",
-            {"entity_id": "number.grid_setpoint", "value": 3000.0},
+            {"entity_id": "number.ac_grid_setpoint", "value": 3000.0},
             blocking=True,
         )
         assert coordinator._last_applied_setpoint == 3000.0
@@ -2295,7 +2306,7 @@ class TestApplySetpoint:
         coordinator.hass.services.async_call.assert_called_once_with(
             "number",
             "set_value",
-            {"entity_id": "number.grid_setpoint", "value": 0.0},
+            {"entity_id": "number.ac_grid_setpoint", "value": 0.0},
             blocking=True,
         )
         assert coordinator._last_applied_setpoint == 0.0

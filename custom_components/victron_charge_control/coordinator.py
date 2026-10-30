@@ -6,6 +6,7 @@ Manages the schedule (charge/discharge hours) and computes the target setpoint.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections import deque
@@ -31,6 +32,7 @@ from .const import (
     ACTION_DISCHARGE,
     ACTION_IDLE,
     ACTION_PV_CHARGE,
+    CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
@@ -75,6 +77,7 @@ from .const import (
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
     UPDATE_INTERVAL_SECONDS,
+    RAM_REFRESH_SECONDS,
 )
 
 from .solar import sample_solar_surplus
@@ -211,6 +214,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # --- Entity references from config ---
         self._battery_soc_entity: str = entry.data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity: str = entry.data[CONF_GRID_SETPOINT_ENTITY]
+        self._ac_grid_setpoint_entity: str = entry.data[CONF_AC_GRID_SETPOINT_ENTITY]
         self._epex_spot_entity: str = entry.data[CONF_EPEX_SPOT_ENTITY]
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
         self._grid_consumption_entity: str | None = entry.data.get(
@@ -323,6 +327,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # --- Last applied setpoint (for deadband) ---
         self._last_applied_setpoint: float | None = None
+        self._last_ram_write: float | None = None
+        self._last_applied_permanent: float | None = None
+        self._last_permanent_write: float | None = None
+        self._permanent_waiting_readback = False
+        self._idle_correction_pending = True
+        self._ram_refresh_due = False
+        self._ram_timer: Any = None
+        self._control_lock = asyncio.Lock()
 
         # --- Last schedule update timestamp ---
         self._last_schedule_update: datetime | None = None
@@ -537,6 +549,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return self._grid_setpoint_entity
 
     @property
+    def ac_grid_setpoint_entity(self) -> str:
+        return self._ac_grid_setpoint_entity
+
+    @property
     def epex_spot_entity(self) -> str:
         return self._epex_spot_entity
 
@@ -616,6 +632,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Update entity references from config entry data."""
         self._battery_soc_entity = data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity = data[CONF_GRID_SETPOINT_ENTITY]
+        self._ac_grid_setpoint_entity = data[CONF_AC_GRID_SETPOINT_ENTITY]
         self._epex_spot_entity = data[CONF_EPEX_SPOT_ENTITY]
         self._max_grid_feed_in_entity = data[CONF_MAX_GRID_FEED_IN_ENTITY]
         self._grid_consumption_entity = data.get(CONF_GRID_CONSUMPTION_ENTITY) or None
@@ -1428,6 +1445,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             control_mode=self.control_mode,
             action_confirm_seconds=self.action_confirm_seconds,
             discharge_blocked_by_soc=self._discharge_blocked_by_soc,
+            charge_blocked_by_soc=self._charge_blocked_by_soc,
             state=DebounceState(
                 last_published_action=self._last_published_action,
                 pending_action=self._pending_action,
@@ -1469,45 +1487,90 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # ------------------------------------------------------------------
 
     async def _apply_setpoint(
-        self, target_setpoint: float, action: str | None = None
-    ) -> None:
-        """Write the target setpoint to the Victron grid setpoint entity.
-
-        When ``action`` is ``ACTION_IDLE`` the deadband is bypassed so the
-        grid setpoint is always reset to ``idle_setpoint``, regardless of
-        how close the previous value is. Without this, a transition from
-        PV-Charging (or any other state) to Idle could leave the entity
-        holding the old setpoint whenever the difference falls within
-        ``setpoint_deadband``. Surplus-only discharge also bypasses the
-        deadband whenever the device is requesting more export than the
-        protected target, including a retry after device unavailability.
-        """
-        def _log(current: float, target: float) -> None:
-            _LOGGER.info(
-                "Setpoint: %.0fW → %.0fW (action=%s, mode=%s, SOC=%s)",
-                current,
-                target,
-                self.data.desired_action if self.data else "?",
-                self.control_mode,
-                self._get_battery_soc(),
-            )
-
+        self, target_setpoint: float, action: str | None = None, *, force: bool = False,
+    ) -> bool:
+        """Write RAM, recording success independently of skipped/failed writes."""
         generation = self._grid_consumer_generation
         clearing = self._grid_consumer_clear_pending
         applied = await actuation_apply_setpoint(
             self.hass,
-            entity_id=self._grid_setpoint_entity,
+            entity_id=self._ac_grid_setpoint_entity,
             target_setpoint=target_setpoint,
             action=action,
-            last_applied_setpoint=None if clearing else self._last_applied_setpoint,
+            last_applied_setpoint=self._last_applied_setpoint,
             setpoint_deadband=self.setpoint_deadband,
             enforce_export_limit=action == ACTION_DISCHARGE and self._discharge_solar_only,
-            on_log=_log,
+            force=force or clearing,
+            allow_unknown=True,
         )
-        if applied is not None:
-            self._last_applied_setpoint = applied
+        if applied:
+            self._last_applied_setpoint = target_setpoint
+            self._last_ram_write = self.hass.loop.time()
+            self._ram_refresh_due = False
             if clearing and generation == self._grid_consumer_generation:
                 self._grid_consumer_clear_pending = False
+        return applied
+
+    async def _ensure_idle_fallback(self) -> bool:
+        """Establish the permanent fallback before issuing any active RAM target."""
+        state = self.hass.states.get(self._grid_setpoint_entity)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return False
+        try:
+            current = float(state.state)
+        except (ValueError, TypeError):
+            return False
+        if not math.isfinite(current):
+            return False
+        if current == self.idle_setpoint:
+            self._permanent_waiting_readback = False
+            return True
+        # MQTT readback may lag service completion. Do not turn RAM echoes
+        # into repeated flash writes while waiting for the permanent value.
+        if (
+            self._permanent_waiting_readback
+            and self._last_applied_permanent == self.idle_setpoint
+            and self._last_permanent_write is not None
+            and self.hass.loop.time() - self._last_permanent_write < UPDATE_INTERVAL_SECONDS
+        ):
+            return True
+        target = self.idle_setpoint
+        applied = await actuation_apply_setpoint(
+            self.hass,
+            entity_id=self._grid_setpoint_entity,
+            target_setpoint=target,
+            action=ACTION_IDLE,
+            last_applied_setpoint=self._last_applied_permanent,
+            setpoint_deadband=0,
+            force=True,
+        )
+        if applied:
+            self._last_applied_permanent = target
+            self._last_permanent_write = self.hass.loop.time()
+            self._permanent_waiting_readback = True
+        return applied and self.idle_setpoint == target
+
+    @callback
+    def _schedule_ram_refresh(self, needed: bool) -> None:
+        """One timer requests a fresh serialized decision, never a cached write."""
+        if self._ram_timer is not None:
+            if needed:
+                return
+            self._ram_timer()
+            self._ram_timer = None
+        if not needed or self._shutdown_requested:
+            return
+
+        @callback
+        def _refresh(_now: datetime) -> None:
+            self._ram_timer = None
+            if self._shutdown_requested:
+                return
+            self._ram_refresh_due = True
+            # Let other callbacks at this deadline accept batched consumer input.
+            self.hass.async_create_task(self.async_request_refresh(), eager_start=False)
+
+        self._ram_timer = async_call_later(self.hass, RAM_REFRESH_SECONDS, _refresh)
 
     # ------------------------------------------------------------------
     # Grid feed-in control
@@ -1565,16 +1628,28 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def _get_unsafe_entities(self) -> dict[str, str]:
         """Check critical entities and return the reasons for shutdown."""
-        return get_unsafe_entities(
-            self.hass,
-            [self._battery_soc_entity, self._grid_setpoint_entity],
+        unsafe = get_unsafe_entities(
+            self.hass, [self._battery_soc_entity, self._grid_setpoint_entity],
         )
+        # victron_gx uses unknown for an inactive/null RAM value; availability
+        # is tracked separately and unavailable still means a lost connection.
+        ram_state = self.hass.states.get(self._ac_grid_setpoint_entity)
+        if ram_state is None or ram_state.state == "unavailable":
+            unsafe[self._ac_grid_setpoint_entity] = (
+                "missing" if ram_state is None else "unavailable"
+            )
+        return unsafe
 
     # ------------------------------------------------------------------
     # Core update method
     # ------------------------------------------------------------------
 
     async def _async_update_data(self) -> ChargeControlData:
+        """Serialize event, timer, and direct refreshes with shutdown."""
+        async with self._control_lock:
+            return await self._async_control_update()
+
+    async def _async_control_update(self) -> ChargeControlData:
         """Run the decision engine and apply the setpoint.
 
         The tick is broken into named pipeline methods to keep each
@@ -1595,37 +1670,35 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if self._shutdown_requested:
             return self.data
         self._sample_solar_surplus()
-        # Allow one immediate correction for a clear during an awaited write.
-        for _ in range(2):
-            await self._step_safety()
-            if self._shutdown_requested:
-                return self.data
-            calculation: dict[str, float] = {}
-            current_price_ct, is_reduced, action, setpoint = self._step_decide(
-                calculation=calculation
-            )
-            generation = self._grid_consumer_generation
-            await self._step_apply_setpoint(action, setpoint)
-            if self._shutdown_requested:
-                return self.data
-            price_view = self._step_load_epex_view()
-            self._clean_expired_slots()
+        decision = await self._async_reconcile_setpoint()
+        if decision is None:
+            return self.data
+        current_price_ct, is_reduced, action, setpoint, calculation = decision
+        inputs = self._setpoint_inputs()
+        price_view = self._step_load_epex_view()
+        self._clean_expired_slots()
+        try:
             feed_in_active, applied_feed_in = await self._apply_grid_feed_in(
                 current_price_ct
             )
-            if self._shutdown_requested:
-                return self.data
+        finally:
+            # Ancillary service failures must not strand a newly unsafe RAM target.
+            if not self._shutdown_requested and inputs != self._setpoint_inputs():
+                decision = await self._async_reconcile_setpoint()
+                if decision is not None:
+                    current_price_ct, is_reduced, action, setpoint, calculation = decision
+        if self._shutdown_requested:
+            return self.data
+        inputs = self._setpoint_inputs()
+        try:
             await self._apply_dc_coupled_feed_in(is_reduced=is_reduced)
-            if self._shutdown_requested:
-                return self.data
-            if (
-                generation == self._grid_consumer_generation
-                or not self._grid_consumer_clear_pending
-            ):
-                break
-        if generation != self._grid_consumer_generation:
-            # A request made during a slow write may have exhausted its debounce timer.
-            self._debounced_refresh.async_schedule_call()
+        finally:
+            if not self._shutdown_requested and inputs != self._setpoint_inputs():
+                decision = await self._async_reconcile_setpoint()
+                if decision is not None:
+                    current_price_ct, is_reduced, action, setpoint, calculation = decision
+        if self._shutdown_requested:
+            return self.data
         self._update_cost_tracking(price_view.eur_per_kwh)
         return self._build_snapshot(
             action=action,
@@ -1635,6 +1708,36 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             applied_feed_in=applied_feed_in,
             calculation=calculation,
         )
+
+    def _setpoint_inputs(self) -> tuple[str, float | None, float, dict[str, str], int]:
+        """Inputs whose changes require rechecking an in-flight RAM decision."""
+        return (
+            self.control_mode, self._get_battery_soc(), self.idle_setpoint,
+            self._get_unsafe_entities(), self._grid_consumer_generation,
+        )
+
+    async def _async_reconcile_setpoint(
+        self,
+    ) -> tuple[float | None, bool, str, float, dict[str, float]] | None:
+        """Correct a changed decision before yielding to ancillary services."""
+        for _ in range(2):
+            await self._step_safety()
+            if self._shutdown_requested:
+                return None
+            calculation: dict[str, float] = {}
+            current_price_ct, is_reduced, action, setpoint = self._step_decide(
+                calculation=calculation
+            )
+            inputs = self._setpoint_inputs()
+            await self._step_apply_setpoint(action, setpoint)
+            if self._shutdown_requested:
+                return None
+            if inputs == self._setpoint_inputs():
+                break
+        else:
+            # A request made during a slow write may have exhausted its debounce timer.
+            self._debounced_refresh.async_schedule_call()
+        return current_price_ct, is_reduced, action, setpoint, calculation
 
     async def _step_safety(self) -> None:
         """Run the safety watchdog for this tick."""
@@ -1721,13 +1824,47 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return current_price_ct, is_reduced, action, setpoint
 
     async def _step_apply_setpoint(self, action: str, setpoint: float) -> None:
-        """Write the computed setpoint (or reset to idle when turning OFF)."""
-        if self.control_mode != MODE_OFF:
-            await self._apply_setpoint(setpoint, action=action)
-        elif self._last_applied_setpoint != self.idle_setpoint:
-            # When turning off, reset to idle so the ESS does not stay
-            # pinned at a stale charge/discharge setpoint.
-            await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE)
+        """Maintain the permanent idle fallback and refresh active RAM control."""
+        before = self._setpoint_inputs()
+        fallback_ready = await self._ensure_idle_fallback()
+        if self._shutdown_requested:
+            return
+        # The fallback await can invalidate the safety or consumer decision.
+        if before != self._setpoint_inputs():
+            await self._step_safety()
+            _, _, action, setpoint = self._step_decide()
+        if self.control_mode == MODE_OFF or self._get_battery_soc() is None:
+            action, setpoint = ACTION_IDLE, self.idle_setpoint
+        active = self.control_mode != MODE_OFF and (
+            action != ACTION_IDLE or setpoint != self.idle_setpoint
+        )
+        if not fallback_ready:
+            action, setpoint, active = ACTION_IDLE, self.idle_setpoint, False
+        if active:
+            self._idle_correction_pending = True
+            due = self._ram_refresh_due or self._last_ram_write is None or (
+                self.hass.loop.time() - self._last_ram_write >= RAM_REFRESH_SECONDS
+            )
+            # Idle with a consumer/limit adjustment is still active control.
+            await self._apply_setpoint(setpoint, action=None if action == ACTION_IDLE else action, force=due)
+        else:
+            state = self.hass.states.get(self._ac_grid_setpoint_entity)
+            try:
+                current = float(state.state) if state is not None else None
+            except (ValueError, TypeError):
+                current = None
+            needs_idle = (
+                self._idle_correction_pending
+                or self._last_applied_setpoint != self.idle_setpoint
+                or (current is not None and current != self.idle_setpoint)
+                or self._grid_consumer_clear_pending
+            )
+            if needs_idle:
+                self._idle_correction_pending = True
+                if await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE, force=True):
+                    self._idle_correction_pending = False
+            self._ram_refresh_due = False
+        self._schedule_ram_refresh(active or self._idle_correction_pending or not fallback_ready)
 
     def _step_load_epex_view(self) -> EpexPriceView:
         """Read the EPEX state and assemble the today/tomorrow price lists."""
@@ -1846,6 +1983,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         entities_to_watch = [
             self._battery_soc_entity,
             self._grid_setpoint_entity,
+            self._ac_grid_setpoint_entity,
             self._epex_spot_entity,
         ]
         if self._grid_consumption_entity is not None:
@@ -1920,6 +2058,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     async def async_shutdown(self) -> None:
         """Stop new refreshes and drain actuation before a replacement can start."""
         await super().async_shutdown()
+        self._schedule_ram_refresh(False)
         self._clear_grid_consumer_offset()
         if self._grid_consumer_unsub is not None:
             self._grid_consumer_unsub()
@@ -1933,4 +2072,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._safety_startup_deadline = None
         await self.forecast_coordinator.async_shutdown()
         async with self._debounced_refresh.async_lock():
-            pass
+            async with self._control_lock:
+                await self._ensure_idle_fallback()
+                self._idle_correction_pending = True
+                if await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE, force=True):
+                    self._idle_correction_pending = False

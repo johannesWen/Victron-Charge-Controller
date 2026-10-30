@@ -74,6 +74,7 @@ _patch_ha_compat()
 
 # Now safe to import project modules
 from custom_components.victron_charge_control.const import (  # noqa: E402
+    CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
@@ -94,6 +95,7 @@ MOCK_ENTRY_ID = "test_entry_id_123"
 MOCK_CONFIG_DATA = {
     CONF_BATTERY_SOC_ENTITY: "sensor.battery_soc",
     CONF_GRID_SETPOINT_ENTITY: "number.grid_setpoint",
+    CONF_AC_GRID_SETPOINT_ENTITY: "number.ac_grid_setpoint",
     CONF_EPEX_SPOT_ENTITY: "sensor.epex_spot",
     CONF_MAX_GRID_FEED_IN_ENTITY: "number.max_grid_feed_in",
 }
@@ -153,6 +155,7 @@ def mock_hass() -> MagicMock:
     """Create a mock Home Assistant instance."""
     hass = MagicMock()
     hass.data = {}
+    hass.loop.time.return_value = 0.0
     hass.states = MagicMock()
     hass.services = MagicMock()
     hass.services.async_call = AsyncMock()
@@ -168,7 +171,7 @@ def mock_hass() -> MagicMock:
     # Both paths actually await the coroutine, which prevents
     # ``coroutine ... was never awaited`` warnings from fire-and-forget
     # store saves scheduled by the public mutators.
-    def _async_create_task(coro: Any) -> Any:
+    def _async_create_task(coro: Any, **kwargs: Any) -> Any:
         if not asyncio.iscoroutine(coro):
             return MagicMock()
         try:
@@ -185,7 +188,7 @@ def mock_hass() -> MagicMock:
     # ``Store.async_save`` call before the next ``Store.async_load``).
     hass._scheduled_tasks = []
 
-    def _async_create_task(coro: Any) -> Any:
+    def _async_create_task(coro: Any, **kwargs: Any) -> Any:
         if not asyncio.iscoroutine(coro):
             return MagicMock()
         try:

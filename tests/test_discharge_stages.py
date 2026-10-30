@@ -33,7 +33,8 @@ def discharge_controller(coordinator):
     coordinator._solar_surplus_mean = 1500.0
     states = {
         coordinator.battery_soc_entity: MockState("25"),
-        coordinator.grid_setpoint_entity: MockState("-4500"),
+        coordinator.ac_grid_setpoint_entity: MockState("-4500"),
+        coordinator.grid_setpoint_entity: MockState("50"),
         "sensor.solar_surplus": MockState("1500"),
     }
     coordinator.hass.states.get.side_effect = states.get
@@ -149,7 +150,7 @@ async def test_cutoff_immediate_and_recovery_confirmed(discharge_controller, has
         await controller._step_apply_setpoint(action, setpoint)
         controller.hass.services.async_call.assert_awaited_once_with(
             "number", "set_value",
-            {"entity_id": controller.grid_setpoint_entity, "value": 50}, blocking=True,
+            {"entity_id": controller.ac_grid_setpoint_entity, "value": 50}, blocking=True,
         )
         set_soc(controller, states, 20 if has_solar else 22.1)
         now.return_value = start + timedelta(seconds=2)
@@ -167,21 +168,21 @@ async def test_solar_only_reduction_bypasses_deadband_and_retries(discharge_cont
     controller.setpoint_deadband = 200
     controller._step_decide()
     controller._last_applied_setpoint = -1600
-    states[controller.grid_setpoint_entity] = MockState("-1600")
+    states[controller.ac_grid_setpoint_entity] = MockState("-1600")
     set_soc(controller, states, 20)
     _, _, action, setpoint = controller._step_decide()
     assert (action, setpoint) == (ACTION_DISCHARGE, -1500)
     # An unavailable device must not consume the protective reduction.
-    states[controller.grid_setpoint_entity] = MockState("unavailable")
+    states[controller.ac_grid_setpoint_entity] = MockState("unavailable")
     await controller._step_apply_setpoint(action, setpoint)
     controller.hass.services.async_call.assert_not_awaited()
-    states[controller.grid_setpoint_entity] = MockState("-1600")
+    states[controller.ac_grid_setpoint_entity] = MockState("-1600")
     await controller._step_apply_setpoint(action, setpoint)
     controller.hass.services.async_call.assert_awaited_once_with(
         "number", "set_value",
-        {"entity_id": controller.grid_setpoint_entity, "value": -1500}, blocking=True,
+        {"entity_id": controller.ac_grid_setpoint_entity, "value": -1500}, blocking=True,
     )
-    states[controller.grid_setpoint_entity] = MockState("-1500")
+    states[controller.ac_grid_setpoint_entity] = MockState("-1500")
     await controller._step_apply_setpoint(action, setpoint)
     assert controller.hass.services.async_call.await_count == 1
 

@@ -38,6 +38,14 @@ input_number:
     initial: 0
     unit_of_measurement: "W"
 
+  ac_grid_setpoint_store:
+    name: "AC Grid Setpoint RAM Store"
+    min: -15000
+    max: 15000
+    step: 1
+    initial: 0
+    unit_of_measurement: "W"
+
   max_grid_feed_in_store:
     name: "Max Grid Feed-in Store"
     min: -15000
@@ -108,6 +116,21 @@ template:
           action: input_number.set_value
           target:
             entity_id: input_number.grid_setpoint_store
+          data:
+            value: "{{ value }}"
+
+      - name: "AC Grid Setpoint"
+        unique_id: dummy_ac_grid_setpoint
+        unit_of_measurement: "W"
+        icon: mdi:transmission-tower
+        state: "{{ states('input_number.ac_grid_setpoint_store') | float(0) }}"
+        min: -15000
+        max: 15000
+        step: 1
+        set_value:
+          action: input_number.set_value
+          target:
+            entity_id: input_number.ac_grid_setpoint_store
           data:
             value: "{{ value }}"
 

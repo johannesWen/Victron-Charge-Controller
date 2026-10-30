@@ -20,6 +20,7 @@ STORAGE_KEY_PREFIX = f"{DOMAIN}_schedule"
 # --- Config entry keys (from config flow) ---
 CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_GRID_SETPOINT_ENTITY = "grid_setpoint_entity"
+CONF_AC_GRID_SETPOINT_ENTITY = "ac_grid_setpoint_entity"
 CONF_EPEX_SPOT_ENTITY = "epex_spot_entity"
 CONF_MAX_GRID_FEED_IN_ENTITY = "max_grid_feed_in_entity"
 CONF_GRID_CONSUMPTION_ENTITY = "grid_consumption_entity"
@@ -111,6 +112,8 @@ CARD_REGISTERED_KEY = "card_registered"
 
 # --- Update interval ---
 UPDATE_INTERVAL_SECONDS = 60
+# Explicit operating assumption; the Venus OS 3.85 RAM timeout is unverified.
+RAM_REFRESH_SECONDS = 5
 
 # --- EPEX data attribute keys (mampfes/ha-epex-spot) ---
 EPEX_ATTR_DATA = "data"

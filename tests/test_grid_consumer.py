@@ -73,6 +73,10 @@ class Clock:
     def pending(self):
         return [timer for timer in self.timers if not timer.cancelled]
 
+    @property
+    def consumer_pending(self):
+        return [timer for timer in self.pending if "_accept_latest" in repr(timer.args)]
+
     async def drain(self):
         while tasks := [task for task in self.hass._scheduled_tasks if not task.done()]:
             await asyncio.gather(*tasks)
@@ -82,8 +86,11 @@ class Clock:
         while due := [timer for timer in self.pending if timer.when <= deadline]:
             timer = min(due, key=lambda item: item.when)
             self.now = timer.when
-            timer.cancel()
-            timer.fire()
+            # HA runs callbacks sharing a deadline before the next loop turn.
+            for timer in sorted(due, key=lambda item: item.when):
+                if timer.when == self.now:
+                    timer.cancel()
+                    timer.fire()
             if drain:
                 await self.drain()
         self.now = deadline
@@ -94,6 +101,7 @@ async def consumer(mock_hass):
     """Use real control/actuation logic with fake source states and clock I/O."""
     states = {
         "sensor.battery_soc": MockState("50"),
+        "number.ac_grid_setpoint": MockState("0"),
         "number.grid_setpoint": MockState("0"),
         "sensor.epex_spot": MockState("5", {"unit_of_measurement": "ct/kWh"}),
         "number.max_grid_feed_in": MockState("15000"),
@@ -213,12 +221,12 @@ async def test_solar_only_changes_batch_to_first_deadline(solar_consumer):
     await switch.async_turn_on()
     await clock.advance(5)
     change("250", source="sensor.solar")
-    first = clock.pending[0]
+    first = clock.consumer_pending[0]
     await clock.advance(2)
     change("1000", source="sensor.solar")
     await clock.advance(2.99)
     change("500", source="sensor.solar")
-    assert clock.pending == [first]
+    assert clock.consumer_pending == [first]
     assert coord.grid_consumer_offset == 750
     await clock.advance(0.01)
     assert coord.grid_consumer_offset == 250
@@ -250,7 +258,7 @@ async def test_solar_source_change_cancels_old_batch_and_rebinds(solar_consumer,
     await switch.async_turn_on()
     await clock.advance(5)
     change("1000", source="sensor.solar")
-    stale = clock.pending[0]
+    stale = clock.consumer_pending[0]
     change("250", source="sensor.solar_replacement")
     coord.update_entity_references({
         **coord.config_entry.data, CONF_SOLAR_SURPLUS_ENTITY: replacement,
@@ -264,7 +272,7 @@ async def test_solar_source_change_cancels_old_batch_and_rebinds(solar_consumer,
     await clock.advance(0.01)
     assert coord.grid_consumer_offset == (500 if replacement else 750)
     change("0", source="sensor.solar")
-    assert not clock.pending
+    assert not clock.consumer_pending
     if replacement:
         change("1000", source=replacement)
         await clock.advance(5)
@@ -290,7 +298,7 @@ async def test_solar_batch_cannot_survive_consumer_clear(solar_consumer, operati
     await switch.async_turn_on()
     await clock.advance(5)
     change("250", source="sensor.solar")
-    stale = clock.pending[0]
+    stale = clock.consumer_pending[0]
     if operation == "invalid":
         change("unavailable")
     elif operation == "off":
@@ -367,7 +375,7 @@ async def test_solar_change_during_awaited_write_is_reconciled(native_consumer, 
     await clock.advance(6)
     assert coord.grid_consumer_offset == 200
     assert coord.data.target_setpoint == coord.charge_power + 200
-    assert float(states["number.grid_setpoint"].state) == coord.charge_power + 200
+    assert float(states["number.ac_grid_setpoint"].state) == coord.charge_power + 200
 
 
 @pytest.mark.parametrize(
@@ -428,12 +436,12 @@ async def test_switch_restore_starts_from_zero(consumer, configured, restored):
 async def test_burst_uses_first_deadline_and_latest_value(consumer):
     coord, switch, clock, change, _ = consumer
     await switch.async_turn_on()
-    first = clock.pending[0]
+    first = clock.consumer_pending[0]
     await clock.advance(2)
     change("1.2", "kW")
     await clock.advance(2.9)
     change("900")
-    assert clock.pending == [first]
+    assert clock.consumer_pending == [first]
     assert coord.grid_consumer_offset == 0
     assert coord.data.target_setpoint == coord.charge_power
     before = coord.data.setpoint_calculation
@@ -460,15 +468,15 @@ async def test_off_snapshot_shows_actual_unclamped_idle(consumer, idle):
     coord.control_mode = MODE_OFF
     await coord.async_request_refresh()
     assert coord.data.target_setpoint == idle
-    assert float(states["number.grid_setpoint"].state) == idle
+    assert float(states["number.ac_grid_setpoint"].state) == idle
     assert coord.data.setpoint_calculation == {
         "setting_w": idle, "pv_charge_w": 0, "surplus_w": 0,
         "grid_consumer_w": 0, "limits_w": 0,
     }
 
 
-async def test_calculation_does_not_read_new_settings_after_awaited_write(consumer):
-    coord, switch, clock, _, _ = consumer
+async def test_calculation_does_not_read_new_settings_after_awaited_write(native_consumer):
+    coord, switch, clock, _, _ = native_consumer
     started, release = asyncio.Event(), asyncio.Event()
     write = coord.hass.services.async_call.side_effect
 
@@ -521,7 +529,7 @@ async def test_cancellation_cannot_resurrect_an_offset(consumer, operation, acce
     if accepted:
         await clock.advance(5)
         change("1000")
-    stale = clock.pending[0]
+    stale = clock.consumer_pending[0]
     if operation == "disable":
         await switch.async_turn_off()
     elif operation == "off":
@@ -645,28 +653,24 @@ async def test_clearing_bypasses_deadband_and_retries(consumer, action, failure)
     service = coord.hass.services.async_call
     successful_write = service.side_effect
     if failure == "unavailable":
-        states["number.grid_setpoint"] = MockState("unavailable")
+        states["number.ac_grid_setpoint"] = MockState("unavailable")
         # Test retry without changing the watchdog's existing startup policy.
         coord._safety_startup_deadline = None
     elif failure == "service_error":
         service.side_effect = HomeAssistantError("device rejected write")
-    if failure == "service_error":
-        with pytest.raises(HomeAssistantError):
-            await switch.async_turn_off()
-    else:
-        await switch.async_turn_off()
+    await switch.async_turn_off()
     assert coord.grid_consumer_offset == 0
     if failure:
-        states["number.grid_setpoint"] = MockState(str(previous))
+        states["number.ac_grid_setpoint"] = MockState(str(previous))
         service.side_effect = successful_write
         coord.control_mode = action
         coord._last_published_action = None
         await coord.async_request_refresh()
     assert coord._last_applied_setpoint == previous - 50
-    assert float(states["number.grid_setpoint"].state) == previous - 50
+    assert float(states["number.ac_grid_setpoint"].state) == previous - 50
 
 
-async def test_ordinary_offset_changes_obey_deadband(consumer):
+async def test_periodic_refresh_applies_small_offset_changes(consumer):
     coord, switch, clock, change, _ = consumer
     await switch.async_turn_on()
     await clock.advance(5)
@@ -675,7 +679,7 @@ async def test_ordinary_offset_changes_obey_deadband(consumer):
     change("800")
     await clock.advance(5)
     assert coord.data.target_setpoint == coord.charge_power + 800
-    assert coord._last_applied_setpoint == previous
+    assert coord._last_applied_setpoint == previous + 50
 
 
 @pytest.mark.parametrize("operation", ["disable", "invalid", "remove", "replace"])
@@ -689,7 +693,8 @@ async def test_explicit_clear_removes_residual_after_accepted_zero(consumer, ope
     change("0")
     await clock.advance(5)
     assert coord.grid_consumer_offset == 0
-    assert float(states["number.grid_setpoint"].state) == coord.charge_power + 150
+    assert float(states["number.ac_grid_setpoint"].state) == coord.charge_power
+    states["number.ac_grid_setpoint"] = MockState(str(coord.charge_power + 150))
     if operation == "disable":
         await switch.async_turn_off()
     elif operation == "invalid":
@@ -700,7 +705,7 @@ async def test_explicit_clear_removes_residual_after_accepted_zero(consumer, ope
         change("50", source="sensor.replacement")
         coord.update_entity_references({**MOCK_CONFIG_DATA, CONF_GRID_CONSUMER_ENTITY: "sensor.replacement"})
     await clock.drain()
-    assert float(states["number.grid_setpoint"].state) == coord.charge_power
+    assert float(states["number.ac_grid_setpoint"].state) == coord.charge_power
     assert not coord._grid_consumer_clear_pending
     coord.hass.services.async_call.reset_mock()
     await coord.async_request_refresh()
@@ -739,7 +744,7 @@ async def test_clear_during_awaited_write_cannot_leave_stale_target(consumer, op
     release.set()
     await updating
     assert coord.grid_consumer_offset == 0
-    assert float(states["number.grid_setpoint"].state) == previous - 50
+    assert float(states["number.ac_grid_setpoint"].state) == previous - 50
     assert coord.data.target_setpoint == previous - 50
 
 
@@ -752,7 +757,7 @@ async def test_entry_unload_drains_write_before_replacement(native_consumer, rel
     entry.add_update_listener = MagicMock(return_value=MagicMock())
     await switch.async_turn_on()
     await clock.advance(5)
-    assert float(states["number.grid_setpoint"].state) == 3750
+    assert float(states["number.ac_grid_setpoint"].state) == 3750
     started, release = asyncio.Event(), asyncio.Event()
     write = hass.services.async_call.side_effect
 
@@ -799,25 +804,25 @@ async def test_entry_unload_drains_write_before_replacement(native_consumer, rel
         await clock.drain()
         assert waited_for_write
         assert setups_before_release == 0
-        assert old.last_update_success is not write_fails
+        assert old.last_update_success  # Write failure is retained for retry, not a failed data refresh.
         assert old.grid_consumer_offset == 0
         if reload:
             new = hass.data[DOMAIN][entry.entry_id]
             assert new.grid_consumer_entity is None
             assert not new.grid_consumer_enabled
-            assert float(states["number.grid_setpoint"].state) == 3000
+            assert float(states["number.ac_grid_setpoint"].state) == 3000
             await new.async_refresh()
             await clock.advance(6)
-            assert float(states["number.grid_setpoint"].state) == 3000
+            assert float(states["number.ac_grid_setpoint"].state) == 3000
             assert await async_unload_entry(hass, entry)
         else:
             assert entry.entry_id not in hass.data[DOMAIN]
             # A subsequent controller can set its target after unload returns.
-            states["number.grid_setpoint"] = MockState("3000")
+            states["number.ac_grid_setpoint"] = MockState("3000")
             writes_after_unload = hass.services.async_call.call_count
             await clock.advance(6)
             await old.async_request_refresh()
-            assert float(states["number.grid_setpoint"].state) == 3000
+            assert float(states["number.ac_grid_setpoint"].state) == 3000
             assert hass.services.async_call.call_count == writes_after_unload
 
 
@@ -830,7 +835,7 @@ async def test_slow_writes_finish_and_recheck_watchdog(native_consumer, clear):
     writes = []
 
     async def slow_write(domain, service, data, **kwargs):
-        if data.get("entity_id") == "number.grid_setpoint":
+        if data.get("entity_id") == "number.ac_grid_setpoint":
             writes.append(data["value"])
             if len(writes) <= 12:
                 states["sensor.battery_soc"] = MockState("unavailable")
@@ -839,18 +844,18 @@ async def test_slow_writes_finish_and_recheck_watchdog(native_consumer, clear):
         await write(domain, service, data, **kwargs)
 
     coord.hass.services.async_call.side_effect = slow_write
-    states["number.grid_setpoint"] = MockState("0")
+    states["number.ac_grid_setpoint"] = MockState("0")
     await coord.async_refresh()
     assert coord.last_update_success
-    assert len(writes) == (2 if clear else 1)
-    assert clock.now == (17 if clear else 11)
+    assert len(writes) == 2  # A changed safety input is corrected immediately.
+    assert clock.now == 17
     if clear:
         assert coord.control_mode == MODE_OFF
     # Ordinary accepted loads yield to the next refresh, including its watchdog.
     coord.hass.services.async_call.side_effect = write
     await clock.advance(1)
     assert coord.control_mode == MODE_OFF
-    assert float(states["number.grid_setpoint"].state) == coord.idle_setpoint
+    assert float(states["number.ac_grid_setpoint"].state) == coord.idle_setpoint
     assert coord.data.target_setpoint == coord.idle_setpoint
 
 

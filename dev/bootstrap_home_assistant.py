@@ -16,6 +16,7 @@ CLIENT_ID = "http://localhost:8123/"
 ENTITIES = {
     "battery_soc_entity": "sensor.battery_soc",
     "grid_setpoint_entity": "number.grid_setpoint",
+    "ac_grid_setpoint_entity": "number.ac_grid_setpoint",
     "epex_spot_entity": "sensor.epex_spot_price",
     "max_grid_feed_in_entity": "number.max_grid_feed_in",
     "grid_consumption_entity": "sensor.grid_consumption_energy",

@@ -14,9 +14,13 @@ from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN
+from .const import (
+    CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN,
+    CONF_AC_GRID_SETPOINT_ENTITY, CONF_GRID_SETPOINT_ENTITY,
+)
 from .coordinator import VictronChargeControlCoordinator
 from .services import async_setup_services, async_unload_services
 from .websocket_api import async_register_commands
@@ -117,6 +121,19 @@ async def _async_register_card(hass: HomeAssistant) -> None:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Victron Charge Control from a config entry."""
+    ram_entity = entry.data.get(CONF_AC_GRID_SETPOINT_ENTITY)
+    if (
+        not isinstance(ram_entity, str)
+        or not ram_entity.startswith("number.")
+        or ram_entity == entry.data.get(CONF_GRID_SETPOINT_ENTITY)
+    ):
+        raise ConfigEntryError(
+            "Reconfigure this integration and select a distinct AC grid setpoint "
+            "(RAM) number entity. The existing AC power setpoint remains the "
+            "permanent idle fallback; schedules and settings are preserved.",
+            translation_domain=DOMAIN,
+            translation_key="ram_setpoint_required",
+        )
     coordinator = VictronChargeControlCoordinator(hass, entry)
 
     hass.data.setdefault(DOMAIN, {})
