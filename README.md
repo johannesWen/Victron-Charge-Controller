@@ -5,182 +5,168 @@
 <h1 align="center">Victron Charge Controller for Home Assistant</h1>
 
 <p align="center">
-  <strong>Automated Victron ESS charge and discharge control using EPEX Spot day-ahead prices.</strong>
-</p>
-
-<p align="center">
   <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Default-orange?style=flat-square" alt="HACS custom repository"></a>
   <a href="https://github.com/johannesWen/Victron-Charge-Controller/releases"><img src="https://img.shields.io/github/v/release/johannesWen/Victron-Charge-Controller?style=flat-square" alt="Latest release"></a>
   <a href="https://github.com/johannesWen/Victron-Charge-Controller/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johannesWen/Victron-Charge-Controller/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
   <a href="https://github.com/johannesWen/Victron-Charge-Controller/blob/main/LICENSE"><img src="https://img.shields.io/github/license/johannesWen/Victron-Charge-Controller?style=flat-square" alt="License"></a>
   <a href="https://ko-fi.com/yoschi777"><img src="https://img.shields.io/badge/Ko--fi-Support-FF5E5B?style=flat-square&logo=kofi&logoColor=white" alt="Support me on Ko-fi"></a>
-  <!-- <img src="https://img.shields.io/badge/Home%20Assistant-Custom%20Integration-18BCF2?style=flat-square" alt="Home Assistant custom integration"> -->
 </p>
 
-Victron Charge Controller is a Home Assistant custom integration for scheduling
-Victron ESS battery charging and discharging around hourly energy prices. It reads
-your battery SOC, EPEX Spot prices, and writable Victron grid setpoint entities,
-then publishes Home Assistant controls, sensors, buttons, and services for operating
-the system from dashboards or automations.
+Victron Charge Controller schedules battery charging and discharging in Home Assistant.
+It uses EPEX Spot prices to charge during cheap hours and discharge during expensive hours.
+You can also set a schedule or control your Victron ESS from a dashboard or automation.
 
 ## Contents
 
 - [Capabilities](#capabilities)
-- [Dashboard Card](#dashboard-card)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Setup](#setup)
+- [Dashboard Card](#dashboard-card)
+- [Grid Consumer](#grid-consumer)
+- [Battery And Solar Control](#battery-and-solar-control)
 - [Entity Reference](#entity-reference)
 - [Services](#services)
 - [Defaults](#defaults)
 - [Setpoint Convention](#setpoint-convention)
 - [Fixed Plans](#fixed-plans)
 - [Cost And Energy Tracking](#cost-and-energy-tracking)
-- [Home Assistant Entities](#home-assistant-entities)
 - [Development](#development)
 
 ## Capabilities
 
-- **Automatic scheduling** selects the cheapest hours for charging and the most expensive hours for discharging.
-- **Manual scheduling** allows individual hourly actions for today and tomorrow.
-- **Fixed plans** store one or more recurring 24-hour patterns of charge, discharge, and PV-charge hours. Activating a plan merges its hours into the auto-planned schedule every day (today + tomorrow): fixed hours are added and win over the auto plan in the same hour. Only one plan can be active at a time, and deactivating restores the previous plan.
-- **Force modes** immediately apply the configured charge or discharge power.
-- **SOC protection** respects minimum and maximum battery limits, including hysteresis.
-- **Grid setpoint limits** clamp generated setpoints to configured safe boundaries.
-- **Solar-surplus-aware discharge** adds the 15-minute sliding mean of an optional solar surplus sensor to the discharge setpoint. Full discharge switches to surplus-only export at Min SOC. At or below `max(0, Min SOC − SOC Hysteresis)`, discharge stops and the configured Idle Setpoint is applied immediately on the next control update, without the action confirmation delay. Surplus-only export resumes at Min SOC; full discharge resumes strictly above Min SOC + SOC Hysteresis and then continues down to Min SOC again. The averaged surplus can temporarily exceed available solar power and draw from the battery, which is why the lower cutoff is needed. Without the sensor, discharge stops at Min SOC and resumes strictly above Min SOC + SOC Hysteresis.
-- **Conservative discharge startup** starts stopped below Min SOC, surplus-only from Min SOC through Min SOC + SOC Hysteresis, and at full discharge above that upper threshold. Without a surplus sensor it stays stopped until the upper threshold is exceeded. With zero hysteresis, discharge stops at or below Min SOC and can run at full power above it. Stopping uses the configured Idle Setpoint; it does not disable other battery flows managed by Victron.
-- **PV charging** splits solar surplus between battery and export according to a configurable share. It is independent of **Charge Allowed** and blocked charging hours. Without a Grid Consumer offset it requests no grid import; an enabled Grid Consumer can add import during PV Charge or Idle.
-- **Feed-in management** reduces the configured max feed-in limit when prices fall below a threshold.
-- **Restored state** keeps configuration, cost, and energy counters across Home Assistant restarts. The full charge/discharge plan (charge/discharge/pv_charge slots, blocked hours, last update) is also persisted and reloaded on restart — and a restart in auto mode does **not** trigger a replan, so the plan you set up the night before survives HA reboots untouched.
-- **Service API** exposes schedule manipulation for dashboards, scripts, and automations.
+The controller can:
+
+- Choose charge and discharge hours automatically from electricity prices.
+- Edit hours for today and tomorrow, or save a daily fixed plan.
+- Start charging or discharging with force modes.
+- Apply battery charge limits and grid power limits.
+- Use spare solar power for charging and export.
+- Reduce grid export when prices fall below your chosen limit.
+- Account for a large load, such as an electric vehicle charger, with Grid Consumer.
+- View Solcast forecasts and track grid energy costs.
+
+Configuration, energy counters, and schedules survive Home Assistant restarts.
+Restarting in Auto mode does not replace your saved schedule.
 
 ## Requirements
 
 | Component | Purpose |
 | --- | --- |
-| Home Assistant | Runs the custom integration and exposes entities/services. |
-| Built-in Home Assistant **Victron GX** (`victron_gx`) | Provides battery SOC and distinct permanent AC power and RAM AC grid setpoint numbers over MQTT. |
-| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly day-ahead electricity prices. |
-
-The config flow requires a battery SOC sensor, two distinct writable setpoint numbers (permanent AC power and RAM AC grid), EPEX Spot price sensor, and writable max grid feed-in number. Grid import/export energy sensors are optional and enable cost and energy tracking.
+| Home Assistant | Runs the integration and dashboard. |
+| Victron GX (Built-in) | Provides battery data and writable power controls. |
+| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly electricity prices for today and tomorrow. |
 
 ## Installation
 
-### HACS
+[![Open the repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=johannesWen&repository=Victron-Charge-Controller&category=integration)
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=johannesWen&repository=Victron-Charge-Controller&category=integration)
+To install with HACS:
 
-1. Search for **Victron Charge Control** in HACS and install it.
-2. Restart Home Assistant after installation completes.
-3. Go to **Settings** > **Devices & Services** > **Add Integration** and search for **Victron Charge Control**.
-4. Complete the setup flow.
+1. Search for Victron Charge Control in HACS and install it.
+2. Restart Home Assistant.
+3. Go to Settings → Devices & Services → Add Integration.
+4. Search for Victron Charge Control.
+5. Select the entities listed below.
 
 ## Setup
 
-During setup, select the entities that connect this integration to your Victron and price data:
+An entity is a Home Assistant sensor or control.
+SOC means battery state of charge, as a percentage.
+A setpoint is the power target sent to Victron.
+RAM is temporary memory.
+PV means power from solar panels.
 
-| Field | Required | Description | HA Entity |
-| --- | --- | --- | --- |
-| Battery SOC sensor | Yes | Battery state of charge in percent. | GX Device - DC battery charge |
-| AC power setpoint | Yes | Permanent idle fallback in watts; retain the existing selection when upgrading. | GX Device - AC power setpoint |
-| AC grid setpoint | Yes | Distinct RAM actuator in watts for all active targets. | GX Device - AC grid setpoint |
-| EPEX Spot price sensor | Yes | Hourly electricity price data. | EPEX Spot Data - Market Price |
-| Max grid feed-in entity | Yes | Writable max grid feed-in limit in watts. | GX Device - ESS max feed-in power |
-| Grid consumption energy sensor | No | Cumulative grid import meter in kWh. | - |
-| Grid feed-in energy sensor | No | Cumulative grid export/feed-in meter in kWh. | - |
-| Grid consumer power sensor | No | Power sensor in W or kW measuring a load already included in ESS consumption, such as an EV charger. Use an existing aggregate power sensor for multiple loads. | - |
-| Solar surplus sensor | No | Current solar surplus in watts. When configured, the discharge setpoint is `-(discharge_power + 15-min mean of this value)`, clamped to the grid setpoint limits. The same sensor also enables PV charging, which splits solar surplus between battery and grid export, and lets the discharge degrade to a solar-only export at Min SOC instead of stopping. | - |
-| DC coupled PV feed in switch | No | Control the DC coupled PV feed in when in reduced mode. | GX Device - DC-coupled PV - feed in excess |
+Select these entities during setup. Leave optional fields empty if you do not use them.
 
-Existing installations must use **Reconfigure** to select the additional **AC grid
-setpoint (RAM)** number before the controller can start. Keep the existing **AC
-power setpoint** selection for the permanent fallback. The entry, schedules, and
-restored settings are preserved; there is no automatic entity remapping.
+| Field | Required | Purpose or example entity |
+| --- | --- | --- |
+| Battery SOC sensor | Yes | Battery charge percentage. Example: GX Device - DC battery charge. |
+| AC power setpoint | Yes | Permanent idle target in watts. Example: GX Device - AC power setpoint. |
+| AC grid setpoint | Yes | Temporary target in watts, stored in RAM. Example: GX Device - AC grid setpoint. |
+| EPEX Spot price sensor | Yes | Hourly prices. Example: EPEX Spot Data - Market Price. |
+| Max grid feed-in entity | Yes | Writable export limit in watts. Example: GX Device - ESS max feed-in power. |
+| Grid consumption energy sensor | No | Total grid import in kWh, for cost tracking. |
+| Grid feed-in energy sensor | No | Total grid export in kWh, for revenue tracking. |
+| Grid consumer power sensor | No | Load in W or kW, such as an electric vehicle charger. See [Grid Consumer](#grid-consumer). |
+| Solar surplus sensor | No | Spare solar power in watts, for solar charging and export. |
+| DC coupled PV feed in switch | No | Controls DC solar export in reduced feed-in mode. Example: GX Device - DC-coupled PV - feed in excess. |
 
-The permanent AC power setpoint holds **Idle Setpoint** and is corrected only when
-necessary, before active RAM control. Scheduled charging/discharging, PV and
-surplus control, and Grid Consumer adjustments all use the RAM AC grid setpoint
-via Home Assistant's `number.set_value` service (Victron GX publishes over MQTT).
-An Idle action with a non-idle adjustment also counts as active control.
+Select different writable number entities for AC power setpoint and AC grid setpoint.
+You can change entity selections under Settings → Devices & Services → Victron Charge Control → Configure.
+No YAML configuration is needed.
 
-Active RAM targets are recomputed and refreshed every **5 seconds**, including
-unchanged values and changes within the deadband. This interval is an explicit
-operating assumption: the RAM timeout on **Venus OS 3.85 has not been verified**.
-Event updates retain the deadband, with safety corrections and offset clears
-bypassing it. Idle, Off, and safety stops immediately write Idle Setpoint to RAM
-and stop active refreshes; failed idle corrections retry. Unload cancels timers,
-drains in-flight writes, and attempts an idle reset. An inactive RAM value can be
-`unknown`/null and still writable; `unavailable` or a missing entity is a connection
-fault subject to the startup grace period. Service success confirms Home Assistant
-accepted the write, not that physical hardware acknowledged it.
+### Upgrade from a version before v2.2.1
 
-You can change these entities later in **Settings > Devices & Services > Victron Charge Control > Configure**; no YAML is needed.
+The controller cannot start until you select the additional AC grid setpoint entity.
+Your existing schedules and configuration remain saved.
+To update the configuration:
 
-The options flow also provides a **Safety watchdog grace period** (default
-90 seconds, configurable from 0–600 seconds). During this startup window,
-missing, unknown, or unavailable battery SOC and grid setpoint entities do not
-switch the restored control mode to OFF. The RAM entity must exist and be
-available, but may be inactive/unknown. Grace ends early when the SOC and
-permanent setpoint report valid states and the RAM entity is available. After grace ends, a missing, unknown, or unavailable
-critical entity triggers the safety stop and notification. The notification lists
-each affected entity and whether it is missing, unavailable, or unknown, along
-with the previous control mode and instructions to resume. Set the period to
-`0` to disable startup grace. The window begins when the integration's
-coordinator is created, including on integration reloads.
+1. Open Settings → Devices & Services → Victron Charge Control.
+2. Open the integration entry menu and select Reconfigure.
+3. Keep the existing AC power setpoint selection.
+4. Select GX Device - AC grid setpoint for AC grid setpoint.
+5. Save the configuration. Home Assistant reloads the integration and retries setup.
+
+### Power targets and connection faults
+
+The permanent AC power setpoint stays at Idle Setpoint.
+Active targets use the temporary AC grid setpoint in RAM, refreshed every five seconds.
+This includes Grid Consumer adjustments during an Idle action.
+Off and safety stops send Idle Setpoint to RAM and stop active refreshes.
+The controller retries failed idle writes and attempts an idle reset when the integration unloads.
+
+Setpoint Deadband ignores small changes during normal power updates.
+The five-second refresh and safety corrections bypass this limit.
+Do not rely on a fixed return time to the permanent target after a connection loss.
+
+Safety watchdog grace period gives sensors time to become available after startup or reload.
+It defaults to 90 seconds, accepts 0–600 seconds, and ends early when the required readings are ready.
+Set it to `0` to disable this delay.
+
+After this period, missing or unavailable battery SOC or setpoint entities trigger a safety stop and notification.
+Unknown SOC or permanent setpoint values also trigger a stop.
+An inactive RAM value can be `unknown` and still accept writes.
+The notification identifies the failed entities and explains how to resume control.
 
 ### Optional Solcast forecast
 
-**Use Solcast forecast** is enabled by default, including on existing installations.
-If [Solcast PV Solar Forecast](https://github.com/BJReplay/ha-solcast-solar) is installed,
-Victron automatically discovers its integration-owned entities, including renamed and
-disabled entities. Disable this feature in **Settings → Devices & services → Victron
-Charge Control → Configure → Use Solcast forecast**. No API key or entity selection
-is needed here, and disabled Solcast entities are never enabled automatically.
+If [Solcast PV Solar Forecast](https://github.com/BJReplay/ha-solcast-solar) is installed, the controller finds it automatically.
+Use Solcast forecast is enabled by default.
+You can turn it off under Settings → Devices & Services → Victron Charge Control → Configure.
+No extra API key or entity selection is needed.
 
-The integration reads Solcast's combined rooftop forecast for today and tomorrow
-from its local cache at startup and every five minutes. It uses only
-`solcast_solar.query_forecast_data`, retains Solcast's dampening and limits, and
-does not request cloud updates. Detailed forecast attributes can remain disabled.
-Forecast intervals stay in memory and are available in the Plan card's optional
-PV forecast view. They do not change charging decisions or saved schedules.
+The controller reads forecasts for today and tomorrow from the local Solcast cache every five minutes.
+It makes no extra cloud requests.
+Forecasts appear in the Plan card but do not change charging decisions or saved schedules.
 
-Three diagnostic sensors appear on the existing Victron device:
+Use these sensors to find forecast problems:
 
 | Sensor | Meaning |
 | --- | --- |
-| Solar Forecast Status | Whether the forecast is usable; see the states below. Attributes identify the source entry and discovered entities, coverage bounds, and the reason for an unusable forecast. |
-| Solar Forecast Last Updated | Solcast's source timestamp, not the time Victron polled it. The last known timestamp may remain visible after a failure. |
-| Solar Forecast Coverage | Continuous forecast hours from now, capped at the end of tomorrow. Gaps are never treated as zero production. |
+| Solar Forecast Status | Whether the forecast is ready. See the states below. |
+| Solar Forecast Last Updated | The timestamp from Solcast, not the last controller update. |
+| Solar Forecast Coverage | Hours of continuous forecast data from now, up to the end of tomorrow. |
 
-For troubleshooting, check **Solar Forecast Status**:
-
-| State | Meaning and action |
+| Status | Meaning or action |
 | --- | --- |
-| `disabled` | Enable **Use Solcast forecast** in the integration options to collect forecasts. |
-| `not_detected` | No Solcast integration is installed. Install and configure it if forecasts are wanted. |
-| `unavailable` | Solcast is not loaded, its cached-data action failed or is unavailable, or its source timestamp cannot be read. Check Solcast's setup and its Last Updated/API Last Polled entity. |
-| `invalid_data` | The action returned malformed intervals, invalid estimates, or conflicting duplicates. Check Solcast and update compatibility. |
-| `incomplete` | Continuous coverage from the current interval through tomorrow's end is missing. Check the forecast available in Solcast. |
-| `stale` | The source timestamp is older than 36 hours. Check Solcast's own update configuration. |
-| `ready` | Valid central estimates cover the remaining horizon and the source timestamp is no older than 36 hours. |
+| `disabled` | Turn on Use Solcast forecast to read forecasts. |
+| `not_detected` | If you want forecasts, install and configure Solcast. |
+| `unavailable` | Make sure that Solcast loads and provides cached forecasts and an update timestamp. |
+| `invalid_data` | Solcast returned invalid forecast data. Make sure that the installed versions are compatible. |
+| `incomplete` | Forecast data has gaps before the end of tomorrow. |
+| `stale` | The Solcast timestamp is older than 36 hours. Review its update configuration. |
+| `ready` | Forecast data covers the remaining time through tomorrow and is no older than 36 hours. |
 
-Installation, removal, reloads, and entity renames are rediscovered on the next
-five-minute poll. Forecast failures clear unusable intervals, update the diagnostics,
-and disable the PV forecast view; they do not trigger the battery safety watchdog.
-Coverage uses the Home Assistant time zone, including shorter and longer
-daylight-saving days.
+Forecast failures disable the PV forecast view. They do not trigger the battery safety stop.
 
 ## Dashboard Card
 
-The integration ships a bundled Lovelace card for monitoring and steering the
-controller. The card source lives under [`frontend/`](frontend/) in this
-repository and is built into `custom_components/victron_charge_control/static/`
-at release time. Once the integration is set up, the card is
-**auto-registered** with Home Assistant (via `add_extra_js_url`) — no manual
-Lovelace `resources:` entry is required.
+The integration loads the dashboard card automatically.
+No manual Lovelace resource entry is needed.
+In the dashboard editor, select Add Card and search for Victron Charge Controller.
 
-Add the card from the Lovelace UI (**Add Card** → search for
-**Victron Charge Controller**) or configure it directly:
+You can also use YAML:
 
 ```yaml
 type: custom:victron-charge-controller-card
@@ -189,41 +175,30 @@ entity_prefix: victron_charge_control
 view: settings
 ```
 
+Choose a view in the card editor or with the `view` field:
+
 | View | Purpose |
 | --- | --- |
-| `overview` | Select the control mode, toggle Charge Allowed and Discharge Allowed, and monitor the grid setpoint calculation. |
-| `settings` | Operate the controller, adjust limits, configure price thresholds, tune grid feed-in behavior, and recalculate schedules. |
-| `plan` | Inspect the EPEX Spot based plan for today and tomorrow, view blocked hours, set manual actions for future hours, and manage fixed plans (recurring 24-hour charge/discharge/PV-charge patterns with a per-plan activate check mark). |
-| `history` | Review grid cost, revenue, import, and export statistics by day, week, month, or year. |
+| `overview` | Select the control mode, allow charging or discharging, and see the grid target calculation. |
+| `settings` | Adjust power limits, price limits, and other controls. This is the default view. |
+| `plan` | View prices, edit the schedule for today and tomorrow, and manage fixed plans. |
+| `history` | View grid cost, revenue, import, and export by day, week, month, or year. |
 
-Choose **Overview** in the card editor, or set `view: overview` in YAML, for a
-compact control panel. It shows the signed mode-power, PV-charge, solar-surplus,
-and grid-consumer contributions to the grid setpoint. When limits cap the result,
-the uncapped calculation appears in parentheses. Missing calculation data is
-shown as unavailable. Settings remains the default view.
+Overview and Settings show how mode power, solar power, and Grid Consumer contribute to the grid target.
+When a limit caps the target, the original result appears in parentheses, such as `5,000 W (6,000 W)`.
 
-In the Plan card, use the switch below **Charge allowed** and **Discharge allowed**
-to change from **Price** to **PV forecast**. Today and tomorrow show Solcast's
-`pv_estimate10` as a yellow filled curve and `pv_estimate` as a light-yellow filled
-curve, with hourly price bars using the same action colors, blocked-hour markings,
-past-hour styling and current-hour indicator as Price. The left axis is ct/kWh and the right axis
-is kW. Hover, tap, or focus a time slot to inspect values. Right-click or hold a priced
-current or future hour to choose Charge, PV, Discharge or Idle; keyboard users can
-focus a time slot and press Enter or Space. Hours without prices remain read-only.
-Switch back to Price to edit thresholds.
+In the Plan card, switch from Price to PV forecast to view expected solar production.
+The chart shows the main Solcast forecast and a lower estimate, alongside hourly electricity prices.
+It uses the Home Assistant time zone.
 
-The switch is disabled with an explanation when Solcast is unavailable or its
-forecast is unusable. If the forecast becomes unusable, the card returns to Price.
-Missing estimates remain gaps, and forecasts still appear when prices have not
-arrived. The card checks the integration's in-memory cache every minute while the
-Plan page is open; this never requests a Solcast cloud update. Diagnostic sensors
-can remain disabled. The view selection lasts only for the current card instance.
-Times use Home Assistant's timezone; repeated daylight-saving hours share the
-existing plan's hourly price.
+To view or edit a time slot:
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `view` | string | `settings` | Card view: `settings`, `plan`, or `history`. |
+- Hover, tap, or focus the slot to see its values.
+- Right-click or hold a current or future hour with a price to choose Charge, PV, Discharge, or Idle.
+- With a keyboard, focus the slot and press Enter or Space.
+
+Hours without prices are read-only. Switch back to Price to edit price limits.
+If Solcast data becomes unusable, the card returns to Price.
 
 | Plan | History |
 | :---: | :---: |
@@ -235,173 +210,183 @@ existing plan's hourly price.
 
 ## Grid Consumer
 
-Select the optional **Grid consumer power sensor** in the integration options, then
-turn on **Grid Consumer** under **Settings → Auto Mode** in the card. The control
-is visible in every mode and disabled until a source is configured. A configured
-source with an invalid or unavailable reading uses zero offset and shows a warning
-while enabled; the switch remains operable so you can turn it off.
+Grid Consumer adjusts the power target for a load such as an electric vehicle charger.
+Use a sensor for a load already included in Victron ESS consumption.
+For several loads, select a sensor that reports their total power.
 
-In **Auto, Manual, Force Charge and Force Discharge**, the controller subtracts
-the current **Solar surplus sensor** reading from the consumer load and adds only
-the remaining shortfall to the raw grid target, before applying grid setpoint and
-reduced feed-in limits. Surplus equal to or above the consumer load adds no offset.
-This uses the current reading, not the 15-minute solar average. Without a configured
-solar sensor, or when its reading is invalid or unavailable, the full consumer
-load is used. This includes Idle and PV Charge actions, so those actions can
-request import when the offset is enabled. **Off** is unchanged and uses Idle
-Setpoint directly. Without solar surplus, Charge `3000 W` + EV `3000 W` = `6000 W`,
-capped to the default Max Grid Setpoint of `5000 W`.
-Discharge `−2000 W` + consumer `3000 W` = `1000 W`
-before limits. With a `3000 W` consumer and `2000 W` solar surplus, the offset is
-only `1000 W`.
+To enable it:
 
-The Settings card shows the live setpoint calculation below the mode switches:
-**Setting**, **PV charge**, **Surplus**, and **Grid consumer**, with the final
-**Grid setpoint** on its own row. These signed contributions include the accepted
-consumer shortfall. When grid or feed-in limits cap the setpoint, the uncapped
-calculation appears in brackets after it, for example **5,000 W (6,000 W)**.
-The Surplus term uses the 15-minute mean for PV Charge and Discharge, while the
-consumer shortfall uses the current solar reading. The top chip shows the action.
+1. Open the integration configuration.
+2. Select Grid consumer power sensor.
+3. Turn on Grid Consumer under Settings → Auto Mode in the card.
 
-The first change to the shortfall starts a fixed **five-second window**; the latest
-load and solar readings are applied at expiry, and further changes do not restart
-the window. Initial enable, restore after restart, and recovery also wait five
-seconds. The setpoint watt deadband applies to event updates; the five-second active RAM refresh bypasses it. Disabling the switch, selecting Off, or an
-invalid source clears the offset without delay. The delay is not adjustable.
+Grid Consumer defaults to off and remembers its state after a restart.
+It works in Auto, Manual, Force Charge, and Force Discharge, including Idle and PV Charge actions.
+It does not apply in Off mode.
 
-This adjusts the requested target, not the energy origin: intentional battery
-discharge remains possible. The sensor must measure a load already included in
-ESS consumption. For multiple loads, select an existing aggregate power sensor.
+The controller subtracts current solar surplus from the load and adds any remaining demand to the grid target.
+It then applies grid and feed-in limits.
+Without a valid solar reading, it adds the full load.
+With an invalid consumer reading, it removes the adjustment and shows a warning.
+
+For example, a `3,000 W` load with `2,000 W` of solar surplus adds `1,000 W` to the target.
+Without solar surplus, a `3,000 W` charging target plus a `3,000 W` load requests `6,000 W`.
+The default Max Grid Setpoint caps this at `5,000 W`.
+A `−2,000 W` discharge target plus a `3,000 W` load requests `1,000 W` of import before limits.
+
+Load changes take effect after a fixed five-second delay.
+Later readings update the value without restarting the delay.
+Turning Grid Consumer off, selecting Off mode, or losing a valid load reading removes the adjustment without this delay.
+
+Grid Consumer changes the requested power target. It does not guarantee that the battery will not supply the load.
+
+## Battery And Solar Control
+
+SOC Hysteresis is a buffer that prevents rapid switching at battery limits.
+Charging stops at Max SOC and resumes below `Max SOC − SOC Hysteresis`.
+Without a solar surplus sensor, discharge stops at Min SOC and resumes above `Min SOC + SOC Hysteresis`.
+
+With a solar surplus sensor, the discharge target includes the average spare solar power over 15 minutes.
+Battery protection follows these limits:
+
+| Battery level | Discharge behavior |
+| --- | --- |
+| Falls to Min SOC | Switch from full discharge to solar-only export. |
+| Falls to `max(0, Min SOC − SOC Hysteresis)` or below | Apply Idle Setpoint on the next control update without the normal action delay. |
+| Recovers to Min SOC | Resume solar-only export. |
+| Rises above `Min SOC + SOC Hysteresis` | Resume full discharge, which can continue down to Min SOC. |
+
+At startup, discharge stays stopped below Min SOC.
+With a solar sensor, it starts with solar-only export between Min SOC and the upper limit.
+Full discharge starts only above that limit.
+With zero hysteresis, discharge stops at or below Min SOC and resumes above it.
+
+The solar average can exceed the power currently available and draw from the battery.
+The lower cutoff limits this behavior.
+Stopping applies Idle Setpoint. It does not stop other battery activity controlled by Victron.
+
+PV charging shares solar surplus between the battery and grid export.
+PV Charging Battery Share sets the battery portion: `100` keeps all surplus, and `0` exports it all.
+Grid and feed-in limits still apply.
+PV charging requires a solar surplus sensor and follows the maximum SOC limit.
+It does not depend on Charge Allowed or blocked charging hours.
+Grid Consumer can request grid import during PV Charge or Idle.
 
 ## Entity Reference
 
 | Entity | Platform | Description |
 | --- | --- | --- |
 | Control Mode | Select | `off`, `auto`, `manual`, `force_charge`, or `force_discharge`. |
-| Charge Allowed | Switch | Master enable for charging from the grid. PV (solar surplus) charging is independent of this switch and stays active even when it is off. |
-| Discharge Allowed | Switch | Master enable for discharging. |
-| Grid Consumer | Switch | Optional measured-load offset; defaults off and restores its state after restart. Always present, unavailable without a configured source. Attributes: `source_entity`, normalized `power_w` (null when invalid), and accepted `offset_w`. |
+| Charge Allowed | Switch | Allow charging from the grid. Does not control PV charging. |
+| Discharge Allowed | Switch | Allow discharging. |
+| Grid Consumer | Switch | Enable the load adjustment described in [Grid Consumer](#grid-consumer). |
 | Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
-| Min SOC | Number | Lower battery SOC boundary. |
-| Max SOC | Number | Upper battery SOC boundary. |
-| SOC Hysteresis | Number | SOC buffer before resuming after a boundary is reached. |
+| Min SOC | Number | Minimum battery charge level. |
+| Max SOC | Number | Maximum battery charge level. |
+| SOC Hysteresis | Number | Buffer before charging or discharging resumes at a battery limit. |
 | Charge Power | Number | Target import power while charging. |
 | Discharge Power | Number | Target export power while discharging. |
-| PV Charging Battery Share | Number | Percentage of the solar surplus routed to the battery during PV charge hours. The remainder is exported to the grid. `100` keeps all surplus in the battery, `0` exports everything. When the reduced grid feed-in mode is active, the export portion is further capped at the reduced limit, so the setpoint never asks the ESS to feed in more than the active limit allows. |
+| PV Charging Battery Share | Number | Percentage of spare solar power sent to the battery. |
 | Idle Setpoint | Number | Grid setpoint used while idle. |
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
 | Max Grid Setpoint | Number | Highest allowed grid setpoint. |
-| Setpoint Deadband | Number | Minimum change (in watts) before a new grid setpoint is written. Smaller changes are skipped to avoid flapping. Set to `0` to disable. |
+| Setpoint Deadband | Number | Minimum change in watts for normal power updates. Set to `0` to disable. |
 | Cheapest Hours | Number | Number of low-price hours selected for auto charge. |
 | Expensive Hours | Number | Number of high-price hours selected for auto discharge. |
 | Charge Price Threshold | Number | Maximum price for automatic charging. |
 | Discharge Price Threshold | Number | Minimum price for automatic discharging. |
-| Grid Feed-in Price Threshold | Number | Price at or below which feed-in is reduced. |
+| Grid Feed-in Price Threshold | Number | Reduce feed-in when the price falls below this value. |
 | Default Max Grid Feed-in | Number | Normal feed-in limit. |
-| Reduced Max Grid Feed-in | Number | Feed-in limit used when prices are low. While reduced feed-in mode is active, the PV-Charge and Discharge setpoints are clamped on the export side to this value (and to `Min Grid Setpoint` when lower), so the integration never asks the ESS to feed more into the grid than the active limit allows. |
+| Reduced Max Grid Feed-in | Number | Export limit when prices are low. Also limits PV Charge and Discharge targets. |
 | Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
 | Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
-| Active Fixed Plan | Select | Which fixed plan is currently active (`off` or the plan number). Options update automatically as plans are created and removed. |
+| Active Fixed Plan | Select | Active plan number, or `off`. |
 | Recalculate Schedule | Button | Rebuilds the schedule from current price data. |
 | Desired Action | Sensor | Current computed action: charge, pv_charge, discharge, or idle. |
 | Target Setpoint | Sensor | Current computed grid setpoint in watts. |
 | Current Price | Sensor | Current EPEX Spot price. |
-| Charge Hours | Sensor | Date-aware scheduled charging slots. |
-| Discharge Hours | Sensor | Date-aware scheduled discharging slots. |
-| PV Charge Hours | Sensor | Date-aware scheduled PV charging slots. PV charging only runs when a solar surplus sensor is configured. |
+| Charge Hours | Sensor | Scheduled charging slots, with dates. |
+| Discharge Hours | Sensor | Scheduled discharging slots, with dates. |
+| PV Charge Hours | Sensor | Scheduled solar charging slots, with dates. |
 | Blocked Charging Hours | Sensor | Active charging block list. |
 | Blocked Discharging Hours | Sensor | Active discharging block list. |
 | Charge Plan | Sensor | Full hour-by-hour plan for today and tomorrow. |
-| Fixed Plans | Sensor | Number of defined fixed plans, plus a `plans` attribute with each plan's recurring hour lists and an `active` attribute with the activated plan number (or `null`). |
+| Fixed Plans | Sensor | Number of saved plans. Attributes contain the plans and active plan number. |
 | Last Schedule Update | Sensor | Timestamp of the last schedule calculation. |
 | Grid Feed-in Status | Sensor | Current feed-in mode: default or reduced. |
-| Grid Energy Cost | Sensor | Cumulative gross grid energy cost in EUR. |
-| Grid Energy Revenue | Sensor | Cumulative gross grid energy revenue in EUR. |
-| Grid Energy Import | Sensor | Cumulative tracked grid import in kWh. |
-| Grid Energy Export | Sensor | Cumulative tracked grid export in kWh. |
-| Solar Surplus Mean (15 min) | Sensor | Sliding 15-minute mean of the configured solar surplus sensor in watts. Unavailable when no sensor is configured. |
-| Solar Surplus Mode | Sensor | SOC discharge stage: `normal` permits battery power plus surplus, `solar_only` permits only averaged surplus, and `blocked` stops discharge until SOC recovers. The Desired Action sensor indicates whether discharge is actually requested by the current mode and schedule. |
+| Grid Energy Cost | Sensor | Total grid energy cost in EUR, before fees and taxes. |
+| Grid Energy Revenue | Sensor | Total grid energy revenue in EUR, before fees and taxes. |
+| Grid Energy Import | Sensor | Total tracked grid import in kWh. |
+| Grid Energy Export | Sensor | Total tracked grid export in kWh. |
+| Solar Surplus Mean (15 min) | Sensor | Average spare solar power over 15 minutes, in watts. Requires a solar surplus sensor. |
+| Solar Surplus Mode | Sensor | Battery protection stage: `normal`, `solar_only`, or `blocked`. Desired Action shows whether the controller requests discharge. |
 
 ## Services
 
 | Service | Description |
 | --- | --- |
-| `victron_charge_control.toggle_hour` | Cycle an hour through `idle`, `charge`, `discharge`, `blocked`, and back to `idle`. |
-| `victron_charge_control.set_hour_action` | Set a specific hour to `idle`, `charge`, `discharge`, or `blocked`. |
+| `victron_charge_control.toggle_hour` | Cycle an hour through `idle`, `charge`, `pv_charge`, `discharge`, `blocked`, and back to `idle`. |
+| `victron_charge_control.set_hour_action` | Set an hour to `idle`, `charge`, `pv_charge`, `discharge`, or `blocked`. |
 | `victron_charge_control.set_blocked_charging_hours` | Replace the list of charging-blocked hours. |
 | `victron_charge_control.set_blocked_discharging_hours` | Replace the list of discharging-blocked hours. |
-| `victron_charge_control.set_fixed_plan_hour` | Set one hour of a fixed plan to `charge`, `pv_charge`, `discharge`, or `idle` (creates the plan if needed). |
-| `victron_charge_control.set_fixed_plan_name` | Set the display name of a fixed plan (max 10 characters, creates the plan if needed; empty clears the name). |
+| `victron_charge_control.set_fixed_plan_hour` | Set a plan hour to `charge`, `pv_charge`, `discharge`, or `idle`. Creates the plan if needed. |
+| `victron_charge_control.set_fixed_plan_name` | Set a plan name, up to 10 characters. Creates the plan if needed. An empty value clears the name. |
 | `victron_charge_control.add_fixed_plan` | Create a new empty fixed plan. |
 | `victron_charge_control.remove_fixed_plan` | Delete a fixed plan (deactivates it first when active). |
 | `victron_charge_control.calculate_schedule` | Recalculate the automatic schedule from EPEX Spot prices. |
-| `victron_charge_control.clear_schedule` | Clear all scheduled charge and discharge hours. |
+| `victron_charge_control.clear_schedule` | Clear scheduled and blocked hours. An active fixed plan still applies. |
 
 ## Defaults
 
-| Parameter | Default | Description |
-| --- | --- | --- |
-| Min SOC | 10% | Full discharge changes to surplus-only here; surplus-only stops at Min SOC − SOC Hysteresis (at least 0%). Without a surplus sensor, discharge stops here. |
-| Max SOC | 95% | Battery is not intentionally charged above this level. |
-| SOC Hysteresis | 2% | Buffer used before leaving SOC boundary protection. |
-| Charge Power | 3000 W | Grid import power while charging. |
-| Discharge Power | 3000 W | Grid export power while discharging. |
-| Idle Setpoint | 0 W | Grid setpoint while idle. |
-| Min Grid Setpoint | -5000 W | Lower setpoint clamp. |
-| Max Grid Setpoint | 5000 W | Upper setpoint clamp. |
-| Setpoint Deadband | 200 W | Minimum delta required to push a new grid setpoint. |
-| Cheapest Hours | 4 | Low-price hours selected for auto charging. |
-| Expensive Hours | 4 | High-price hours selected for auto discharging. |
-| Charge Price Threshold | 10 ct/kWh | Auto-charge only at or below this price. |
-| Discharge Price Threshold | 20 ct/kWh | Auto-discharge only at or above this price. |
-| Grid Feed-in Price Threshold | 0 ct/kWh | Reduce feed-in at or below this price. |
-| Default Max Grid Feed-in | 5000 W | Normal max feed-in limit. |
-| Reduced Max Grid Feed-in | 0 W | Reduced feed-in limit. |
-| Blocked Charging Hours | 18-23 | Default hours excluded from charging. |
-| Blocked Discharging Hours | 15-17 | Default hours excluded from discharging. |
+Change these values through the dashboard or Home Assistant entities.
 
-All controller parameters are adjustable at runtime through Home Assistant entities.
+| Parameter | Default |
+| --- | --- |
+| Min SOC | 10% |
+| Max SOC | 95% |
+| SOC Hysteresis | 2% |
+| Charge Power | 3000 W |
+| Discharge Power | 3000 W |
+| Idle Setpoint | 0 W |
+| Min Grid Setpoint | -5000 W |
+| Max Grid Setpoint | 5000 W |
+| Setpoint Deadband | 200 W |
+| Cheapest Hours | 4 |
+| Expensive Hours | 4 |
+| Charge Price Threshold | 10 ct/kWh |
+| Discharge Price Threshold | 20 ct/kWh |
+| Grid Feed-in Price Threshold | 0 ct/kWh |
+| Default Max Grid Feed-in | 5000 W |
+| Reduced Max Grid Feed-in | 0 W |
+| Blocked Charging Hours | 18-23 |
+| Blocked Discharging Hours | 15-17 |
 
 ## Setpoint Convention
 
 | Setpoint | Meaning |
 | --- | --- |
-| Positive, for example `3000 W` | Import from grid and charge the battery. |
-| Negative, for example `-3000 W` | Export to grid and discharge the battery. |
-| `0 W` | Idle or self-consumption. |
+| Positive, for example `3000 W` | Request power from the grid. |
+| Negative, for example `-3000 W` | Request power export to the grid. |
+| `0 W` | Request zero net grid power. The battery can still supply local loads. |
 
 ## Fixed Plans
 
-Fixed plans are user-defined, recurring hour-of-day patterns. They extend the
-scheduler with hours the user wants charged/discharged/PV-charged every day,
-independently of the price-based auto planning:
+Fixed plans repeat the same charge, discharge, and PV-charge hours every day.
+Use the second page of the Plan card to create, edit, rename, activate, or delete them.
+You can save up to eight plans, with names up to ten characters long.
+Only one plan can be active at a time.
 
-1. **Auto planning** computes the base schedule from EPEX Spot prices as usual.
-2. **Activation** then merges the active fixed plan on top for **today and
-   tomorrow**: fixed hours are *added* to the plan and *win over* auto hours in
-   the same slot (one action per hour). The merge runs after every recalculation
-   (Recalculate button, replan hours, threshold changes) and after every plan
-   edit, so a fixed plan keeps enforcing its hours without further input.
+The active plan adds hours to today and tomorrow and replaces automatic actions in the same hours.
+It applies again after schedule recalculation or plan edits.
+Turning it off restores the schedule from before activation.
 
-Key properties:
-
-- Plans are numbered (`1`, `2`, ...) and can optionally carry a display name
-  (up to 10 characters, set via the pen button in the plan's detail view);
-  the plan chips resolve the name. The Plan card's second page lets you
-  create, edit, activate, rename, and delete them. Each plan has an activate
-  check mark; activating another plan automatically deactivates the previous
-  one (the `Active Fixed Plan` select entity shows the state and can be used
-  in automations).
-- Deactivating a plan restores the schedule as it was before activation.
-- A plan applies in every control mode: in `manual` mode it also provides the
-  daily hours after the nightly schedule reset.
-- Per-day overrides made with `set_hour_action` are still honored until the
-  next recalculation, which re-applies the fixed plan.
-- Up to 8 plans can be defined; each is persisted across restarts.
+Fixed plans also supply daily hours in Manual mode after the nightly schedule reset.
+A manual change for one date lasts until the next recalculation applies the fixed plan again.
 
 ## Cost And Energy Tracking
 
-Cost tracking is optional and requires cumulative grid import and grid export energy sensors. The integration keeps separate gross cost and gross revenue counters:
+For cost tracking, select energy sensors that report total grid import and export.
+The integration tracks cost and revenue separately:
 
 - Positive prices add grid consumption to cost and grid feed-in to revenue.
 - Negative prices add grid consumption to revenue and grid feed-in to cost.
@@ -411,9 +396,8 @@ Cost tracking is optional and requires cumulative grid import and grid export en
 
 ### Build the bundled card
 
-The Lovelace card is a Lit + Rollup project under [`frontend/`](frontend/). The
-build writes the bundled module into the integration's `static/` directory, which
-the integration serves and auto-loads.
+The card uses Lit and Rollup. Its source is in [`frontend/`](frontend/).
+To build it from the repository root, run:
 
 ```bash
 cd frontend
@@ -421,44 +405,24 @@ npm install
 npm run build     # -> ../custom_components/victron_charge_control/static/victron-charge-controller-card.js
 ```
 
-For iterative development with rebuild-on-save:
+To rebuild the card when a source file changes, run from `frontend/`:
 
 ```bash
 npm run watch
 ```
 
-The `static/` directory is gitignored — the built card is produced at release
-time by CI and included in the HACS release zip (`victron_charge_control.zip`).
+Git ignores the `static/` directory. The release build includes the card in `victron_charge_control.zip`.
 
 ### Local Home Assistant
 
-A Docker Compose stack is provided for testing the integration together with the
-bundled card against dummy Victron/EPEX entities.
-
-For an editor environment with Python, Node, and dependencies installed
-automatically, use **Dev Containers: Reopen in Container** in VS Code. It also
-onboards Home Assistant, configures Charge Control with dummy entities, and
-provides Settings, Plan, History, and Dev Controls dashboard tabs. See the
-[devcontainer setup](dev/README.md#using-the-devcontainer) for details.
-
-The devcontainer also installs pinned Solcast v4.6.1 before Home Assistant starts.
-For automatic Solcast setup, copy `.env.example` to `.env`, fill in
-`SOLCAST_API_KEY`, then rebuild/reopen the container. With no key and no saved
-Solcast entry, the devcontainer supplies synthetic PV test data for today's and
-tomorrow's Plan PV view, refreshed every five minutes. Diagnostics and the startup
-log label it synthetic; this provider is mounted/enabled only by the devcontainer
-override and is absent from release packages and standalone Compose. Existing
-Solcast entries always take precedence, including failed entries; change their
-keys through Home Assistant. A supplied key keeps real setup/query failures
-visible. Solcast's default daylight cloud updates use its 10-call/day allowance;
-Victron's cache polling and synthetic data make no extra cloud requests.
+Use the Docker Compose environment to test with dummy Victron and EPEX entities.
+From the repository root, run:
 
 ```bash
 cd frontend && npm install && npm run build && cd ..
 docker compose up -d
 ```
 
-Then open <http://localhost:8123>. Because the card is auto-loaded by the
-integration, no manual Lovelace resource entry is required. See
-[`dev/README.md`](dev/README.md) for backfilling cost statistics and the dummy
-sensor configuration.
+Open <http://localhost:8123>.
+For automatic dependency installation, use Dev Containers: Reopen in Container in VS Code.
+See [dev/README.md](dev/README.md) for setup, Solcast test data, and sample cost history.
