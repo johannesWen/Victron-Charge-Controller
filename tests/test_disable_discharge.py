@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -144,6 +146,98 @@ async def test_hold_failure_retries_without_stopping_grid_controls(consumer, cap
     await clock.advance(5)
     assert writes(coord)[-1] == 0
     assert states[LIMIT].state == "0"
+
+
+@pytest.mark.parametrize("bad", [None, "unknown", "unavailable"])
+@pytest.mark.parametrize("restart", [False, True])
+async def test_unavailable_hold_never_owns_existing_limit(consumer, mock_store, bad, restart):
+    coord, switch, clock, _, states = configure(consumer)
+    states[LIMIT] = None if bad is None else MockState(bad)
+    await switch.async_turn_on()
+    await clock.advance(10)
+    assert not writes(coord)
+    assert not coord._discharge_may_be_applied
+    assert all(payload.get(KEY) is None for payload in mock_store.save_calls)
+    await switch.async_turn_off()
+    if restart:
+        await coord.async_shutdown()
+        coord = VictronChargeControlCoordinator(
+            coord.hass, MockConfigEntry(data={**MOCK_CONFIG_DATA, CONF_MAX_DISCHARGE_POWER_ENTITY: LIMIT})
+        )
+        await coord._async_load_schedule()
+    states[LIMIT] = MockState("2500")
+    await clock.advance(5)
+    await coord._async_update_data()
+    assert not writes(coord)
+    assert states[LIMIT].state == "2500"
+    if restart:
+        await coord.async_shutdown()
+
+
+@pytest.mark.parametrize("bad", [None, "unknown", "unavailable"])
+@pytest.mark.parametrize("keep_enabled", [False, True])
+async def test_unavailable_during_persistence_clears_unapplied_hold(
+    consumer, mock_store, bad, keep_enabled,
+):
+    coord, switch, clock, _, states = configure(consumer)
+    entered, release = asyncio.Event(), asyncio.Event()
+    save = mock_store.async_save
+
+    async def delayed(data):
+        if data.get(KEY) == LIMIT:
+            entered.set()
+            await release.wait()
+        await save(data)
+
+    mock_store.async_save = delayed
+    enable = asyncio.create_task(switch.async_turn_on())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        states[LIMIT] = None if bad is None else MockState(bad)
+    finally:
+        release.set()
+        await enable
+    assert not writes(coord)
+    assert not coord._discharge_may_be_applied
+    assert mock_store._data[KEY] is None
+    if keep_enabled:
+        states[LIMIT] = MockState("2500")
+        await clock.advance(4.99)
+        assert not writes(coord)
+        await clock.advance(0.01)
+        assert writes(coord) == [0]
+        assert mock_store._data[KEY] == LIMIT
+        return
+    await switch.async_turn_off()
+    await coord.async_shutdown()
+    restarted = VictronChargeControlCoordinator(
+        coord.hass, MockConfigEntry(data={**MOCK_CONFIG_DATA, CONF_MAX_DISCHARGE_POWER_ENTITY: LIMIT})
+    )
+    await restarted._async_load_schedule()
+    states[LIMIT] = MockState("2500")
+    await clock.advance(5)
+    await restarted._async_update_data()
+    assert not writes(restarted)
+    assert states[LIMIT].state == "2500"
+    await restarted.async_shutdown()
+
+
+async def test_failed_hold_attempt_still_requires_release(consumer, mock_store):
+    coord, switch, _, _, states = configure(consumer)
+    successful = coord.hass.services.async_call.side_effect
+
+    async def ambiguous_failure(domain, service, data, **kwargs):
+        await successful(domain, service, data, **kwargs)
+        if data.get("entity_id") == LIMIT and data["value"] == 0:
+            raise HomeAssistantError("confirmation lost after write")
+
+    coord.hass.services.async_call.side_effect = ambiguous_failure
+    await switch.async_turn_on()
+    assert states[LIMIT].state == "0"
+    assert mock_store._data[KEY] == LIMIT
+    await switch.async_turn_off()
+    assert writes(coord) == [0, -1]
+    assert mock_store._data[KEY] is None
 
 
 async def test_failed_release_keeps_timer_during_off_and_recovery(consumer, mock_store):
@@ -453,6 +547,70 @@ async def test_real_store_swallowed_write_error_prevents_hold(consumer, tmp_path
         assert not writes(coord)
     await switch.async_turn_off()
     assert not writes(coord)
+
+
+@pytest.mark.parametrize("held", [False, True])
+async def test_shutdown_drains_real_store_before_replacement(consumer, tmp_path, held):
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.storage import Store
+
+    coord, switch, clock, _, states = configure(consumer)
+    real_hass = HomeAssistant(str(tmp_path))
+    coord._store = Store(real_hass, 1, "test.discharge")
+    if held:
+        await switch.async_turn_on()
+    await clock.drain()
+    entered, release = asyncio.Event(), asyncio.Event()
+    queued_entered, queued_release = asyncio.Event(), asyncio.Event()
+    write = coord._store._async_write_data
+    write_count = 0
+
+    async def delayed(data):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 1:
+            entered.set()
+            await release.wait()
+        elif write_count == 2:
+            queued_entered.set()
+            await queued_release.wait()
+        await write(data)
+
+    with patch.object(coord._store, "_async_write_data", side_effect=delayed):
+        coord.set_charge_hours([slot()])
+        await asyncio.wait_for(entered.wait(), 2)
+        coord.set_blocked_charging_hours([18, 19])  # Accepted while the first save is in flight.
+        stop = asyncio.create_task(coord.async_shutdown())
+        try:
+            await asyncio.sleep(0)
+            assert not stop.done()
+            release.set()
+            await asyncio.wait_for(queued_entered.wait(), 2)
+            assert not stop.done()
+        finally:
+            release.set()
+            queued_release.set()
+            await asyncio.wait_for(stop, 2)
+
+    stored = json.loads(Path(coord._store.path).read_text())["data"]
+    assert stored["charge_hours"] == [list(slot())]
+    assert stored["blocked_charging_hours"] == [18, 19]
+    assert stored[KEY] is None
+    assert writes(coord) == ([0, -1] if held else [])
+    restarted = VictronChargeControlCoordinator(
+        coord.hass, MockConfigEntry(data={**MOCK_CONFIG_DATA, CONF_MAX_DISCHARGE_POWER_ENTITY: LIMIT})
+    )
+    restarted._store = Store(real_hass, 1, coord._store.key)
+    restarted.control_mode = MODE_FORCE_CHARGE
+    restarted.disable_discharge = True
+    await restarted._async_load_schedule()
+    await restarted._async_update_data()
+    assert states[LIMIT].state == "0"
+    assert restarted._charge_hours == [slot()]
+    coord.set_discharge_hours([slot()])  # Stale callbacks cannot schedule new saves after shutdown.
+    await clock.drain()
+    assert json.loads(Path(restarted._store.path).read_text())["data"][KEY] == LIMIT
+    await restarted.async_shutdown()
 
 
 @pytest.mark.parametrize("stop", ["unload", "ha_stop"])

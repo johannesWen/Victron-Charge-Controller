@@ -18,12 +18,17 @@ from .const import ACTION_IDLE, DEFAULT_DEADBAND, MODE_OFF
 _LOGGER = logging.getLogger(__name__)
 
 
-async def apply_discharge_limit(hass: Any, entity_id: str, value: int) -> bool:
-    """Write a managed discharge limit without affecting other controls."""
+def discharge_limit_available(hass: Any, entity_id: str) -> bool:
+    """Check availability before staging or attempting a discharge hold."""
     state = hass.states.get(entity_id)
     if state is None or state.state in ("unknown", "unavailable", None, "null"):
         _LOGGER.warning("Max discharge power entity %s is unavailable — retrying", entity_id)
         return False
+    return True
+
+
+async def apply_discharge_limit(hass: Any, entity_id: str, value: int) -> bool:
+    """Attempt a discharge write after the caller checks availability."""
     try:
         await hass.services.async_call(
             "number", "set_value", {"entity_id": entity_id, "value": value}, blocking=True,

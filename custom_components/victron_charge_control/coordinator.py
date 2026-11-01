@@ -125,6 +125,7 @@ from .decision import (
 )
 from .actuation import (
     apply_discharge_limit,
+    discharge_limit_available,
     apply_dc_coupled_feed_in as actuation_apply_dc_coupled_feed_in,
     apply_grid_feed_in as actuation_apply_grid_feed_in,
     apply_setpoint as actuation_apply_setpoint,
@@ -420,6 +421,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # ``async_setup`` so the first real user mutation after startup
         # is persisted.
         self._suspend_save: bool = True
+        self._schedule_save_tasks: set[asyncio.Task[bool]] = set()
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -1243,15 +1245,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         ``toggle_hour``, ...) so the call site stays sync and the
         disk write does not block the caller.
 
-        No-op while ``_suspend_save`` is True (the entire
-        ``async_setup`` window). This is what prevents the text
+        No-op during setup or shutdown. This prevents the text
         entities' ``async_added_to_hass`` from clobbering the
         persisted plan during HA startup — see the comment on the
         ``_suspend_save`` attribute in ``__init__``.
         """
         if self._suspend_save:
             return
-        self.hass.async_create_task(self._async_save_schedule())
+        task = self.hass.async_create_task(self._async_save_schedule())
+        self._schedule_save_tasks.add(task)
+        task.add_done_callback(self._schedule_save_tasks.discard)
 
     async def _async_load_schedule(self) -> None:
         """Load the plan from the Store and apply it to the coordinator.
@@ -1645,6 +1648,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 return
             self._discharge_last_attempt = (entity, value, self.hass.loop.time())
             if value == 0 and not self._discharge_may_be_applied:
+                if not discharge_limit_available(self.hass, entity):
+                    if self._discharge_release_entity:
+                        self._discharge_release_pending = True
+                        continue
+                    return
                 self._discharge_release_entity = entity
                 if not await self._async_save_schedule(verify_release=True):
                     self._discharge_last_attempt = (entity, value, self.hass.loop.time())
@@ -1654,6 +1662,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     continue
             # A staged marker alone does not authorize changing an untouched limit.
             write_needed = value == 0 or self._discharge_may_be_applied
+            if write_needed and not discharge_limit_available(self.hass, entity):
+                if value == 0 and not self._discharge_may_be_applied:
+                    self._discharge_release_pending = True
+                    continue
+                return
             if value == 0:
                 self._discharge_may_be_applied = True
             applied = not write_needed or await apply_discharge_limit(self.hass, entity, value)
@@ -2216,7 +2229,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         await self.forecast_coordinator.async_setup()
 
     async def async_shutdown(self) -> None:
-        """Stop new refreshes and drain actuation before a replacement can start."""
+        """Drain actuation and accepted saves before a replacement can start."""
+        self._suspend_save = True
         await super().async_shutdown()
         self._schedule_ram_refresh(False)
         self._clear_grid_consumer_offset()
@@ -2238,3 +2252,4 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 self._idle_correction_pending = True
                 if await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE, force=True):
                     self._idle_correction_pending = False
+        await asyncio.gather(*self._schedule_save_tasks)
