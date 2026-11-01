@@ -47,6 +47,10 @@ views:
             name: Grid Setpoint
           - entity: input_number.max_grid_feed_in_store
             name: Max Grid Feed-in
+          - entity: input_number.max_discharge_power_store
+            name: Maximum Discharge Power (-1 = unlimited)
+          - entity: input_number.grid_consumer_power_value
+            name: Grid Consumer Power
           - entity: input_number.grid_consumption_kwh_value
             name: Grid Consumption kWh
           - entity: input_number.grid_feed_in_kwh_value

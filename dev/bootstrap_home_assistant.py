@@ -19,6 +19,8 @@ ENTITIES = {
     "ac_grid_setpoint_entity": "number.ac_grid_setpoint",
     "epex_spot_entity": "sensor.epex_spot_price",
     "max_grid_feed_in_entity": "number.max_grid_feed_in",
+    "max_discharge_power_entity": "number.max_discharge_power",
+    "grid_consumer_entity": "sensor.grid_consumer_power",
     "grid_consumption_entity": "sensor.grid_consumption_energy",
     "grid_feed_in_energy_entity": "sensor.grid_feed_in_energy",
     "solar_surplus_entity": "sensor.solar_surplus",
