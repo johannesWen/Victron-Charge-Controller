@@ -54,23 +54,6 @@ input_number:
     initial: 5000
     unit_of_measurement: "W"
 
-  max_discharge_power_store:
-    name: "Max Discharge Power Store"
-    min: -1
-    max: 15000
-    step: 1
-    initial: -1
-    unit_of_measurement: "W"
-
-  grid_consumer_power_value:
-    name: "Grid Consumer Power Control"
-    min: 0
-    max: 22000
-    step: 100
-    initial: 0
-    unit_of_measurement: "W"
-    icon: mdi:power-plug
-
   battery_soc_value:
     name: "Battery SOC Control"
     min: 0
@@ -170,16 +153,12 @@ template:
         unique_id: dummy_max_discharge_power
         unit_of_measurement: "W"
         icon: mdi:battery-lock
-        state: "{{ states('input_number.max_discharge_power_store') | float(-1) }}"
+        state: "-1"
+        optimistic: true
         min: -1
         max: 15000
         step: 1
-        set_value:
-          action: input_number.set_value
-          target:
-            entity_id: input_number.max_discharge_power_store
-          data:
-            value: "{{ value }}"
+        set_value: []
 
   # --- sensor domain entities ---
   - sensor:
@@ -188,7 +167,7 @@ template:
         unit_of_measurement: "W"
         device_class: power
         state_class: measurement
-        state: "{{ states('input_number.grid_consumer_power_value') | float(0) }}"
+        state: "0"
         icon: mdi:power-plug
 
       # Battery SOC sensor — adjust via input_number.battery_soc_value

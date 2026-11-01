@@ -42,7 +42,7 @@ command below when you want historical sample data.
 
 The dev configuration also provides mocks for Maximum discharge power
 (`number.max_discharge_power`, initially `-1 W` for unlimited discharge) and
-Grid Consumer (`sensor.grid_consumer_power`, initially `0 W`). Fresh integration
+Grid Consumer (`sensor.grid_consumer_power`, a read-only `0 W` mock). Fresh integration
 setup links both automatically. Enable **Disable Discharge** or **Grid Consumer**
 in the card's Settings view to exercise those features. Neither mock has a manual
 input in Dev Controls. The integration writes the discharge limit (`0 W` to block,
