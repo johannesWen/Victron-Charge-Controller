@@ -149,8 +149,27 @@ template:
           data:
             value: "{{ value }}"
 
+      - name: "Max Discharge Power"
+        unique_id: dummy_max_discharge_power
+        unit_of_measurement: "W"
+        icon: mdi:battery-lock
+        state: "-1"
+        optimistic: true
+        min: -1
+        max: 15000
+        step: 1
+        set_value: []
+
   # --- sensor domain entities ---
   - sensor:
+      - name: "Grid Consumer Power"
+        unique_id: dummy_grid_consumer_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: "0"
+        icon: mdi:power-plug
+
       # Battery SOC sensor — adjust via input_number.battery_soc_value
       - name: "Battery SOC"
         unique_id: dummy_battery_soc

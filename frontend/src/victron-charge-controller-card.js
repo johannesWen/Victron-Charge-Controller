@@ -168,6 +168,12 @@ const SETTINGS_HELP = {
     'Allows scheduled discharge and Force Discharge. Turning it off makes those requests fall back to Idle without erasing the schedule.',
     'This also gates surplus-only discharge at Min SOC. It does not disable solar export during PV Charge or other battery flows managed by Victron.',
   ],
+  disable_discharge: [
+    'Writes 0 W to the configured Maximum discharge power entity every 5 seconds throughout regular Charge slots and Force Charge, even at Max SOC, with zero Charge Power or with Charge Allowed off. PV Charge is excluded.',
+    'Leaving the charging window, turning this switch off, selecting Off mode or a watchdog stop releases the limit with −1 W (unlimited). The previous numerical limit is not restored.',
+    'Choose the optional Maximum discharge power entity (a writable number in W) in the integration configuration first. This switch defaults off and is restored after restart. Without a configured entity it cannot be enabled; an external entity outage still allows turning it off.',
+    'Missing entities and failed writes are logged and retried while other controls continue. Pending release survives restart and reconfiguration; orderly shutdown attempts release. A Home Assistant crash or outage can leave the device limit in place until communication resumes and cleanup succeeds.',
+  ],
   charge_power: [
     'Sets the positive grid power target used during grid charging, in watts. A larger value requests more grid import, subject to Max Grid Setpoint and the Victron system’s own limits.',
     'This is a grid setpoint, not a guarantee of battery charging power: household loads and solar production also affect the battery. Charge Allowed and SOC protection must permit charging.',
@@ -1412,6 +1418,9 @@ class VictronChargeControllerCard extends LitElement {
         ${this._renderTogglePair([
           { label: 'Charge Allowed', key: 'charge_allowed' },
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
+        ])}
+        ${this._renderTogglePair([
+          { label: 'Disable Discharge', key: 'disable_discharge' },
         ])}
         ${this._renderSlider('Charge Power', 'charge_power', ' W')}
         ${this._renderSlider('Discharge Power', 'discharge_power', ' W')}

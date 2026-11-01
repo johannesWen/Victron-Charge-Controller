@@ -40,6 +40,17 @@ Home Assistant on `127.0.0.1` only. The dashboard includes **Overview**, **Setti
 **History**, and **Dev Controls** tabs. Costs collect from startup; use the backfill
 command below when you want historical sample data.
 
+The dev configuration also provides mocks for Maximum discharge power
+(`number.max_discharge_power`, initially `-1 W` for unlimited discharge) and
+Grid Consumer (`sensor.grid_consumer_power`, a read-only `0 W` mock). Fresh integration
+setup links both automatically. Enable **Disable Discharge** or **Grid Consumer**
+in the card's Settings view to exercise those features. Neither mock has a manual
+input in Dev Controls. The integration writes the discharge limit (`0 W` to block,
+`-1 W` to release) and reads the Grid Consumer power sensor.
+For an existing dev instance, restart Home Assistant to load the new entities,
+then select them in the Charge Control integration's configuration; bootstrap
+preserves existing entity selections and settings.
+
 The bootstrap uses Home Assistant's onboarding and config-flow APIs. It runs on
 each start, preserves existing users and configured integration settings, and
 does not write Home Assistant's internal storage files. For an already onboarded

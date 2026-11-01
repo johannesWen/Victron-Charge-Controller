@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import (
     async_call_later,
@@ -41,6 +42,7 @@ from .const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_ACTION_CONFIRM_SECONDS,
@@ -122,6 +124,8 @@ from .decision import (
     update_soc_hysteresis as decision_update_soc_hysteresis,
 )
 from .actuation import (
+    apply_discharge_limit,
+    discharge_limit_available,
     apply_dc_coupled_feed_in as actuation_apply_dc_coupled_feed_in,
     apply_grid_feed_in as actuation_apply_grid_feed_in,
     apply_setpoint as actuation_apply_setpoint,
@@ -217,6 +221,18 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._ac_grid_setpoint_entity: str = entry.data[CONF_AC_GRID_SETPOINT_ENTITY]
         self._epex_spot_entity: str = entry.data[CONF_EPEX_SPOT_ENTITY]
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
+        self._max_discharge_power_entity: str | None = entry.data.get(
+            CONF_MAX_DISCHARGE_POWER_ENTITY
+        ) or None
+        self.disable_discharge = False
+        self._discharge_release_entity: str | None = None
+        self._discharge_release_pending = False
+        self._discharge_may_be_applied = False
+        self._discharge_last_attempt: tuple[str, int, float] | None = None
+        self._discharge_storage_ready = False
+        self._store_load_failed = False
+        self._store_load_attempt: float | None = None
+        self._store_lock = asyncio.Lock()
         self._grid_consumption_entity: str | None = entry.data.get(
             CONF_GRID_CONSUMPTION_ENTITY
         ) or None
@@ -405,6 +421,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # ``async_setup`` so the first real user mutation after startup
         # is persisted.
         self._suspend_save: bool = True
+        self._schedule_save_tasks: set[asyncio.Task[bool]] = set()
 
     # ------------------------------------------------------------------
     # Properties for entity access
@@ -418,6 +435,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def control_mode(self, mode: str) -> None:
         self._control_mode = mode
         self._sample_grid_consumer()
+
+    @property
+    def max_discharge_power_entity(self) -> str | None:
+        return self._max_discharge_power_entity
 
     @property
     def grid_consumer_entity(self) -> str | None:
@@ -635,6 +656,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._ac_grid_setpoint_entity = data[CONF_AC_GRID_SETPOINT_ENTITY]
         self._epex_spot_entity = data[CONF_EPEX_SPOT_ENTITY]
         self._max_grid_feed_in_entity = data[CONF_MAX_GRID_FEED_IN_ENTITY]
+        discharge_entity = data.get(CONF_MAX_DISCHARGE_POWER_ENTITY) or None
+        if discharge_entity != self._max_discharge_power_entity:
+            self._max_discharge_power_entity = discharge_entity
+            if discharge_entity is None:
+                self.disable_discharge = False
+            self.hass.async_create_task(self.async_request_refresh())
         self._grid_consumption_entity = data.get(CONF_GRID_CONSUMPTION_ENTITY) or None
         self._grid_feed_in_energy_entity = (
             data.get(CONF_GRID_FEED_IN_ENERGY_ENTITY) or None
@@ -1178,24 +1205,38 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Deserialize an hour-of-day list, dropping any out-of-range value."""
         return deserialize_hours(raw)
 
-    async def _async_save_schedule(self) -> None:
-        """Persist the current plan to the Home Assistant Store."""
-        payload = build_plan_payload(
-            charge_hours=self._charge_hours,
-            discharge_hours=self._discharge_hours,
-            pv_charge_hours=self._pv_charge_hours,
-            blocked_charging_hours=self._blocked_charging_hours,
-            blocked_discharging_hours=self._blocked_discharging_hours,
-            fixed_plans=self._fixed_plans,
-            active_fixed_plan=self._active_fixed_plan,
-            last_schedule_update=self._last_schedule_update,
-        )
-        try:
-            await self._store.async_save(payload)
-        except Exception:  # noqa: BLE001
-            # Persistence is best-effort. A failed write must not break
-            # the running integration; the next change will retry.
-            _LOGGER.warning("Failed to persist charge plan to Store", exc_info=True)
+    async def _async_save_schedule(self, *, verify_release: bool = False) -> bool:
+        """Persist plan and release obligation together, in write order."""
+        async with self._store_lock:
+            if self._store_load_failed:
+                return False
+            # Build inside the lock so a queued schedule save cannot erase cleanup.
+            payload = build_plan_payload(
+                charge_hours=self._charge_hours,
+                discharge_hours=self._discharge_hours,
+                pv_charge_hours=self._pv_charge_hours,
+                blocked_charging_hours=self._blocked_charging_hours,
+                blocked_discharging_hours=self._blocked_discharging_hours,
+                fixed_plans=self._fixed_plans,
+                active_fixed_plan=self._active_fixed_plan,
+                last_schedule_update=self._last_schedule_update,
+            )
+            payload["discharge_release_entity"] = self._discharge_release_entity
+            try:
+                await self._store.async_save(payload)
+                if verify_release:
+                    # HA Store logs some disk failures without raising them.
+                    saved = await self._store.async_load()
+                    if (
+                        not isinstance(saved, dict)
+                        or saved.get("discharge_release_entity") != self._discharge_release_entity
+                    ):
+                        _LOGGER.warning("Discharge release obligation was not persisted — retrying")
+                        return False
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning("Failed to persist charge plan to Store", exc_info=True)
+                return False
+            return True
 
     def _async_schedule_save(self) -> None:
         """Schedule a fire-and-forget save of the current plan.
@@ -1204,15 +1245,16 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         ``toggle_hour``, ...) so the call site stays sync and the
         disk write does not block the caller.
 
-        No-op while ``_suspend_save`` is True (the entire
-        ``async_setup`` window). This is what prevents the text
+        No-op during setup or shutdown. This prevents the text
         entities' ``async_added_to_hass`` from clobbering the
         persisted plan during HA startup — see the comment on the
         ``_suspend_save`` attribute in ``__init__``.
         """
         if self._suspend_save:
             return
-        self.hass.async_create_task(self._async_save_schedule())
+        task = self.hass.async_create_task(self._async_save_schedule())
+        self._schedule_save_tasks.add(task)
+        task.add_done_callback(self._schedule_save_tasks.discard)
 
     async def _async_load_schedule(self) -> None:
         """Load the plan from the Store and apply it to the coordinator.
@@ -1229,12 +1271,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
           replan hours and the control mode into the coordinator; the
           Store load must not wipe them.
         """
+        self._store_load_attempt = self.hass.loop.time()
         try:
             data = await self._store.async_load()
         except Exception:  # noqa: BLE001
+            self._store_load_failed = True
             _LOGGER.warning("Failed to load charge plan from Store", exc_info=True)
             return
 
+        self._store_load_failed = False
+        self._discharge_storage_ready = True
+        release_entity = data.get("discharge_release_entity") if isinstance(data, dict) else None
+        if isinstance(release_entity, str) and release_entity.startswith("number."):
+            self._discharge_release_entity = release_entity
+            self._discharge_release_pending = True
+            self._discharge_may_be_applied = True
         applied = apply_loaded_plan(data)
         if applied is None:
             # Empty Store or unsupported payload shape: keep whatever the
@@ -1550,9 +1601,103 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._permanent_waiting_readback = True
         return applied and self.idle_setpoint == target
 
+    def _desired_discharge_entity(self) -> str | None:
+        """Regular Charge windows are independent of charge eligibility/debounce."""
+        entity = self._max_discharge_power_entity
+        if (
+            self._shutdown_requested or self.hass.state in (CoreState.stopping, CoreState.final_write)
+            or not self.disable_discharge or not entity
+        ):
+            return None
+        if self.control_mode == MODE_FORCE_CHARGE:
+            return entity
+        now = dt_util.now()
+        slot = (now.strftime("%Y-%m-%d"), now.hour)
+        if (
+            self.control_mode in (MODE_AUTO, MODE_MANUAL)
+            and slot in self._charge_hours
+            and slot not in self._pv_charge_hours
+        ):
+            return entity
+        return None
+
+    async def _async_reconcile_discharge(self, *, shutdown: bool = False) -> None:
+        """Persist before holding; finish previous cleanup before a new hold."""
+        if self._store_load_failed:
+            if shutdown or self.hass.loop.time() - self._store_load_attempt >= RAM_REFRESH_SECONDS:
+                await self._async_load_schedule()
+        if not self._discharge_storage_ready:
+            return
+        # At most release old, hold new, then correct an in-flight change.
+        for _ in range(3):
+            desired = self._desired_discharge_entity()
+            entity = self._discharge_release_entity
+            if entity and (self._discharge_release_pending or entity != desired):
+                self._discharge_release_pending = True
+                value = -1
+            elif desired:
+                entity, value = desired, 0
+            else:
+                return
+            previous = self._discharge_last_attempt
+            if (
+                not shutdown and previous is not None
+                and previous[:2] == (entity, value)
+                and self.hass.loop.time() - previous[2] < RAM_REFRESH_SECONDS
+            ):
+                return
+            self._discharge_last_attempt = (entity, value, self.hass.loop.time())
+            if value == 0 and not self._discharge_may_be_applied:
+                if not discharge_limit_available(self.hass, entity):
+                    if self._discharge_release_entity:
+                        self._discharge_release_pending = True
+                        continue
+                    return
+                self._discharge_release_entity = entity
+                if not await self._async_save_schedule(verify_release=True):
+                    self._discharge_last_attempt = (entity, value, self.hass.loop.time())
+                    return
+                # Mode, schedule, toggle or configuration may change during disk I/O.
+                if self._desired_discharge_entity() != entity:
+                    continue
+            # A staged marker alone does not authorize changing an untouched limit.
+            write_needed = value == 0 or self._discharge_may_be_applied
+            if write_needed and not discharge_limit_available(self.hass, entity):
+                if value == 0 and not self._discharge_may_be_applied:
+                    self._discharge_release_pending = True
+                    continue
+                return
+            if value == 0:
+                self._discharge_may_be_applied = True
+            applied = not write_needed or await apply_discharge_limit(self.hass, entity, value)
+            self._discharge_last_attempt = (entity, value, self.hass.loop.time())
+            if not applied:
+                if value == 0 and self._desired_discharge_entity() != entity:
+                    continue
+                return
+            if value == -1:
+                self._discharge_release_entity = None
+                if not await self._async_save_schedule(verify_release=True):
+                    self._discharge_release_entity = entity
+                    return
+                self._discharge_release_pending = False
+                self._discharge_may_be_applied = False
+                # A fresh window may start even on the same entity after cleanup.
+                self._discharge_last_attempt = None
+            elif self._desired_discharge_entity() == entity:
+                return
+        if not self._shutdown_requested:
+            self._debounced_refresh.async_schedule_call()
+
     @callback
     def _schedule_ram_refresh(self, needed: bool) -> None:
         """One timer requests a fresh serialized decision, never a cached write."""
+        ram_needed = needed
+        discharge_needed = bool(
+            self._discharge_release_entity or self._desired_discharge_entity()
+            or self._store_load_failed
+        )
+        needed = not self._shutdown_requested and (needed or discharge_needed)
         if self._ram_timer is not None:
             if needed:
                 return
@@ -1566,11 +1711,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._ram_timer = None
             if self._shutdown_requested:
                 return
-            self._ram_refresh_due = True
+            self._ram_refresh_due = self._last_ram_write is None or (
+                self.hass.loop.time() - self._last_ram_write >= RAM_REFRESH_SECONDS
+            )
             # Let other callbacks at this deadline accept batched consumer input.
             self.hass.async_create_task(self.async_request_refresh(), eager_start=False)
 
-        self._ram_timer = async_call_later(self.hass, RAM_REFRESH_SECONDS, _refresh)
+        delay = RAM_REFRESH_SECONDS
+        if ram_needed and self._last_ram_write is not None:
+            remaining = self._last_ram_write + RAM_REFRESH_SECONDS - self.hass.loop.time()
+            if remaining > 0:
+                delay = min(delay, remaining)
+        if discharge_needed and self._discharge_last_attempt is not None:
+            remaining = self._discharge_last_attempt[2] + RAM_REFRESH_SECONDS - self.hass.loop.time()
+            delay = min(delay, max(0, remaining))
+        self._ram_timer = async_call_later(self.hass, delay, _refresh)
 
     # ------------------------------------------------------------------
     # Grid feed-in control
@@ -1709,11 +1864,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             calculation=calculation,
         )
 
-    def _setpoint_inputs(self) -> tuple[str, float | None, float, dict[str, str], int]:
+    def _setpoint_inputs(self) -> tuple[Any, ...]:
         """Inputs whose changes require rechecking an in-flight RAM decision."""
         return (
             self.control_mode, self._get_battery_soc(), self.idle_setpoint,
             self._get_unsafe_entities(), self._grid_consumer_generation,
+            self._desired_discharge_entity(),
         )
 
     async def _async_reconcile_setpoint(
@@ -1722,6 +1878,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Correct a changed decision before yielding to ancillary services."""
         for _ in range(2):
             await self._step_safety()
+            if self._shutdown_requested:
+                return None
+            await self._async_reconcile_discharge()
+            await self._step_safety()
+            await self._async_reconcile_discharge()
             if self._shutdown_requested:
                 return None
             calculation: dict[str, float] = {}
@@ -2023,6 +2184,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Initial data
         self.data = ChargeControlData()
 
+        async def _stop(_event: Any) -> None:
+            await self.async_shutdown()
+
+        self._unsub_listeners.append(
+            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
+        )
+
         # Restore the previous charge plan from the persistent Store. If
         # the Store is empty (fresh install, first ever start, or a
         # migration from a pre-persistence version) the coordinator's
@@ -2040,10 +2208,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # restore-setters, which ran earlier during
         # ``forward_entry_setups``, did not write a stale empty plan
         # over the user's persisted one.
-        await self._async_load_schedule()
+        async with self._control_lock:
+            await self._async_load_schedule()
+        if self._shutdown_requested:
+            return
 
         self._grid_consumer_ready = True
         await self.async_request_refresh()
+        if self._shutdown_requested:
+            return
 
         # From this point on, public mutators are allowed to write to
         # the Store again. Set last so a race between any
@@ -2056,7 +2229,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         await self.forecast_coordinator.async_setup()
 
     async def async_shutdown(self) -> None:
-        """Stop new refreshes and drain actuation before a replacement can start."""
+        """Drain actuation and accepted saves before a replacement can start."""
+        self._suspend_save = True
         await super().async_shutdown()
         self._schedule_ram_refresh(False)
         self._clear_grid_consumer_offset()
@@ -2073,7 +2247,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         await self.forecast_coordinator.async_shutdown()
         async with self._debounced_refresh.async_lock():
             async with self._control_lock:
+                await self._async_reconcile_discharge(shutdown=True)
                 await self._ensure_idle_fallback()
                 self._idle_correction_pending = True
                 if await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE, force=True):
                     self._idle_correction_pending = False
+        await asyncio.gather(*self._schedule_save_tasks)

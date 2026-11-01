@@ -62,6 +62,13 @@ SWITCHES: tuple[VictronCCSwitchDescription, ...] = (
         coordinator_attr="control_dc_coupled_feed_in",
         default_value=False,
     ),
+    VictronCCSwitchDescription(
+        key="disable_discharge",
+        translation_key="disable_discharge",
+        icon="mdi:battery-lock",
+        coordinator_attr="disable_discharge",
+        default_value=False,
+    ),
 )
 
 
@@ -105,6 +112,9 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
 
     @property
     def available(self) -> bool:
+        if self.entity_description.key == "disable_discharge":
+            # Keep turn_off usable even when the actuator or another control fails.
+            return self.coordinator.max_discharge_power_entity is not None or self.is_on
         if self.entity_description.key == "grid_consumer_enabled":
             return self.coordinator.grid_consumer_entity is not None
         return super().available
@@ -123,6 +133,11 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
         """Enable."""
         if self.entity_description.key == "grid_consumer_enabled" and not self.available:
             raise ServiceValidationError("Configure a Grid Consumer power sensor first")
+        if (
+            self.entity_description.key == "disable_discharge"
+            and not self.coordinator.max_discharge_power_entity
+        ):
+            raise ServiceValidationError("Configure a Max discharge power number entity first")
         setattr(self.coordinator, self.entity_description.coordinator_attr, True)
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
@@ -141,5 +156,8 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
             setattr(
                 self.coordinator,
                 self.entity_description.coordinator_attr,
-                last_state.state == "on",
+                last_state.state == "on" and (
+                    self.entity_description.key != "disable_discharge"
+                    or self.coordinator.max_discharge_power_entity is not None
+                ),
             )
