@@ -25,6 +25,7 @@ You can also set a schedule or control your Victron ESS from a dashboard or auto
 - [Dashboard Card](#dashboard-card)
 - [Grid Consumer](#grid-consumer)
 - [Battery And Solar Control](#battery-and-solar-control)
+- [Disable Discharge](#disable-discharge)
 - [Entity Reference](#entity-reference)
 - [Services](#services)
 - [Defaults](#defaults)
@@ -86,6 +87,7 @@ Select these entities during setup. Leave optional fields empty if you do not us
 | AC grid setpoint | Yes | Temporary target in watts, stored in RAM. Example: GX Device - AC grid setpoint. |
 | EPEX Spot price sensor | Yes | Hourly prices. Example: EPEX Spot Data - Market Price. |
 | Max grid feed-in entity | Yes | Writable export limit in watts. Example: GX Device - ESS max feed-in power. |
+| Maximum discharge power entity | No | Writable number in W that accepts `0` to prevent battery discharge and `−1` for unlimited discharge. Required for [Disable Discharge](#disable-discharge). |
 | Grid consumption energy sensor | No | Total grid import in kWh, for cost tracking. |
 | Grid feed-in energy sensor | No | Total grid export in kWh, for revenue tracking. |
 | Grid consumer power sensor | No | Load in W or kW, such as an electric vehicle charger. See [Grid Consumer](#grid-consumer). |
@@ -272,6 +274,23 @@ PV charging requires a solar surplus sensor and follows the maximum SOC limit.
 It does not depend on Charge Allowed or blocked charging hours.
 Grid Consumer can request grid import during PV Charge or Idle.
 
+## Disable Discharge
+
+Select the optional Maximum discharge power entity in the integration configuration, then enable Disable Discharge in the card's Settings view, directly below Charge Allowed and Discharge Allowed.
+The switch defaults off and remembers its state after a restart.
+It cannot be enabled without a configured entity; if that external entity becomes unavailable, you can still turn the switch off.
+
+While enabled, the controller writes `0 W` every five seconds throughout regular Charge slots and Force Charge.
+This remains active at Max SOC, with Charge Power set to zero, and with Charge Allowed off.
+PV Charge is excluded. Existing SOC protection and other charging controls still apply.
+
+Leaving the charging window, turning the switch off, selecting Off mode, or a watchdog stop releases the limit by writing `−1 W` (unlimited).
+The previous numerical discharge limit is not restored.
+Missing entities and failed writes are logged and retried while other controls continue.
+Pending cleanup survives restart and reconfiguration, and orderly shutdown attempts to release the limit.
+A Home Assistant crash or offline connection can leave the device's persistent limit in place until communication resumes and cleanup succeeds.
+Existing settings and schedules remain saved.
+
 ## Entity Reference
 
 | Entity | Platform | Description |
@@ -279,6 +298,7 @@ Grid Consumer can request grid import during PV Charge or Idle.
 | Control Mode | Select | `off`, `auto`, `manual`, `force_charge`, or `force_discharge`. |
 | Charge Allowed | Switch | Allow charging from the grid. Does not control PV charging. |
 | Discharge Allowed | Switch | Allow discharging. |
+| Disable Discharge | Switch | Prevent battery discharge during Charge slots and Force Charge. See [Disable Discharge](#disable-discharge). |
 | Grid Consumer | Switch | Enable the load adjustment described in [Grid Consumer](#grid-consumer). |
 | Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
 | Min SOC | Number | Minimum battery charge level. |

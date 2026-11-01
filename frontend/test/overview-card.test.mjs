@@ -48,6 +48,66 @@ function binding(node, name) {
 const modes = templates => templates.filter(node => node.strings.join('').includes('class="mode-btn '));
 const switches = templates => templates.filter(node => node.strings.join('').includes('class="toggle-pair-item"'));
 
+for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
+  test(`Settings Disable Discharge binds ${state} state and the configured prefix`, () => {
+    const { card, templates, calls, states, prefix } = setup();
+    const entityId = `switch.${prefix}_disable_discharge`;
+    if (state !== null) states[entityId] = { state, attributes: {} };
+    states[`number.${prefix}_charge_power`] = { state: '3000', attributes: {} };
+    card.setConfig({ ...card.config, view: 'settings' });
+    const rendered = card.render();
+    const toggle = switches(templates).find(node => binding(node, 'aria-label') === 'Disable Discharge');
+    assert.ok(toggle);
+    assert.equal(binding(toggle, '.checked'), state === 'on');
+    assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
+    const pair = templates.find(node => node.strings.join('').includes('class="control-row toggle-pair"')
+      && node.rendered.includes('aria-label=Disable Discharge'));
+    assert.equal((pair.rendered.match(/class="toggle-pair-item"/g) || []).length, 1);
+    assert.ok(rendered.indexOf('aria-label=Discharge Allowed') < rendered.indexOf('aria-label=Disable Discharge'));
+    assert.ok(rendered.indexOf('aria-label=Disable Discharge') < rendered.indexOf('Help for Charge Power'));
+    assert.equal(calls.length, 0);
+    binding(toggle, '@change')();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), ['on', 'off'].includes(state) ? [[
+      'switch', state === 'on' ? 'turn_off' : 'turn_on', { entity_id: entityId },
+    ]] : []);
+  });
+}
+
+test('Disable Discharge remains turnable off during an external entity outage and rechecks switch availability', () => {
+  const { card, templates, calls, states, prefix } = setup();
+  const entityId = `switch.${prefix}_disable_discharge`;
+  states[entityId] = { state: 'on', attributes: {} };
+  states['number.max_discharge'] = { state: 'unavailable', attributes: {} };
+  card._renderControlsView();
+  const toggle = switches(templates).find(node => binding(node, 'aria-label') === 'Disable Discharge');
+  assert.equal(binding(toggle, '.disabled'), false);
+  binding(toggle, '@change')();
+  assert.equal(calls[0][1], 'turn_off');
+  states[entityId].state = 'unavailable';
+  binding(toggle, '@change')();
+  assert.equal(calls.length, 1);
+});
+
+test('Disable Discharge opens its existing accessible help dialog with behavior and cleanup limits', () => {
+  const { card, templates } = setup();
+  card._renderControlsView();
+  const label = templates.find(node => node.rendered.includes('aria-label=Help for Disable Discharge'));
+  assert.match(label.rendered, /aria-haspopup="dialog"/);
+  card._openHelp = topic => { card._helpOpen = true; card._helpTopic = topic; };
+  binding(label, '@click')({ currentTarget: {} });
+  assert.equal(card._helpTopic.key, 'disable_discharge');
+  const rendered = card._renderHelpDialog('settings', 'Settings');
+  assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Disable Discharge/);
+  for (const text of ['0 W', '5 seconds', 'regular Charge slots and Force Charge', 'Max SOC',
+    'zero Charge Power', 'Charge Allowed off', 'PV Charge is excluded', '−1 W', 'watchdog stop',
+    'previous numerical limit is not restored', 'defaults off', 'logged and retried',
+    'Pending release survives restart and reconfiguration', 'orderly shutdown', 'crash or outage']) {
+    assert.ok(rendered.includes(text), text);
+  }
+  assert.doesNotMatch(card._renderOverviewView(), /Disable Discharge/);
+  assert.doesNotMatch(card._renderPlanView(), /Disable Discharge/);
+});
+
 test('Overview routes from normalized configuration, shows compact controls and server calculation without writes', () => {
   const { card, calls } = setup();
   const rendered = card.render();
