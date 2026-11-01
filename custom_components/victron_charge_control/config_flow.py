@@ -25,6 +25,7 @@ from .const import (
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_USE_SOLCAST_FORECAST,
@@ -41,6 +42,7 @@ REQUIRED_ENTITY_KEYS = (
 )
 
 OPTIONAL_ENTITY_KEYS = (
+    CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -63,6 +65,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
             selector.EntitySelectorConfig(domain="sensor"),
         ),
         vol.Required(CONF_MAX_GRID_FEED_IN_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="number"),
+        ),
+        vol.Optional(CONF_MAX_DISCHARGE_POWER_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="number"),
         ),
         vol.Optional(CONF_GRID_CONSUMPTION_ENTITY): selector.EntitySelector(
@@ -115,6 +120,16 @@ def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
         state = hass.states.get(entity_id)
         if state is None:
             errors[key] = "entity_not_found"
+
+    discharge_entity = user_input.get(CONF_MAX_DISCHARGE_POWER_ENTITY)
+    if discharge_entity:
+        if not isinstance(discharge_entity, str) or not discharge_entity.startswith("number."):
+            errors[CONF_MAX_DISCHARGE_POWER_ENTITY] = "number_required"
+        elif discharge_entity in (
+            ram_entity, user_input.get(CONF_GRID_SETPOINT_ENTITY),
+            user_input.get(CONF_MAX_GRID_FEED_IN_ENTITY),
+        ):
+            errors[CONF_MAX_DISCHARGE_POWER_ENTITY] = "distinct_discharge_limit"
 
     return errors
 
@@ -267,6 +282,12 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 vol.Required(
                     CONF_MAX_GRID_FEED_IN_ENTITY,
                     default=current.get(CONF_MAX_GRID_FEED_IN_ENTITY, ""),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="number"),
+                ),
+                vol.Optional(
+                    CONF_MAX_DISCHARGE_POWER_ENTITY,
+                    description={"suggested_value": current.get(CONF_MAX_DISCHARGE_POWER_ENTITY)},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="number"),
                 ),

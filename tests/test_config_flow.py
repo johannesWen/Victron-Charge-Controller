@@ -395,6 +395,7 @@ class TestOptionsFlow:
             **MOCK_CONFIG_DATA_WITH_SOLAR,
             **MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
             CONF_GRID_CONSUMER_ENTITY: "sensor.consumer",
+            "max_discharge_power_entity": "number.max_discharge_power",
         }
         options_flow._config_entry.data = {**configured, "unrelated_setting": "preserved"}
         await options_flow.async_step_init()

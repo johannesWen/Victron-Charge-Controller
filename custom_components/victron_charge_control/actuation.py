@@ -18,6 +18,22 @@ from .const import ACTION_IDLE, DEFAULT_DEADBAND, MODE_OFF
 _LOGGER = logging.getLogger(__name__)
 
 
+async def apply_discharge_limit(hass: Any, entity_id: str, value: int) -> bool:
+    """Write a managed discharge limit without affecting other controls."""
+    state = hass.states.get(entity_id)
+    if state is None or state.state in ("unknown", "unavailable", None, "null"):
+        _LOGGER.warning("Max discharge power entity %s is unavailable — retrying", entity_id)
+        return False
+    try:
+        await hass.services.async_call(
+            "number", "set_value", {"entity_id": entity_id, "value": value}, blocking=True,
+        )
+    except HomeAssistantError:
+        _LOGGER.warning("Failed to write max discharge power %s — retrying", entity_id, exc_info=True)
+        return False
+    return True
+
+
 def is_reduced_feed_in_mode(
     *,
     grid_feed_in_control_enabled: bool,
