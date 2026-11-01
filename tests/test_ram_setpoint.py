@@ -382,20 +382,34 @@ async def test_failed_idle_reset_retries_and_survives_unknown_inactive(consumer)
 
 
 @pytest.mark.parametrize("state", ["unknown", None, "null"])
-async def test_inactive_ram_can_activate_without_safety_stop(consumer, state):
+async def test_inactive_ram_can_activate_and_refresh_without_safety_stop(consumer, state):
     coord, _, clock, _, states = consumer
+    coord.control_mode = MODE_OFF
+    await coord.async_request_refresh()
+    coord.action_confirm_seconds = 0
+    coord.hass.services.async_call.reset_mock()
+    states[RAM] = MockState(state)
+    coord.control_mode = MODE_FORCE_CHARGE
+    await coord.async_request_refresh()  # Begin action confirmation.
+    await coord.async_request_refresh()
+    assert coord.control_mode == MODE_FORCE_CHARGE
+    assert writes(coord) == [3000]
     states[RAM] = MockState(state)
     await clock.advance(5)
     assert coord.control_mode == MODE_FORCE_CHARGE
+    assert writes(coord) == [3000, 3000]
     assert states[RAM].state == "3000.0"
     assert coord._last_ram_write == 5
 
 
-async def test_disconnect_trips_watchdog_and_recovery_corrects_idle(consumer):
+@pytest.mark.parametrize("state", [None, "unavailable"])
+async def test_disconnect_trips_watchdog_and_recovery_corrects_idle(consumer, state):
     coord, _, clock, _, states = consumer
     timestamp = coord._last_ram_write
-    states[RAM] = MockState("unavailable")
+    coord.hass.services.async_call.reset_mock()
+    states[RAM] = None if state is None else MockState(state)
     await clock.advance(5)
+    assert not writes(coord)
     assert coord.control_mode == MODE_OFF
     assert coord._last_ram_write == timestamp
     assert coord._idle_correction_pending
