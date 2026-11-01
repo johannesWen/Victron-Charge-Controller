@@ -286,7 +286,8 @@ PV Charge is excluded. Existing SOC protection and other charging controls still
 
 Leaving the charging window, turning the switch off, selecting Off mode, or a watchdog stop releases the limit by writing `−1 W` (unlimited).
 The previous numerical discharge limit is not restored.
-Missing entities and failed writes are logged and retried while other controls continue.
+An inactive value reported as `unknown` or null still accepts hold and release writes.
+Missing or unavailable entities and failed writes are logged and retried while other controls continue.
 Pending cleanup survives restart and reconfiguration, and orderly shutdown attempts to release the limit.
 A Home Assistant crash or offline connection can leave the device's persistent limit in place until communication resumes and cleanup succeeds.
 Existing settings and schedules remain saved.

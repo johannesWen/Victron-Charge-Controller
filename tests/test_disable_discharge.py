@@ -121,8 +121,32 @@ async def test_release_bypasses_action_debounce(consumer, mock_store, stop):
     assert mock_store._data[KEY] is None
 
 
-@pytest.mark.parametrize("bad", [None, "unknown", "unavailable", "service"])
-async def test_hold_failure_retries_without_stopping_grid_controls(consumer, caplog, bad):
+@pytest.mark.parametrize("state", ["unknown", None, "null"])
+async def test_inactive_limit_can_hold_refresh_and_release(consumer, mock_store, state):
+    coord, switch, clock, _, states = configure(consumer)
+    successful = coord.hass.services.async_call.side_effect
+
+    async def write(domain, service, data, **kwargs):
+        if data.get("entity_id") == LIMIT:
+            assert mock_store._data[KEY] == LIMIT
+        await successful(domain, service, data, **kwargs)
+
+    coord.hass.services.async_call.side_effect = write
+    states[LIMIT] = MockState(state)
+    await switch.async_turn_on()
+    assert writes(coord) == [0]
+    states[LIMIT] = MockState(state)
+    await clock.advance(5)
+    assert writes(coord) == [0, 0]
+    states[LIMIT] = MockState(state)
+    await switch.async_turn_off()
+    assert writes(coord) == [0, 0, -1]
+    assert mock_store._data[KEY] is None
+    assert coord.control_mode == MODE_FORCE_CHARGE
+
+
+@pytest.mark.parametrize("bad", [None, "unavailable", "service"])
+async def test_hold_failure_retries_without_stopping_grid_controls(consumer, mock_store, caplog, bad):
     coord, switch, clock, _, states = configure(consumer)
     successful = coord.hass.services.async_call.side_effect
     if bad == "service":
@@ -141,6 +165,8 @@ async def test_hold_failure_retries_without_stopping_grid_controls(consumer, cap
     assert float(states[RAM].state) == coord.charge_power
     assert writes(coord, RAM)[-2:] == [coord.charge_power, coord.charge_power]
     assert "discharge power" in caplog.text
+    assert writes(coord) == ([0, 0, 0] if bad == "service" else [])
+    assert (mock_store._data or {}).get(KEY) == (LIMIT if bad == "service" else None)
     states[LIMIT] = MockState("-1")
     coord.hass.services.async_call.side_effect = successful
     await clock.advance(5)
@@ -148,7 +174,7 @@ async def test_hold_failure_retries_without_stopping_grid_controls(consumer, cap
     assert states[LIMIT].state == "0"
 
 
-@pytest.mark.parametrize("bad", [None, "unknown", "unavailable"])
+@pytest.mark.parametrize("bad", [None, "unavailable"])
 @pytest.mark.parametrize("restart", [False, True])
 async def test_unavailable_hold_never_owns_existing_limit(consumer, mock_store, bad, restart):
     coord, switch, clock, _, states = configure(consumer)
@@ -174,7 +200,7 @@ async def test_unavailable_hold_never_owns_existing_limit(consumer, mock_store, 
         await coord.async_shutdown()
 
 
-@pytest.mark.parametrize("bad", [None, "unknown", "unavailable"])
+@pytest.mark.parametrize("bad", [None, "unavailable"])
 @pytest.mark.parametrize("keep_enabled", [False, True])
 async def test_unavailable_during_persistence_clears_unapplied_hold(
     consumer, mock_store, bad, keep_enabled,
@@ -240,19 +266,33 @@ async def test_failed_hold_attempt_still_requires_release(consumer, mock_store):
     assert mock_store._data[KEY] is None
 
 
-async def test_failed_release_keeps_timer_during_off_and_recovery(consumer, mock_store):
+@pytest.mark.parametrize("bad", [None, "unavailable", "service"])
+async def test_failed_release_keeps_timer_during_off_and_recovery(consumer, mock_store, bad):
     coord, switch, clock, _, states = configure(consumer)
     await switch.async_turn_on()
-    states[LIMIT] = MockState("unavailable")
+    successful = coord.hass.services.async_call.side_effect
+    if bad == "service":
+        async def failing(domain, service, data, **kwargs):
+            if data.get("entity_id") == LIMIT:
+                raise HomeAssistantError("release rejected")
+            await successful(domain, service, data, **kwargs)
+        coord.hass.services.async_call.side_effect = failing
+        states[LIMIT] = MockState("unknown")
+    else:
+        states[LIMIT] = None if bad is None else MockState(bad)
     coord.control_mode = MODE_OFF
     await switch.async_turn_off()
     assert switch.available
     assert mock_store._data[KEY] == LIMIT
     assert coord._ram_timer is not None
     await clock.advance(10)
-    states[LIMIT] = MockState("0")
+    assert mock_store._data[KEY] == LIMIT
+    assert writes(coord) == ([0, -1, -1, -1] if bad == "service" else [0])
+    coord.hass.services.async_call.side_effect = successful
+    states[LIMIT] = MockState("unknown")
     await clock.advance(5)
-    assert writes(coord) == [0, -1]
+    assert writes(coord)[-1] == -1
+    assert states[LIMIT].state == "-1"
     assert mock_store._data[KEY] is None
     assert coord._ram_timer is None
 
