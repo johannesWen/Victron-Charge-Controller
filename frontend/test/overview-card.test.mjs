@@ -255,3 +255,107 @@ test('Settings retains mode, permissions and tuning without Overview status; oth
   }
   assert.equal(calls.length, 0);
 });
+
+for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
+  test(`Battery Power Control binds ${state} and targets the configured prefix`, () => {
+    const { card, templates, calls, states, prefix } = setup();
+    const entityId = `switch.${prefix}_battery_power_control`;
+    if (state !== null) states[entityId] = { state, attributes: { source_entity: 'sensor.battery', feedback_status: 'active' } };
+    card._renderControlsView();
+    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"')
+      && node.rendered.includes('aria-label=Battery Power Control'));
+    assert.equal(binding(toggle, '.checked'), state === 'on');
+    assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
+    binding(toggle, '@change')();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), ['on', 'off'].includes(state) ? [[
+      'switch', state === 'on' ? 'turn_off' : 'turn_on', { entity_id: entityId },
+    ]] : []);
+  });
+}
+
+test('Battery Power Control explains missing configuration and permits off during sensor outage', () => {
+  const { card, templates, calls, states, prefix } = setup();
+  const entityId = `switch.${prefix}_battery_power_control`;
+  states[entityId] = { state: 'off', attributes: { source_entity: null } };
+  assert.match(card._renderBatteryPowerControl(), /Configure a Battery power sensor/);
+  const disabled = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"'));
+  assert.equal(binding(disabled, '.disabled'), true);
+  binding(disabled, '@change')();
+  assert.equal(calls.length, 0);
+  states[entityId] = { state: 'on', attributes: { source_entity: 'sensor.battery', power_w: null, feedback_status: 'fallback' } };
+  states['sensor.battery'] = { state: 'unavailable', attributes: {} };
+  templates.length = 0;
+  assert.match(card._renderBatteryPowerControl(), /role="status".*invalid, unavailable or stale/s);
+  const enabled = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"'));
+  assert.equal(binding(enabled, '.disabled'), false);
+  binding(enabled, '@change')();
+  assert.equal(calls[0][1], 'turn_off');
+  states[entityId].state = 'unavailable';
+  binding(enabled, '@change')();
+  assert.equal(calls.length, 1);
+});
+
+for (const [status, message] of [
+  ['waiting', 'Waiting for a baseline or settled battery reading before the next feedback adjustment.'],
+  ['fallback', 'grid-only control is active with the existing offsets'],
+  ['inactive', 'Battery feedback is inactive for the current action'],
+  ['active', 'Battery feedback is active; Charge / Discharge Power targets battery watts.'],
+]) test(`Battery Power Control displays accessible ${status} status`, () => {
+  const { card, states, prefix } = setup();
+  states[`switch.${prefix}_battery_power_control`] = { state: 'on', attributes: {
+    source_entity: 'sensor.battery', feedback_status: status,
+  } };
+  states[`number.${prefix}_charge_power`] = { state: '3000', attributes: {} };
+  const rendered = card._renderControlsView();
+  assert.ok(rendered.includes(message));
+  assert.match(rendered, /role="status"/);
+  assert.ok(rendered.indexOf('aria-label=Battery Power Control') < rendered.indexOf('Help for Charge Power'));
+  states[`switch.${prefix}_battery_power_control`].state = 'off';
+  assert.ok(!card._renderBatteryPowerControl().includes(message));
+});
+
+for (const sign of [1, -1]) test(`Overview includes signed battery feedback and clamps (${sign})`, () => {
+  const { card, states, prefix } = setup();
+  const sensor = states[`sensor.${prefix}_target_setpoint`];
+  sensor.attributes.calculation = { setting_w: sign * 3000, battery_feedback_w: sign * 1000,
+    pv_charge_w: 0, surplus_w: 0, grid_consumer_w: 0, limits_w: sign * -500 };
+  sensor.state = String(sign * 3500);
+  const rendered = card.render();
+  assert.match(rendered, /<dt>Battery feedback<\/dt>/);
+  assert.ok(rendered.includes(`${sign > 0 ? '+' : '−'}1,000 W`));
+  assert.ok(rendered.includes(`<strong>${sign > 0 ? '' : '−'}3,500 W (${sign > 0 ? '' : '−'}4,000 W)</strong>`));
+});
+
+test('Overview hides zero or absent battery feedback and preserves consumer terms', () => {
+  const { card, states, prefix } = setup();
+  const calculation = states[`sensor.${prefix}_target_setpoint`].attributes.calculation;
+  for (const present of [false, true]) {
+    if (present) calculation.battery_feedback_w = 0;
+    const rendered = card.render();
+    assert.doesNotMatch(rendered, /Calculation unavailable|<dt>Battery feedback<\/dt>/);
+    assert.match(rendered, /<dt>Grid consumer<\/dt>/);
+    assert.match(rendered, /<strong>−450 W<\/strong>/);
+  }
+});
+
+for (const value of [NaN, Infinity, -Infinity, null, undefined, '1000']) {
+  test(`Overview rejects explicitly invalid battery feedback ${String(value)}`, () => {
+    const { card, states, prefix } = setup();
+    states[`sensor.${prefix}_target_setpoint`].attributes.calculation.battery_feedback_w = value;
+    assert.match(card.render(), /Calculation unavailable/);
+  });
+}
+
+test('Battery Power Control help explains configuration, sampling, coexistence and limits', () => {
+  const { card, templates } = setup();
+  card._renderBatteryPowerControl();
+  const label = templates.find(node => node.rendered.includes('aria-label=Help for Battery Power Control'));
+  card._openHelp = topic => { card._helpOpen = true; card._helpTopic = topic; };
+  binding(label, '@click')({ currentTarget: {} });
+  const rendered = card._renderHelpDialog('settings', 'Settings');
+  for (const text of ['W or kW', 'positive when charging', 'negative when discharging', 'defaults off',
+    'restored after restart', 'PV Charge', 'solar-only discharge', 'last_reported', 'five seconds',
+    '120 seconds', 'RAM keepalive', 'Grid Consumer offsets', 'SOC protection', 'not guaranteed']) {
+    assert.ok(rendered.includes(text), text);
+  }
+});
