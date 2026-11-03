@@ -23,6 +23,7 @@ You can also set a schedule or control your Victron ESS from a dashboard or auto
 - [Installation](#installation)
 - [Setup](#setup)
 - [Dashboard Card](#dashboard-card)
+- [Battery Power Control](#battery-power-control)
 - [Grid Consumer](#grid-consumer)
 - [Battery And Solar Control](#battery-and-solar-control)
 - [Disable Discharge](#disable-discharge)
@@ -91,6 +92,7 @@ Select these entities during setup. Leave optional fields empty if you do not us
 | Grid consumption energy sensor | No | Total grid import in kWh, for cost tracking. |
 | Grid feed-in energy sensor | No | Total grid export in kWh, for revenue tracking. |
 | Grid consumer power sensor | No | Load in W or kW, such as an electric vehicle charger. See [Grid Consumer](#grid-consumer). |
+| Battery power sensor | No | Battery power in W or kW: positive charging, negative discharging. See [Battery Power Control](#battery-power-control). |
 | Solar surplus sensor | No | Spare solar power in watts, for solar charging and export. |
 | DC coupled PV feed in switch | No | Controls DC solar export in reduced feed-in mode. Example: GX Device - DC-coupled PV - feed in excess. |
 
@@ -186,7 +188,8 @@ Choose a view in the card editor or with the `view` field:
 | `plan` | View prices, edit the schedule for today and tomorrow, and manage fixed plans. |
 | `history` | View grid cost, revenue, import, and export by day, week, month, or year. |
 
-Overview and Settings show how mode power, solar power, and Grid Consumer contribute to the grid target.
+Overview shows how mode power, solar power, Grid Consumer, and signed battery feedback contribute to the grid target.
+Zero battery feedback is hidden; older controller calculations without that term remain supported.
 When a limit caps the target, the original result appears in parentheses, such as `5,000 W (6,000 W)`.
 
 In the Plan card, switch from Price to PV forecast to view expected solar production.
@@ -210,6 +213,46 @@ If Solcast data becomes unusable, the card returns to Price.
 | :---: | :---: |
 | ![Settings card screenshot](assets/screenshots/settings_card.png) | ![Overview card screenshot](assets/screenshots/overview_card.png) |
 
+## Battery Power Control
+
+Select the optional **Battery power sensor** (`battery_power_entity`) during integration setup,
+or in Settings → Devices & Services → Victron Charge Control → Configure or Reconfigure.
+The sensor must report W or kW, with **positive power for charging and negative power for discharging**.
+Enable **Battery Power Control** beside the power sliders in Settings → Charge / Discharge.
+It defaults off and restores its on/off state after restart. No extra tuning parameters are needed.
+The switch exposes `source_entity`, normalized `power_w`, and `feedback_status` attributes
+(`disabled`, `inactive`, `waiting`, `active`, or `fallback`).
+Without a configured sensor the card disables the toggle and explains how to configure it.
+
+During regular Charge and full Discharge, including Force Charge and Force Discharge,
+Charge Power and Discharge Power become desired battery watts while feedback is active.
+Feedback does not apply to PV Charge, solar-only discharge at Min SOC, Idle, or Off.
+The controller calculates:
+
+`grid target = applied grid watts + desired signed battery watts − measured battery watts`
+
+For example, `3000 W` applied grid, `2000 W` measured battery charging and `3000 W` desired
+battery charging request `4000 W` grid. A discharge target uses negative desired battery watts.
+Household loads, solar and consumer effects are already reflected in the reading, so active feedback
+replaces the existing solar-surplus and Grid Consumer offsets for these actions; they are not added twice.
+The overview calculation shows desired signed power as Setting and applied grid minus measured battery
+as Battery feedback. Limits account for any clamp on the resulting target.
+
+At startup, the controller uses legacy grid-only control until feedback is ready.
+It uses each Home Assistant `last_reported` sample once and waits five seconds for settling after
+a changed actuator write. An unchanged RAM keepalive does not restart this settling period.
+Invalid, unavailable or stale readings (older than 120 seconds) fall back to grid-only control,
+including the existing solar and Grid Consumer offsets. The control's tooltip shows this fallback and when it is
+waiting for a baseline or settled reading; feedback recovers automatically when ready.
+The configured switch remains turnable off during a sensor outage.
+
+Use a sensor that reports current battery power promptly. The freshness check detects missing
+Home Assistant reports, not old measurements repeatedly republished by the source.
+Delayed measurements can make the grid target oscillate despite the five-second settling period.
+
+SOC protection, grid setpoint bounds, reduced feed-in limits and device limits still apply.
+Actual battery power is not guaranteed to reach the requested target.
+
 ## Grid Consumer
 
 Grid Consumer adjusts the power target for a load such as an electric vehicle charger.
@@ -224,7 +267,7 @@ To enable it:
 
 Grid Consumer defaults to off and remembers its state after a restart.
 It works in Auto, Manual, Force Charge, and Force Discharge, including Idle and PV Charge actions.
-It does not apply in Off mode.
+It does not apply in Off mode. Active Battery Power Control replaces this offset during Charge and full Discharge; other actions and feedback fallback keep the behavior below.
 
 The controller subtracts current solar surplus from the load and adds any remaining demand to the grid target.
 It then applies grid and feed-in limits.
@@ -300,13 +343,14 @@ Existing settings and schedules remain saved.
 | Charge Allowed | Switch | Allow charging from the grid. Does not control PV charging. |
 | Discharge Allowed | Switch | Allow discharging. |
 | Disable Discharge | Switch | Prevent battery discharge during Charge slots and Force Charge. See [Disable Discharge](#disable-discharge). |
+| Battery Power Control | Switch | Target measured battery watts during Charge and full Discharge; defaults off and restores after restart. See [Battery Power Control](#battery-power-control). |
 | Grid Consumer | Switch | Enable the load adjustment described in [Grid Consumer](#grid-consumer). |
 | Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
 | Min SOC | Number | Minimum battery charge level. |
 | Max SOC | Number | Maximum battery charge level. |
 | SOC Hysteresis | Number | Buffer before charging or discharging resumes at a battery limit. |
-| Charge Power | Number | Target import power while charging. |
-| Discharge Power | Number | Target export power while discharging. |
+| Charge Power | Number | Target grid import while charging, or desired battery charging watts with active Battery Power Control. |
+| Discharge Power | Number | Discharge power component, or desired battery discharge watts with active Battery Power Control. |
 | PV Charging Battery Share | Number | Percentage of spare solar power sent to the battery. |
 | Idle Setpoint | Number | Grid setpoint used while idle. |
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |

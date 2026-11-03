@@ -17,6 +17,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_AC_GRID_SETPOINT_ENTITY,
+    CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
@@ -42,6 +43,7 @@ REQUIRED_ENTITY_KEYS = (
 )
 
 OPTIONAL_ENTITY_KEYS = (
+    CONF_BATTERY_POWER_ENTITY,
     CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
@@ -72,6 +74,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_GRID_CONSUMPTION_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor"),
+        ),
+        vol.Optional(CONF_BATTERY_POWER_ENTITY): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="power"),
         ),
         vol.Optional(CONF_GRID_CONSUMER_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor", device_class="power"),
@@ -120,6 +125,19 @@ def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
         state = hass.states.get(entity_id)
         if state is None:
             errors[key] = "entity_not_found"
+
+    battery_entity = user_input.get(CONF_BATTERY_POWER_ENTITY)
+    if battery_entity:
+        state = hass.states.get(battery_entity)
+        if (
+            not isinstance(battery_entity, str)
+            or not battery_entity.startswith("sensor.")
+            or (state is not None and (
+                state.attributes.get("device_class") != "power"
+                or state.attributes.get("unit_of_measurement") not in ("W", "kW")
+            ))
+        ):
+            errors[CONF_BATTERY_POWER_ENTITY] = "battery_power_required"
 
     discharge_entity = user_input.get(CONF_MAX_DISCHARGE_POWER_ENTITY)
     if discharge_entity:
@@ -296,6 +314,12 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     description={"suggested_value": current.get(CONF_GRID_CONSUMPTION_ENTITY)},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor"),
+                ),
+                vol.Optional(
+                    CONF_BATTERY_POWER_ENTITY,
+                    description={"suggested_value": current.get(CONF_BATTERY_POWER_ENTITY)},
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="power"),
                 ),
                 vol.Optional(
                     CONF_GRID_CONSUMER_ENTITY,

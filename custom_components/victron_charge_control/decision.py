@@ -323,14 +323,16 @@ def compute_setpoint(
     pv_charge_share: float,
     reduced_max_grid_feed_in: float,
     grid_consumer_offset: float = 0.0,
+    battery_feedback: tuple[float, float] | None = None,
     calculation: dict[str, float] | None = None,
 ) -> float:
     """Compute the clamped grid setpoint for the given action.
 
     ``is_reduced`` is True when the reduced grid feed-in mode is active.
-    In that case the PV-Charge and Discharge setpoints are clamped on
-    the export side so the integration never asks the ESS to feed more
-    into the grid than the active feed-in limit allows.
+    PV-Charge, Discharge, and feedback-controlled Charge are clamped
+    to the reduced export limit when ``is_reduced`` is true.
+    ``battery_feedback`` contains the successful applied grid watts and
+    measured battery watts; it replaces surplus and consumer compensation.
     If supplied, ``calculation`` receives the signed additive terms.
     """
     setting = idle_setpoint
@@ -359,9 +361,22 @@ def compute_setpoint(
     else:
         raw = idle_setpoint
 
+    feedback = 0.0
+    if battery_feedback is not None and (
+        action == ACTION_CHARGE
+        or (action == ACTION_DISCHARGE and not discharge_solar_only)
+    ):
+        applied, measured = battery_feedback
+        feedback = applied - measured
+        pv_charge = surplus_contribution = grid_consumer_offset = 0.0
+        raw = setting + feedback
+
     raw += grid_consumer_offset
     unclamped = raw
-    if is_reduced and action in (ACTION_PV_CHARGE, ACTION_DISCHARGE):
+    if is_reduced and (
+        action in (ACTION_PV_CHARGE, ACTION_DISCHARGE)
+        or (battery_feedback is not None and action == ACTION_CHARGE)
+    ):
         raw = max(raw, -reduced_max_grid_feed_in)
 
     target = max(min_grid_setpoint, min(raw, max_grid_setpoint))
@@ -371,6 +386,7 @@ def compute_setpoint(
             pv_charge_w=pv_charge,
             surplus_w=surplus_contribution,
             grid_consumer_w=grid_consumer_offset,
+            battery_feedback_w=feedback,
             limits_w=target - unclamped,
         )
     return target

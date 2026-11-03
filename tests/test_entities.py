@@ -595,7 +595,7 @@ class TestVictronCCSwitch:
     """Tests for the toggle switch entities."""
 
     def test_switch_descriptions_count(self):
-        assert len(SWITCHES) == 6
+        assert len(SWITCHES) == 7
 
     def test_is_on(self, coordinator):
         entry = MockConfigEntry()

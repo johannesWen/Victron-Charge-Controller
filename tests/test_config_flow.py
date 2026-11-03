@@ -396,7 +396,9 @@ class TestOptionsFlow:
             **MOCK_CONFIG_DATA_WITH_DC_FEED_IN,
             CONF_GRID_CONSUMER_ENTITY: "sensor.consumer",
             "max_discharge_power_entity": "number.max_discharge_power",
+            "battery_power_entity": "sensor.battery_power",
         }
+        options_flow.hass.states.get.return_value = MockState("50", {"device_class": "power", "unit_of_measurement": "W"})
         options_flow._config_entry.data = {**configured, "unrelated_setting": "preserved"}
         await options_flow.async_step_init()
         schema = options_flow.async_show_form.call_args.kwargs["data_schema"]

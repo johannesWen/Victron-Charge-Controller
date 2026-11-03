@@ -18,6 +18,7 @@ STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = f"{DOMAIN}_schedule"
 
 # --- Config entry keys (from config flow) ---
+CONF_BATTERY_POWER_ENTITY = "battery_power_entity"
 CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_GRID_SETPOINT_ENTITY = "grid_setpoint_entity"
 CONF_AC_GRID_SETPOINT_ENTITY = "ac_grid_setpoint_entity"

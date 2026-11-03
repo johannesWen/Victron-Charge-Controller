@@ -51,6 +51,7 @@ def test_contributions_match_target_without_changing_compute_behavior(action, op
     result = compute_setpoint(action, **settings, calculation=calculation)
     assert result == compute_setpoint(action, **settings)
     assert result == pytest.approx(target)
+    assert calculation.pop("battery_feedback_w") == 0.0
     assert calculation == pytest.approx(dict(zip(
         ("setting_w", "pv_charge_w", "surplus_w", "grid_consumer_w", "limits_w"),
         expected,

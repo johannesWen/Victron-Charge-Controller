@@ -41,7 +41,7 @@ const HELP_TEXT = {
       'Use Settings to adjust powers, battery limits, price thresholds and schedules.',
     ] },
     { heading: 'Grid setpoint calculation', items: [
-      'The signed values show the mode setting, PV charging battery share, solar surplus and grid consumer offset reported by the controller.',
+      'The signed values show the mode setting, PV charging battery share, solar surplus, grid consumer offset and battery feedback reported by the controller.',
       'Grid setpoint is the computed target after limits. When it is capped, the uncapped calculation appears in parentheses. Unavailable calculation data is not treated as zero.',
     ] },
   ],
@@ -94,11 +94,11 @@ const HELP_TEXT = {
       items: [
         [
           { text: 'Charge', bold: true },
-          { text: ' imports power from the grid at the configured Charge Power to fill the battery. It only runs in planned charge hours while the Charge Allowed switch is on and the battery is below the Max SOC limit.' },
+          { text: ' imports power from the grid at the configured Charge Power to fill the battery; with Battery Power Control active, Charge Power instead targets battery charging watts. It only runs in planned charge hours while the Charge Allowed switch is on and the battery is below the Max SOC limit.' },
         ],
         [
           { text: 'Discharge', bold: true },
-          { text: ' exports battery power plus the optional 15-minute averaged solar surplus until Min SOC is reached. At Min SOC it switches to surplus-only export; at Min SOC minus SOC Hysteresis (at least 0%) it stops and applies the Idle Setpoint without the action confirmation delay. Surplus-only resumes at Min SOC, and full discharge resumes strictly above Min SOC plus SOC Hysteresis. Averaged surplus can exceed available solar power and temporarily draw from the battery. After restart, discharge starts stopped below Min SOC, surplus-only through the upper threshold, and full above it. Without a surplus sensor, discharge stops at Min SOC and resumes above the upper threshold. With zero hysteresis, discharge stops at or below Min SOC and runs at full power above it. Stopping does not disable other battery flows managed by Victron.' },
+          { text: ' exports battery power plus the optional 15-minute averaged solar surplus until Min SOC is reached. With Battery Power Control active during full discharge, Discharge Power targets battery watts and feedback replaces solar-surplus and Grid Consumer offsets. At Min SOC it switches to surplus-only export; at Min SOC minus SOC Hysteresis (at least 0%) it stops and applies the Idle Setpoint without the action confirmation delay. Surplus-only resumes at Min SOC, and full discharge resumes strictly above Min SOC plus SOC Hysteresis. Averaged surplus can exceed available solar power and temporarily draw from the battery. After restart, discharge starts stopped below Min SOC, surplus-only through the upper threshold, and full above it. Without a surplus sensor, discharge stops at Min SOC and resumes above the upper threshold. With zero hysteresis, discharge stops at or below Min SOC and runs at full power above it. Stopping does not disable other battery flows managed by Victron.' },
         ],
         [
           { text: 'PV Charge', bold: true },
@@ -154,11 +154,18 @@ const SETTINGS_HELP = {
     { heading: 'Force Discharge', items: ['Requests discharge without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Discharge Allowed and obeys SOC protection, discharge stages and export limits.'] },
   ],
   grid_consumer: [
-    'Subtracts the current solar surplus from the measured consumer load and adds only the remaining shortfall to the raw grid target in Auto, Manual, Force Charge and Force Discharge, including Idle and PV Charge actions, before grid and reduced feed-in limits. Off keeps the configured Idle Setpoint unchanged.',
+    'When battery feedback is active for Charge or full Discharge, it already accounts for this load and replaces this offset. Otherwise, it subtracts the current solar surplus from the measured consumer load and adds only the remaining shortfall to the raw grid target in Auto, Manual, Force Charge and Force Discharge, including Idle and PV Charge actions, before grid and reduced feed-in limits. Off keeps the configured Idle Setpoint unchanged.',
     'Without solar surplus, Charge 3000 W + EV 3000 W = 6000 W, capped to the default Max Grid Setpoint of 5000 W. Discharge −2000 W + consumer 3000 W = 1000 W before limits. With a 3000 W consumer and 2000 W solar surplus, only 1000 W is added. Surplus equal to or above the load adds zero. Missing or invalid solar readings use the full consumer load.',
     'The first shortfall change starts a fixed five-second window. The latest consumer and solar readings are applied when it expires; further changes do not restart it. Initial enable, restart restore and recovery also wait five seconds. The existing setpoint watt deadband still applies. Disabling, Off or an invalid source clears the offset without delay.',
     'This adjusts the target, not the energy origin: intentional battery discharge remains possible. The source must measure a load already included in ESS consumption. For multiple loads, select an existing aggregate power sensor.',
     'Choose the optional Grid consumer power sensor (W or kW) in Settings → Devices & Services → Victron Charge Control → Configure, then enable this switch. It defaults off and is restored after restart. Invalid or unavailable consumer readings use zero offset; the configured switch can still be turned off.',
+  ],
+  battery_power_control: [
+    'Uses measured battery power to target Charge Power during regular Charge and Discharge Power during full Discharge, including force modes. PV Charge, solar-only discharge at Min SOC, Idle and Off keep their existing control.',
+    'Choose the optional Battery power sensor in integration setup, Configure or Reconfigure. It must report W or kW, positive when charging and negative when discharging. This switch defaults off and is restored after restart.',
+    'The grid target is applied grid watts + desired signed battery watts − measured battery watts. For example, 3000 W applied grid + 3000 W desired battery − 2000 W measured battery requests 4000 W grid. Household, solar and consumer effects are already reflected, so active feedback replaces the solar-surplus and Grid Consumer offsets for eligible actions.',
+    'Startup uses legacy grid-only control until feedback is ready. The controller uses each new battery reading once and waits five seconds after changing the grid target before adjusting again. Readings older than 120 seconds, invalid values or an unavailable sensor use grid-only control with the existing offsets until feedback recovers. You can still turn this switch off during a sensor outage.',
+    'Use a sensor that reports current battery power promptly. Repeated reports of old measurements cannot be detected by the freshness check, and delayed measurements can make the grid target oscillate. SOC protection, grid limits, reduced feed-in limits and device limits still apply. The requested battery target is not guaranteed actual battery power.',
   ],
   charge_allowed: [
     'Allows grid charging in scheduled and Force Charge operation. Turning it off stops those requests; Grid Consumer can still add import to Idle or PV Charge. It does not erase the schedule.',
@@ -176,10 +183,11 @@ const SETTINGS_HELP = {
   ],
   charge_power: [
     'Sets the positive grid power target used during grid charging, in watts. A larger value requests more grid import, subject to Max Grid Setpoint and the Victron system’s own limits.',
-    'This is a grid setpoint, not a guarantee of battery charging power: household loads and solar production also affect the battery. Charge Allowed and SOC protection must permit charging.',
+    'With Battery Power Control active, this is the desired battery charging power instead; measured feedback replaces solar and Grid Consumer offsets. Grid-only control resumes on feedback fallback or when Battery Power Control is off. Household loads, solar production and device limits affect actual power. Charge Allowed and SOC protection must permit charging.',
   ],
   discharge_power: [
     'Sets the battery-power component of the discharge request, in watts. During full discharge the controller requests export equal to this value plus the optional solar surplus sensor’s 15-minute average.',
+    'With Battery Power Control active during full discharge, this is the desired battery discharge power; feedback replaces the solar-surplus and Grid Consumer offsets. Grid-only control resumes on feedback fallback or when Battery Power Control is off. Solar-only discharge at Min SOC keeps its existing control.',
     'The negative grid target is clamped by Min Grid Setpoint and, during reduced feed-in, Reduced Max Feed-in. At Min SOC the battery-power component is removed; without a surplus sensor discharge stops.',
   ],
   pv_charging_battery_share: [
@@ -1010,21 +1018,46 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
+  _renderBatteryPowerControl() {
+    const state = this._state('switch', 'battery_power_control');
+    const configured = Boolean(state?.attributes?.source_entity);
+    const disabled = !configured || !['on', 'off'].includes(state?.state);
+    const message = !configured
+      ? 'Configure a Battery power sensor in the integration options to enable Battery Power Control.'
+      : disabled
+        ? 'Battery Power Control switch is unavailable.'
+        : state.state === 'on' ? ({
+          inactive: 'Battery feedback is inactive for the current action; grid-only control is active.',
+          waiting: 'Waiting for a baseline or settled battery reading before the next feedback adjustment.',
+          active: 'Battery feedback is active; Charge / Discharge Power targets battery watts.',
+          fallback: 'Battery power is invalid, unavailable or stale; grid-only control is active with the existing offsets. Feedback resumes when ready.',
+        }[state.attributes.feedback_status] || '') : '';
+    return this._renderTogglePair([
+      { label: 'Battery Power Control', key: 'battery_power_control', disabled, tooltip: message },
+      {
+        label: 'Disable Discharge', key: 'disable_discharge',
+        tooltip: ['on', 'off'].includes(this._val('switch', 'disable_discharge')) ? ''
+          : 'Configure a Maximum discharge power entity in the integration options to enable Disable Discharge.',
+      },
+    ]);
+  }
+
   _renderTogglePair(items) {
     return html`
       <div class="control-row toggle-pair">
-        ${items.map(({ label, key }) => {
+        ${items.map(({ label, key, disabled: unavailable = false, tooltip = '' }) => {
           const state = this._val('switch', key);
           const on = state === 'on';
-          const disabled = state !== 'on' && state !== 'off';
+          const disabled = unavailable || (state !== 'on' && state !== 'off');
           return html`
-            <div class="toggle-pair-item">
+            <div class="toggle-pair-item" title=${tooltip || nothing}
+              tabindex=${disabled && tooltip ? '0' : nothing}>
               ${this._renderHelpLabel(label, key)}
               <ha-switch
                 aria-label=${label}
                 .checked=${on}
                 .disabled=${disabled}
-                @change=${() => this._toggleSwitch(key)}
+                @change=${() => { if (!disabled) this._toggleSwitch(key); }}
               ></ha-switch>
             </div>
           `;
@@ -1324,11 +1357,13 @@ class VictronChargeControllerCard extends LitElement {
 
   _renderSetpointCalculation() {
     const state = this._state('sensor', 'target_setpoint');
-    const calculation = state?.attributes?.calculation;
+    const rawCalculation = state?.attributes?.calculation;
+    const calculation = rawCalculation && { battery_feedback_w: 0, ...rawCalculation };
     const available = typeof state?.state === 'string' && state.state.trim() !== ''
       && Number.isFinite(Number(state.state));
     const terms = [
       ['setting_w', 'Setting', 'Mode power'],
+      ['battery_feedback_w', 'Battery feedback', 'Applied grid − battery'],
       ['pv_charge_w', 'PV charge', 'Battery share'],
       ['surplus_w', 'Surplus', '15-minute mean'],
       ['grid_consumer_w', 'Grid consumer', 'After solar surplus'],
@@ -1337,8 +1372,9 @@ class VictronChargeControllerCard extends LitElement {
       .every(key => typeof calculation[key] === 'number' && Number.isFinite(calculation[key]));
     const uncapped = valid ? terms.reduce((sum, [key]) => sum + calculation[key], 0) : 0;
     const gridConsumer = this._state('switch', 'grid_consumer');
-    const visibleTerms = terms.filter(([key]) => key !== 'grid_consumer_w'
-      || (gridConsumer?.state === 'on' && gridConsumer.attributes?.source_entity));
+    const visibleTerms = terms.filter(([key]) => (key !== 'battery_feedback_w' || calculation?.[key] !== 0)
+      && (key !== 'grid_consumer_w'
+        || (gridConsumer?.state === 'on' && gridConsumer.attributes?.source_entity)));
     const watts = value => `${Math.abs(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} W`;
     const direction = value => value > 0 ? 'charge' : value < 0 ? 'discharge' : 'idle';
 
@@ -1419,9 +1455,7 @@ class VictronChargeControllerCard extends LitElement {
           { label: 'Charge Allowed', key: 'charge_allowed' },
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
         ])}
-        ${this._renderTogglePair([
-          { label: 'Disable Discharge', key: 'disable_discharge' },
-        ])}
+        ${this._renderBatteryPowerControl()}
         ${this._renderSlider('Charge Power', 'charge_power', ' W')}
         ${this._renderSlider('Discharge Power', 'discharge_power', ' W')}
         ${this._renderSlider('PV Charging Battery Share', 'pv_charging_battery_share', ' %')}
