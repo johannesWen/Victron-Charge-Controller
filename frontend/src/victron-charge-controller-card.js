@@ -1032,27 +1032,28 @@ class VictronChargeControllerCard extends LitElement {
           active: 'Battery feedback is active; Charge / Discharge Power targets battery watts.',
           fallback: 'Battery power is invalid, unavailable or stale; grid-only control is active with the existing offsets. Feedback resumes when ready.',
         }[state.attributes.feedback_status] || '') : '';
-    return html`
-      ${this._renderToggle('Battery Power Control', 'battery_power_control', disabled, disabled ? message : '')}
-      ${message ? html`<div class="forecast-status" role="status">${message}</div>` : nothing}
-    `;
+    return this._renderTogglePair([
+      { label: 'Battery Power Control', key: 'battery_power_control', disabled, tooltip: message },
+      { label: 'Disable Discharge', key: 'disable_discharge' },
+    ]);
   }
 
   _renderTogglePair(items) {
     return html`
       <div class="control-row toggle-pair">
-        ${items.map(({ label, key }) => {
+        ${items.map(({ label, key, disabled: unavailable = false, tooltip = '' }) => {
           const state = this._val('switch', key);
           const on = state === 'on';
-          const disabled = state !== 'on' && state !== 'off';
+          const disabled = unavailable || (state !== 'on' && state !== 'off');
           return html`
-            <div class="toggle-pair-item">
+            <div class="toggle-pair-item" title=${tooltip || nothing}
+              tabindex=${disabled && tooltip ? '0' : nothing}>
               ${this._renderHelpLabel(label, key)}
               <ha-switch
                 aria-label=${label}
                 .checked=${on}
                 .disabled=${disabled}
-                @change=${() => this._toggleSwitch(key)}
+                @change=${() => { if (!disabled) this._toggleSwitch(key); }}
               ></ha-switch>
             </div>
           `;
@@ -1449,9 +1450,6 @@ class VictronChargeControllerCard extends LitElement {
         ${this._renderTogglePair([
           { label: 'Charge Allowed', key: 'charge_allowed' },
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
-        ])}
-        ${this._renderTogglePair([
-          { label: 'Disable Discharge', key: 'disable_discharge' },
         ])}
         ${this._renderBatteryPowerControl()}
         ${this._renderSlider('Charge Power', 'charge_power', ' W')}

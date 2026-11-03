@@ -242,7 +242,7 @@ At startup, the controller uses legacy grid-only control until feedback is ready
 It uses each Home Assistant `last_reported` sample once and waits five seconds for settling after
 a changed actuator write. An unchanged RAM keepalive does not restart this settling period.
 Invalid, unavailable or stale readings (older than 120 seconds) fall back to grid-only control,
-including the existing solar and Grid Consumer offsets. The card shows this fallback and when it is
+including the existing solar and Grid Consumer offsets. The control's tooltip shows this fallback and when it is
 waiting for a baseline or settled reading; feedback recovers automatically when ready.
 The configured switch remains turnable off during a sensor outage.
 

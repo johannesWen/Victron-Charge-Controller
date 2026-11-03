@@ -62,7 +62,8 @@ for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
     assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
     const pair = templates.find(node => node.strings.join('').includes('class="control-row toggle-pair"')
       && node.rendered.includes('aria-label=Disable Discharge'));
-    assert.equal((pair.rendered.match(/class="toggle-pair-item"/g) || []).length, 1);
+    assert.equal((pair.rendered.match(/class="toggle-pair-item"/g) || []).length, 2);
+    assert.ok(pair.rendered.indexOf('aria-label=Battery Power Control') < pair.rendered.indexOf('aria-label=Disable Discharge'));
     assert.ok(rendered.indexOf('aria-label=Discharge Allowed') < rendered.indexOf('aria-label=Disable Discharge'));
     assert.ok(rendered.indexOf('aria-label=Disable Discharge') < rendered.indexOf('Help for Charge Power'));
     assert.equal(calls.length, 0);
@@ -262,8 +263,7 @@ for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
     const entityId = `switch.${prefix}_battery_power_control`;
     if (state !== null) states[entityId] = { state, attributes: { source_entity: 'sensor.battery', feedback_status: 'active' } };
     card._renderControlsView();
-    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"')
-      && node.rendered.includes('aria-label=Battery Power Control'));
+    const toggle = switches(templates).find(node => binding(node, 'aria-label') === 'Battery Power Control');
     assert.equal(binding(toggle, '.checked'), state === 'on');
     assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
     binding(toggle, '@change')();
@@ -278,15 +278,15 @@ test('Battery Power Control explains missing configuration and permits off durin
   const entityId = `switch.${prefix}_battery_power_control`;
   states[entityId] = { state: 'off', attributes: { source_entity: null } };
   assert.match(card._renderBatteryPowerControl(), /Configure a Battery power sensor/);
-  const disabled = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"'));
+  const disabled = switches(templates).find(node => binding(node, 'aria-label') === 'Battery Power Control');
   assert.equal(binding(disabled, '.disabled'), true);
   binding(disabled, '@change')();
   assert.equal(calls.length, 0);
   states[entityId] = { state: 'on', attributes: { source_entity: 'sensor.battery', power_w: null, feedback_status: 'fallback' } };
   states['sensor.battery'] = { state: 'unavailable', attributes: {} };
   templates.length = 0;
-  assert.match(card._renderBatteryPowerControl(), /role="status".*invalid, unavailable or stale/s);
-  const enabled = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"'));
+  assert.match(card._renderBatteryPowerControl(), /title=Battery power is invalid, unavailable or stale/);
+  const enabled = switches(templates).find(node => binding(node, 'aria-label') === 'Battery Power Control');
   assert.equal(binding(enabled, '.disabled'), false);
   binding(enabled, '@change')();
   assert.equal(calls[0][1], 'turn_off');
@@ -300,15 +300,17 @@ for (const [status, message] of [
   ['fallback', 'grid-only control is active with the existing offsets'],
   ['inactive', 'Battery feedback is inactive for the current action'],
   ['active', 'Battery feedback is active; Charge / Discharge Power targets battery watts.'],
-]) test(`Battery Power Control displays accessible ${status} status`, () => {
-  const { card, states, prefix } = setup();
+]) test(`Battery Power Control keeps ${status} in its tooltip without hint text`, () => {
+  const { card, templates, states, prefix } = setup();
   states[`switch.${prefix}_battery_power_control`] = { state: 'on', attributes: {
     source_entity: 'sensor.battery', feedback_status: status,
   } };
   states[`number.${prefix}_charge_power`] = { state: '3000', attributes: {} };
   const rendered = card._renderControlsView();
   assert.ok(rendered.includes(message));
-  assert.match(rendered, /role="status"/);
+  const toggle = switches(templates).find(node => binding(node, 'aria-label') === 'Battery Power Control');
+  assert.ok(binding(toggle, 'title').includes(message));
+  assert.doesNotMatch(card._renderBatteryPowerControl(), /forecast-status|role="status"/);
   assert.ok(rendered.indexOf('aria-label=Battery Power Control') < rendered.indexOf('Help for Charge Power'));
   states[`switch.${prefix}_battery_power_control`].state = 'off';
   assert.ok(!card._renderBatteryPowerControl().includes(message));
