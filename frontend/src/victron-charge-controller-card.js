@@ -1034,7 +1034,11 @@ class VictronChargeControllerCard extends LitElement {
         }[state.attributes.feedback_status] || '') : '';
     return this._renderTogglePair([
       { label: 'Battery Power Control', key: 'battery_power_control', disabled, tooltip: message },
-      { label: 'Disable Discharge', key: 'disable_discharge' },
+      {
+        label: 'Disable Discharge', key: 'disable_discharge',
+        tooltip: ['on', 'off'].includes(this._val('switch', 'disable_discharge')) ? ''
+          : 'Configure a Maximum discharge power entity in the integration options to enable Disable Discharge.',
+      },
     ]);
   }
 

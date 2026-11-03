@@ -60,6 +60,9 @@ for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
     assert.ok(toggle);
     assert.equal(binding(toggle, '.checked'), state === 'on');
     assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
+    assert.equal(binding(toggle, 'title'), ['on', 'off'].includes(state) ? ''
+      : 'Configure a Maximum discharge power entity in the integration options to enable Disable Discharge.');
+    assert.equal(binding(toggle, 'tabindex'), ['on', 'off'].includes(state) ? '' : '0');
     const pair = templates.find(node => node.strings.join('').includes('class="control-row toggle-pair"')
       && node.rendered.includes('aria-label=Disable Discharge'));
     assert.equal((pair.rendered.match(/class="toggle-pair-item"/g) || []).length, 2);
