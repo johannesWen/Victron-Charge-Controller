@@ -34,6 +34,7 @@ from .const import (
     ACTION_IDLE,
     ACTION_PV_CHARGE,
     CONF_AC_GRID_SETPOINT_ENTITY,
+    CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
@@ -256,6 +257,19 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_consumer_clear_pending = False
         self._grid_consumer_may_be_applied = False
         self._grid_consumer_ready = False
+        self._battery_power_entity: str | None = entry.data.get(CONF_BATTERY_POWER_ENTITY) or None
+        self._battery_power_control_enabled = False
+        self._battery_feedback_status = "disabled"
+        self._battery_feedback: tuple[float, float] | None = None
+        self._battery_action: str | None = None
+        self._battery_baseline: float | None = None
+        self._battery_report_after: datetime | None = None
+        self._battery_last_report: datetime | None = None
+        self._battery_next_sample: datetime | None = None
+        self._battery_target: float | None = None
+        self._battery_generation = 0
+        self._battery_clear_pending = False
+        self._battery_unsub: Any = None
 
         # --- Configurable parameters (modified by number/select/switch entities) ---
         self._control_mode: str = MODE_OFF
@@ -433,8 +447,117 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     @control_mode.setter
     def control_mode(self, mode: str) -> None:
+        if mode != self._control_mode:
+            self._reset_battery_feedback()
         self._control_mode = mode
         self._sample_grid_consumer()
+
+    @property
+    def battery_power_entity(self) -> str | None:
+        return self._battery_power_entity
+
+    @property
+    def battery_power_control_enabled(self) -> bool:
+        return self._battery_power_control_enabled
+
+    @battery_power_control_enabled.setter
+    def battery_power_control_enabled(self, enabled: bool) -> None:
+        enabled = enabled and self._battery_power_entity is not None
+        if enabled != self._battery_power_control_enabled:
+            self._battery_power_control_enabled = enabled
+            self._reset_battery_feedback()
+        self._battery_feedback_status = "waiting" if enabled else "disabled"
+
+    @property
+    def battery_power(self) -> float | None:
+        """Read fresh, signed battery watts; reports, not value changes, define age."""
+        state = self.hass.states.get(self._battery_power_entity) if self._battery_power_entity else None
+        if state is None or state.attributes.get("unit_of_measurement") not in ("W", "kW"):
+            return None
+        if (dt_util.utcnow() - state.last_reported).total_seconds() > 120:
+            return None
+        try:
+            power = float(state.state)
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if state.attributes["unit_of_measurement"] == "kW":
+            power *= 1000
+        return power if math.isfinite(power) else None
+
+    @property
+    def battery_feedback_status(self) -> str:
+        return self._battery_feedback_status
+
+    @callback
+    def _reset_battery_feedback(self) -> None:
+        """Discard sampled corrections and fence writes already in progress."""
+        self._battery_clear_pending |= self._battery_feedback is not None
+        self._battery_generation += 1
+        self._battery_feedback = None
+        self._battery_action = None
+        self._battery_baseline = None
+        self._battery_report_after = None
+        self._battery_last_report = None
+        self._battery_next_sample = None
+        self._battery_target = None
+
+    def _sample_battery_feedback(self, action: str) -> None:
+        eligible = self.battery_power_control_enabled and self.control_mode != MODE_OFF and (
+            action == ACTION_CHARGE
+            or (action == ACTION_DISCHARGE and not self._discharge_solar_only)
+        )
+        context = action if eligible else None
+        if context != self._battery_action:
+            self._reset_battery_feedback()
+            self._battery_action = context
+        if not eligible:
+            self._battery_feedback_status = "inactive" if self.battery_power_control_enabled else "disabled"
+            return
+        power = self.battery_power
+        if power is None:
+            if self._battery_feedback_status != "fallback":
+                self._reset_battery_feedback()
+                self._battery_action = context
+            self._battery_feedback_status = "fallback"
+            return
+        self._battery_feedback_status = "active" if self._battery_feedback is not None else "waiting"
+        if self._battery_baseline is None:
+            return
+        # Retry an unconfirmed target before accepting a newer measurement.
+        if self._battery_target is not None and self._battery_target != self._battery_baseline:
+            return
+        now = dt_util.utcnow()
+        reported = self.hass.states.get(self._battery_power_entity).last_reported
+        if (
+            (self._battery_last_report is not None and reported <= self._battery_last_report)
+            or (self._battery_report_after is not None and reported < self._battery_report_after)
+            or (self._battery_next_sample is not None and now < self._battery_next_sample)
+        ):
+            return
+        self._battery_feedback = (self._battery_baseline, power)
+        self._battery_last_report = reported
+        self._battery_next_sample = now + timedelta(seconds=RAM_REFRESH_SECONDS)
+        self._battery_feedback_status = "active"
+
+    @callback
+    def _listen_battery_power(self) -> None:
+        if self._battery_unsub is not None:
+            self._battery_unsub()
+            self._battery_unsub = None
+        if self._battery_power_entity is None or self._shutdown_requested:
+            return
+
+        @callback
+        def _changed(_event: Any) -> None:
+            # Valid reports are sampled by the existing five-second control loop.
+            if self.battery_power_control_enabled and self.battery_power is None:
+                self._reset_battery_feedback()
+                self.hass.async_create_task(self.async_request_refresh())
+            self.async_update_listeners()
+
+        self._battery_unsub = async_track_state_change_event(
+            self.hass, [self._battery_power_entity], _changed
+        )
 
     @property
     def max_discharge_power_entity(self) -> str | None:
@@ -651,6 +774,17 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def update_entity_references(self, data: dict[str, Any]) -> None:
         """Update entity references from config entry data."""
+        battery_entity = data.get(CONF_BATTERY_POWER_ENTITY) or None
+        battery_changed = (
+            battery_entity != self._battery_power_entity
+            or data[CONF_AC_GRID_SETPOINT_ENTITY] != self._ac_grid_setpoint_entity
+        )
+        if battery_changed:
+            self._reset_battery_feedback()
+            self._battery_power_entity = battery_entity
+            if battery_entity is None:
+                self._battery_power_control_enabled = False
+            self._listen_battery_power()
         self._battery_soc_entity = data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity = data[CONF_GRID_SETPOINT_ENTITY]
         self._ac_grid_setpoint_entity = data[CONF_AC_GRID_SETPOINT_ENTITY]
@@ -682,6 +816,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 self._grid_consumer_enabled = False
             self._listen_grid_consumer()
             self._sample_grid_consumer()
+            self.hass.async_create_task(self.async_request_refresh())
+
+        if battery_changed:
             self.hass.async_create_task(self.async_request_refresh())
 
     def restore_cost_state(
@@ -1514,7 +1651,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         calculation: dict[str, float] | None = None,
     ) -> float:
         """Compute the clamped grid setpoint for the given action."""
-        return decision_compute_setpoint(
+        target = decision_compute_setpoint(
             action,
             is_reduced=is_reduced,
             charge_power=self.charge_power,
@@ -1530,8 +1667,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             grid_consumer_offset=(
                 self._grid_consumer_offset if self.control_mode != MODE_OFF else 0.0
             ),
+            battery_feedback=self._battery_feedback,
             calculation=calculation,
         )
+        if self._battery_feedback is not None:
+            self._battery_target = target
+        return target
 
     # ------------------------------------------------------------------
     # Setpoint application
@@ -1543,6 +1684,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Write RAM, recording success independently of skipped/failed writes."""
         generation = self._grid_consumer_generation
         clearing = self._grid_consumer_clear_pending
+        battery_generation = self._battery_generation
+        battery_entity = self._ac_grid_setpoint_entity
+        battery_clearing = self._battery_clear_pending
+        battery_write = self.battery_power_control_enabled and self._battery_action == action and (
+            self._battery_feedback_status in ("waiting", "active")
+        )
         applied = await actuation_apply_setpoint(
             self.hass,
             entity_id=self._ac_grid_setpoint_entity,
@@ -1551,10 +1698,19 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             last_applied_setpoint=self._last_applied_setpoint,
             setpoint_deadband=self.setpoint_deadband,
             enforce_export_limit=action == ACTION_DISCHARGE and self._discharge_solar_only,
-            force=force or clearing,
+            force=force or clearing or battery_clearing or (
+                battery_write and target_setpoint != self._battery_baseline
+            ),
             allow_unknown=True,
         )
         if applied:
+            if battery_generation == self._battery_generation and battery_entity == self._ac_grid_setpoint_entity:
+                if battery_write:
+                    if target_setpoint != self._battery_baseline:
+                        self._battery_report_after = dt_util.utcnow() + timedelta(seconds=RAM_REFRESH_SECONDS)
+                    self._battery_baseline = target_setpoint
+                if battery_clearing:
+                    self._battery_clear_pending = False
             self._last_applied_setpoint = target_setpoint
             self._last_ram_write = self.hass.loop.time()
             self._ram_refresh_due = False
@@ -1869,7 +2025,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return (
             self.control_mode, self._get_battery_soc(), self.idle_setpoint,
             self._get_unsafe_entities(), self._grid_consumer_generation,
-            self._desired_discharge_entity(),
+            self._desired_discharge_entity(), self._battery_generation,
+            self.battery_power if self.battery_power_control_enabled else None,
+            (
+                self.charge_power, self.discharge_power, self.charge_allowed, self.discharge_allowed,
+                self.min_grid_setpoint, self.max_grid_setpoint, self.min_soc, self.max_soc,
+                self.soc_hysteresis, self.reduced_max_grid_feed_in,
+                self.grid_feed_in_control_enabled, self.grid_feed_in_price_threshold,
+                tuple(self._charge_hours), tuple(self._discharge_hours), tuple(self._pv_charge_hours),
+            ) if self.battery_power_control_enabled else None,
         )
 
     async def _async_reconcile_setpoint(
@@ -1970,13 +2134,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         is_reduced = self._is_reduced_feed_in_mode(current_price_ct)
         live_action = self._determine_action()
         action = self._resolve_published_action(live_action)
+        self._sample_battery_feedback(action)
         if self.control_mode == MODE_OFF:
             # OFF writes idle directly, bypassing the normal setpoint limits.
             setpoint = self.idle_setpoint
             if calculation is not None:
                 calculation.update(
                     setting_w=setpoint, pv_charge_w=0.0, surplus_w=0.0,
-                    grid_consumer_w=0.0, limits_w=0.0,
+                    grid_consumer_w=0.0, battery_feedback_w=0.0, limits_w=0.0,
                 )
         else:
             setpoint = self._compute_setpoint(
@@ -2001,6 +2166,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         )
         if not fallback_ready:
             action, setpoint, active = ACTION_IDLE, self.idle_setpoint, False
+        if action == ACTION_IDLE and self._battery_baseline is not None:
+            # A failed permanent fallback invalidates the active RAM baseline.
+            context = self._battery_action
+            self._reset_battery_feedback()
+            self._battery_action = context
+            self._battery_feedback_status = "waiting"
         if active:
             self._idle_correction_pending = True
             due = self._ram_refresh_due or self._last_ram_write is None or (
@@ -2019,6 +2190,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 or self._last_applied_setpoint != self.idle_setpoint
                 or (current is not None and current != self.idle_setpoint)
                 or self._grid_consumer_clear_pending
+                or self._battery_clear_pending
             )
             if needs_idle:
                 self._idle_correction_pending = True
@@ -2165,6 +2337,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             )
         )
         self._listen_grid_consumer()
+        self._listen_battery_power()
 
         # Every minute, re-evaluate (catches hour boundaries)
         @callback
@@ -2234,6 +2407,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         await super().async_shutdown()
         self._schedule_ram_refresh(False)
         self._clear_grid_consumer_offset()
+        self._reset_battery_feedback()
+        if self._battery_unsub is not None:
+            self._battery_unsub()
+            self._battery_unsub = None
         if self._grid_consumer_unsub is not None:
             self._grid_consumer_unsub()
             self._grid_consumer_unsub = None

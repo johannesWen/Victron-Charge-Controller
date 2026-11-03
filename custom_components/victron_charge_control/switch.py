@@ -69,6 +69,13 @@ SWITCHES: tuple[VictronCCSwitchDescription, ...] = (
         coordinator_attr="disable_discharge",
         default_value=False,
     ),
+    VictronCCSwitchDescription(
+        key="battery_power_control_enabled",
+        translation_key="battery_power_control_enabled",
+        icon="mdi:battery-sync",
+        coordinator_attr="battery_power_control_enabled",
+        default_value=False,
+    ),
 )
 
 
@@ -112,6 +119,8 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
 
     @property
     def available(self) -> bool:
+        if self.entity_description.key == "battery_power_control_enabled":
+            return self.coordinator.battery_power_entity is not None or self.is_on
         if self.entity_description.key == "disable_discharge":
             # Keep turn_off usable even when the actuator or another control fails.
             return self.coordinator.max_discharge_power_entity is not None or self.is_on
@@ -121,6 +130,12 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.entity_description.key == "battery_power_control_enabled":
+            return {
+                "source_entity": self.coordinator.battery_power_entity,
+                "power_w": self.coordinator.battery_power,
+                "feedback_status": self.coordinator.battery_feedback_status,
+            }
         if self.entity_description.key == "grid_consumer_enabled":
             return {
                 "source_entity": self.coordinator.grid_consumer_entity,
@@ -131,6 +146,11 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable."""
+        if (
+            self.entity_description.key == "battery_power_control_enabled"
+            and self.coordinator.battery_power_entity is None
+        ):
+            raise ServiceValidationError("Configure a Battery Power sensor first")
         if self.entity_description.key == "grid_consumer_enabled" and not self.available:
             raise ServiceValidationError("Configure a Grid Consumer power sensor first")
         if (

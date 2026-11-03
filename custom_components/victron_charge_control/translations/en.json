@@ -15,7 +15,8 @@
           "dc_coupled_pv_feed_in_entity": "DC coupled PV feed-in switch (optional, on/off)",
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
           "ac_grid_setpoint_entity": "AC grid setpoint (required, W)",
-          "max_discharge_power_entity": "Max discharge power entity (optional, W)"
+          "max_discharge_power_entity": "Max discharge power entity (optional, W)",
+          "battery_power_entity": "Battery power sensor (optional, W or kW)"
         },
         "data_description": {
           "battery_soc_entity": "Choose the sensor that shows the battery charge level (0-100%). Used to keep the battery within your charge limits.",
@@ -28,7 +29,8 @@
           "dc_coupled_pv_feed_in_entity": "Choose the Victron DC-coupled PV feed-in switch. When this control is enabled, the switch turns off in reduced feed-in mode and on in normal mode. Leave empty to skip this control.",
           "grid_consumer_entity": "Choose the power sensor for a device you want to supply from solar and the grid. When Grid Consumer is enabled, the grid covers the power that unused solar cannot supply, within your set limits. Leave empty to disable this feature.",
           "ac_grid_setpoint_entity": "Choose the AC grid setpoint (RAM) in watts (W) from the built-in Victron GX integration. Active control uses this value. Choose a different entity from the permanent AC power setpoint. If this entity becomes unavailable, the safety watchdog stops control.",
-          "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature."
+          "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
+          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged."
         }
       },
       "reconfigure": {
@@ -45,7 +47,8 @@
           "dc_coupled_pv_feed_in_entity": "DC coupled PV feed-in switch (optional, on/off)",
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
           "ac_grid_setpoint_entity": "AC grid setpoint (required, W)",
-          "max_discharge_power_entity": "Max discharge power entity (optional, W)"
+          "max_discharge_power_entity": "Max discharge power entity (optional, W)",
+          "battery_power_entity": "Battery power sensor (optional, W or kW)"
         },
         "data_description": {
           "battery_soc_entity": "Choose the sensor that shows the battery charge level (0-100%). Used to keep the battery within your charge limits.",
@@ -58,7 +61,8 @@
           "dc_coupled_pv_feed_in_entity": "Choose the Victron DC-coupled PV feed-in switch. When this control is enabled, the switch turns off in reduced feed-in mode and on in normal mode. Leave empty to skip this control.",
           "grid_consumer_entity": "Choose the power sensor for a device you want to supply from solar and the grid. When Grid Consumer is enabled, the grid covers the power that unused solar cannot supply, within your set limits. Leave empty to disable this feature.",
           "ac_grid_setpoint_entity": "Choose the AC grid setpoint (RAM) in watts (W) from the built-in Victron GX integration. Active control uses this value. Choose a different entity from the permanent AC power setpoint. If this entity becomes unavailable, the safety watchdog stops control.",
-          "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature."
+          "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
+          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged."
         }
       }
     },
@@ -66,7 +70,8 @@
       "entity_not_found": "Entity not found. Make sure it exists.",
       "number_required": "Select a number entity.",
       "distinct_setpoints": "Select different entities for the permanent AC power setpoint and RAM AC grid setpoint.",
-      "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit."
+      "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit.",
+      "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings."
     },
     "abort": {
       "already_configured": "Already configured. Only one instance is supported."
@@ -90,7 +95,8 @@
           "use_solcast_forecast": "Use Solcast forecast",
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
           "ac_grid_setpoint_entity": "AC grid setpoint (required, W)",
-          "max_discharge_power_entity": "Max discharge power entity (optional, W)"
+          "max_discharge_power_entity": "Max discharge power entity (optional, W)",
+          "battery_power_entity": "Battery power sensor (optional, W or kW)"
         },
         "data_description": {
           "battery_soc_entity": "Choose the sensor that shows the battery charge level (0-100%). Used to keep the battery within your charge limits.",
@@ -105,7 +111,8 @@
           "use_solcast_forecast": "Use the saved Solcast solar forecast for today and tomorrow. Solcast is found automatically. This is on by default and only shows forecast information; it does not change charging or schedules.",
           "grid_consumer_entity": "Choose the power sensor for a device you want to supply from solar and the grid. When Grid Consumer is enabled, the grid covers the power that unused solar cannot supply, within your set limits. Leave empty to disable this feature.",
           "ac_grid_setpoint_entity": "Choose the AC grid setpoint (RAM) in watts (W) from the built-in Victron GX integration. Active control uses this value. Choose a different entity from the permanent AC power setpoint. If this entity becomes unavailable, the safety watchdog stops control.",
-          "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature."
+          "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
+          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged."
         }
       }
     },
@@ -113,7 +120,8 @@
       "entity_not_found": "Entity not found. Make sure it exists.",
       "number_required": "Select a number entity.",
       "distinct_setpoints": "Select different entities for the permanent AC power setpoint and RAM AC grid setpoint.",
-      "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit."
+      "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit.",
+      "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings."
     }
   },
   "entity": {
@@ -279,6 +287,9 @@
       },
       "disable_discharge": {
         "name": "Disable Discharge"
+      },
+      "battery_power_control_enabled": {
+        "name": "Battery Power Control"
       }
     },
     "text": {

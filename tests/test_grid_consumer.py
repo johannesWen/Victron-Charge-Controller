@@ -470,7 +470,7 @@ async def test_off_snapshot_shows_actual_unclamped_idle(consumer, idle):
     assert float(states["number.ac_grid_setpoint"].state) == idle
     assert coord.data.setpoint_calculation == {
         "setting_w": idle, "pv_charge_w": 0, "surplus_w": 0,
-        "grid_consumer_w": 0, "limits_w": 0,
+        "grid_consumer_w": 0, "battery_feedback_w": 0, "limits_w": 0,
     }
 
 
@@ -494,7 +494,7 @@ async def test_calculation_does_not_read_new_settings_after_awaited_write(native
     assert coord.data.target_setpoint == 3750
     assert coord.data.setpoint_calculation == {
         "setting_w": 3000, "pv_charge_w": 0, "surplus_w": 0,
-        "grid_consumer_w": 750, "limits_w": 0,
+        "grid_consumer_w": 750, "battery_feedback_w": 0, "limits_w": 0,
     }
 
 
