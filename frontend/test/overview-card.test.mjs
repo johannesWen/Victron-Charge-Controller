@@ -354,8 +354,8 @@ test('Battery Power Control help explains configuration, sampling, coexistence a
   binding(label, '@click')({ currentTarget: {} });
   const rendered = card._renderHelpDialog('settings', 'Settings');
   for (const text of ['W or kW', 'positive when charging', 'negative when discharging', 'defaults off',
-    'restored after restart', 'PV Charge', 'solar-only discharge', 'last_reported', 'five seconds',
-    '120 seconds', 'RAM keepalive', 'Grid Consumer offsets', 'SOC protection', 'not guaranteed']) {
+    'restored after restart', 'PV Charge', 'solar-only discharge', 'each new battery reading once', 'five seconds',
+    '120 seconds', 'changing the grid target before adjusting again', 'Grid Consumer offsets', 'SOC protection', 'not guaranteed']) {
     assert.ok(rendered.includes(text), text);
   }
 });
