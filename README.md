@@ -246,6 +246,10 @@ including the existing solar and Grid Consumer offsets. The card shows this fall
 waiting for a baseline or settled reading; feedback recovers automatically when ready.
 The configured switch remains turnable off during a sensor outage.
 
+Use a sensor that reports current battery power promptly. The freshness check detects missing
+Home Assistant reports, not old measurements repeatedly republished by the source.
+Delayed measurements can make the grid target oscillate despite the five-second settling period.
+
 SOC protection, grid setpoint bounds, reduced feed-in limits and device limits still apply.
 Actual battery power is not guaranteed to reach the requested target.
 

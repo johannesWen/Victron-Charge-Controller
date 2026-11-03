@@ -162,10 +162,10 @@ const SETTINGS_HELP = {
   ],
   battery_power_control: [
     'Uses measured battery power to target Charge Power during regular Charge and Discharge Power during full Discharge, including force modes. PV Charge, solar-only discharge at Min SOC, Idle and Off keep their existing control.',
-    'Choose the optional Battery power sensor in integration setup, Configure or Reconfigure. It must report W or kW, positive when charging and negative when discharging. This switch defaults off and is restored after restart; no extra tuning is needed.',
+    'Choose the optional Battery power sensor in integration setup, Configure or Reconfigure. It must report W or kW, positive when charging and negative when discharging. This switch defaults off and is restored after restart.',
     'The grid target is applied grid watts + desired signed battery watts − measured battery watts. For example, 3000 W applied grid + 3000 W desired battery − 2000 W measured battery requests 4000 W grid. Household, solar and consumer effects are already reflected, so active feedback replaces the solar-surplus and Grid Consumer offsets for eligible actions.',
     'Startup uses legacy grid-only control until feedback is ready. The controller uses each new battery reading once and waits five seconds after changing the grid target before adjusting again. Readings older than 120 seconds, invalid values or an unavailable sensor use grid-only control with the existing offsets until feedback recovers. You can still turn this switch off during a sensor outage.',
-    'SOC protection, grid limits, reduced feed-in limits and device limits still apply. The requested battery target is not guaranteed actual battery power.',
+    'Use a sensor that reports current battery power promptly. Repeated reports of old measurements cannot be detected by the freshness check, and delayed measurements can make the grid target oscillate. SOC protection, grid limits, reduced feed-in limits and device limits still apply. The requested battery target is not guaranteed actual battery power.',
   ],
   charge_allowed: [
     'Allows grid charging in scheduled and Force Charge operation. Turning it off stops those requests; Grid Consumer can still add import to Idle or PV Charge. It does not erase the schedule.',
