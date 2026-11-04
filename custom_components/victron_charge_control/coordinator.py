@@ -937,20 +937,23 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def set_charge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set charge hours (date-aware) and trigger update."""
-        if self._active_fixed_plan is not None:
-            self._retract_fixed_plan()
         self._charge_hours = set_charge_slots(slots)
-        self._apply_fixed_plan()
+        if self._fixed_plan_base_snapshot is not None:
+            self._fixed_plan_base_snapshot = (
+                list(self._charge_hours), *self._fixed_plan_base_snapshot[1:]
+            )
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_discharge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set discharge hours (date-aware) and trigger update."""
-        if self._active_fixed_plan is not None:
-            self._retract_fixed_plan()
         self._discharge_hours = set_discharge_slots(slots)
-        self._apply_fixed_plan()
+        if self._fixed_plan_base_snapshot is not None:
+            self._fixed_plan_base_snapshot = (
+                self._fixed_plan_base_snapshot[0], list(self._discharge_hours),
+                self._fixed_plan_base_snapshot[2],
+            )
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -1210,6 +1213,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         recomputed from EPEX prices, in manual mode the user-picked hours are
         cleared so the next day starts fresh.
         """
+        if self.control_mode == MODE_MANUAL and self._active_fixed_plan is not None:
+            # Reset the underlying plan, retaining only its nonexpired manual PV slots.
+            self._retract_fixed_plan()
         self._clean_expired_slots()
         if self.control_mode == MODE_AUTO:
             self.calculate_auto_schedule()
@@ -1301,7 +1307,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.hass.async_create_task(self.async_request_refresh())
 
     def _record_schedule_edit(self, targets: list[ScheduleSlot]) -> None:
-        """Keep explicit edits in the base while the active fixed plan stays on top."""
+        """Save daily edits in the base without reapplying the fixed overlay yet."""
         if self._active_fixed_plan is None:
             return
         current = (self._charge_hours, self._discharge_hours, self._pv_charge_hours)
@@ -1314,7 +1320,6 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             ])
             for previous, edited in zip(base, current)
         )
-        self._apply_fixed_plan()
 
     def _source_slots(self) -> list[ScheduleSlot]:
         state = self.hass.states.get(self._epex_spot_entity)

@@ -511,7 +511,7 @@ async def test_manual_pv_outside_fixed_overlay_survives_replan_restart_retractio
 
 
 @pytest.mark.parametrize("edit", ["exact","hour","charge_list","discharge_list"])
-async def test_fixed_plan_overrides_edits_but_retraction_restores_edited_base(controller, edit):
+async def test_edits_take_effect_before_fixed_reapplication_and_retraction_restores_base(controller, edit):
     publish(controller, [price(START+timedelta(minutes=15*i)) for i in range(4)])
     controller.control_mode = MODE_MANUAL
     controller.set_fixed_plan_hour(1,10,"pv_charge")
@@ -526,6 +526,13 @@ async def test_fixed_plan_overrides_edits_but_retraction_restores_edited_base(co
     else:
         expected = [utc_slot(DAY,10)]
         getattr(controller,f"set_{action}_hours")([(DAY,10)])
+    assert active_slot(getattr(controller,f"{action}_hours"), START)
+    if edit in ("exact", "hour"):
+        assert not active_slot(controller.pv_charge_hours, START)
+    else:
+        # Bucket setters retain the other buckets, matching their original behavior.
+        assert active_slot(controller.pv_charge_hours, START)
+    controller._apply_fixed_plan()
     assert active_slot(controller.pv_charge_hours, START)
     assert not active_slot(getattr(controller,f"{action}_hours"), START)
     await controller._async_save_schedule()
@@ -573,3 +580,96 @@ def test_crossing_source_blocks_follow_actual_dst_hours(controller,monkeypatch,d
     controller._blocked_charging_hours = [blocked]
     controller.calculate_auto_schedule()
     assert controller.charge_hours == ([] if excluded else [(start,start+timedelta(hours=1))])
+
+
+@pytest.mark.parametrize("edit", ["exact", "hour"])
+@pytest.mark.parametrize("action", ["charge", "pv_charge", "discharge", "idle"])
+def test_daily_edits_override_fixed_plan_immediately_in_schedule_and_display(controller, edit, action):
+    controller.control_mode = MODE_MANUAL
+    entries = [price(START + timedelta(minutes=15*i)) for i in range(4)]
+    publish(controller, entries)
+    fixed = "discharge" if action == "charge" else "charge"
+    controller.set_fixed_plan_hour(1, 10, fixed)
+    controller.set_active_fixed_plan(1)
+    target = START + timedelta(minutes=15)
+    if edit == "exact":
+        controller.set_slot_action(target.isoformat(), action)
+    else:
+        controller.set_hour_action(10, action, DAY)
+    for bucket in ("charge", "pv_charge", "discharge"):
+        assert active_slot(getattr(controller, f"{bucket}_hours"), target) == (action == bucket)
+    data = publish(controller, entries)
+    plan = ChargePlanSensor(controller, MockConfigEntry())._build_plan(data)
+    assert next(item for item in plan if item["start_time"] == target.isoformat())["action"] == action
+    controller._apply_fixed_plan()
+    assert active_slot(getattr(controller, f"{fixed}_hours"), target)
+    controller.set_active_fixed_plan(None)
+    for bucket in ("charge", "pv_charge", "discharge"):
+        assert active_slot(getattr(controller, f"{bucket}_hours"), target) == (action == bucket)
+
+
+def test_full_toggle_cycle_uses_last_daily_edit_with_active_fixed_plan(controller):
+    controller.control_mode = MODE_MANUAL
+    publish(controller, [price(START+timedelta(minutes=15*i)) for i in range(4)])
+    controller.set_fixed_plan_hour(1,10,"charge")
+    controller.set_active_fixed_plan(1)
+    for action in ("pv_charge", "discharge", "blocked", "idle", "charge", "pv_charge", "discharge"):
+        controller.toggle_hour(10,DAY)
+        for bucket in ("charge", "pv_charge", "discharge"):
+            assert active_slot(getattr(controller, f"{bucket}_hours"), START) == (action == bucket)
+        assert (10 in controller.blocked_charging_hours) == (action == "blocked")
+        assert (10 in controller.blocked_discharging_hours) == (action == "blocked")
+    controller.set_active_fixed_plan(None)
+    assert controller.discharge_hours == [utc_slot(DAY,10,minute,15) for minute in (0,15,30,45)]
+    assert controller.charge_hours == controller.pv_charge_hours == []
+
+
+@pytest.mark.parametrize("reset_before_restart", [False, True])
+async def test_manual_reset_preserves_manual_pv_base_without_fixed_only_pv(controller, reset_before_restart):
+    controller.control_mode = MODE_MANUAL
+    publish(controller, [price(START+timedelta(minutes=15*i)) for i in range(8)])
+    controller._pv_charge_hours = [utc_slot(DAY,9,45,15)]  # Expired PV must not be restored by retraction.
+    controller.set_fixed_plan_hour(1,10,"discharge")
+    controller.set_fixed_plan_hour(1,11,"pv_charge")
+    controller.set_active_fixed_plan(1)
+    manual_pv = utc_slot(DAY,10,15,15)
+    controller.set_slot_action(manual_pv[0].isoformat(),"pv_charge")
+    controller.set_hour_action(12,"charge",DAY)
+    controller.set_hour_action(13,"discharge",DAY)
+    assert active_slot(controller.pv_charge_hours, manual_pv[0])
+    if reset_before_restart:
+        controller._run_replan()
+        assert controller._fixed_plan_base_snapshot == ([], [], [manual_pv])
+    await controller._async_save_schedule()
+    restarted = VictronChargeControlCoordinator(controller.hass, MockConfigEntry())
+    restarted.async_request_refresh = MagicMock()
+    restarted.control_mode = MODE_MANUAL
+    await restarted._async_load_schedule()
+    restarted._run_replan()
+    assert restarted._fixed_plan_base_snapshot == ([], [], [manual_pv])
+    assert active_slot(restarted.discharge_hours, manual_pv[0])  # Reset explicitly reapplies fixed plan.
+    assert active_slot(restarted.pv_charge_hours, START+timedelta(hours=1))
+    restarted.set_active_fixed_plan(None)
+    assert restarted.pv_charge_hours == [manual_pv]
+    assert restarted.charge_hours == restarted.discharge_hours == []
+
+
+@pytest.mark.parametrize("action", ["charge", "discharge"])
+async def test_bucket_setter_replaces_effective_and_base_bucket_without_reapplying(controller, action):
+    controller.control_mode = MODE_MANUAL
+    publish(controller, [price(START+timedelta(minutes=15*i)) for i in range(8)])
+    controller._pv_charge_hours = [utc_slot(DAY,12)]
+    controller.set_fixed_plan_hour(1,10,action)
+    controller.set_active_fixed_plan(1)
+    getattr(controller,f"set_{action}_hours")([(DAY,11)])
+    assert getattr(controller,f"{action}_hours") == [utc_slot(DAY,11)]
+    assert controller.pv_charge_hours == [utc_slot(DAY,12)]
+    await controller._async_save_schedule()
+    restarted = VictronChargeControlCoordinator(controller.hass,MockConfigEntry())
+    restarted.async_request_refresh = MagicMock()
+    restarted.control_mode = MODE_MANUAL
+    await restarted._async_load_schedule()
+    assert getattr(restarted,f"{action}_hours") == [utc_slot(DAY,11)]
+    restarted.set_active_fixed_plan(None)
+    assert getattr(restarted,f"{action}_hours") == [utc_slot(DAY,11)]
+    assert restarted.pv_charge_hours == [utc_slot(DAY,12)]
