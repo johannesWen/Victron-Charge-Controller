@@ -6,6 +6,8 @@ mutators/apply-retract logic, the new services, and the new entities.
 
 from __future__ import annotations
 
+from tests.slots import utc_slot
+
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -75,7 +77,7 @@ DT_UTIL_PATCH = "custom_components.victron_charge_control.coordinator.dt_util"
 
 class TestApplyFixedPlan:
     def test_empty_plan_returns_inputs(self):
-        charge = [("2026-04-28", 2)]
+        charge = [utc_slot("2026-04-28", 2)]
         result = apply_fixed_plan(charge, [], [], {"charge_hours": [], "discharge_hours": [], "pv_charge_hours": []}, [TODAY])
         assert result[0] == charge
         assert result[1] == []
@@ -83,7 +85,7 @@ class TestApplyFixedPlan:
         assert result[3] == []
 
     def test_none_plan_returns_inputs(self):
-        charge = [(TODAY, 2)]
+        charge = [utc_slot(TODAY, 2)]
         result = apply_fixed_plan(charge, [], [], None, [TODAY])
         assert result[0] == charge
         assert result[3] == []
@@ -93,33 +95,33 @@ class TestApplyFixedPlan:
             [], [], [], {"charge_hours": [2, 3], "discharge_hours": [], "pv_charge_hours": []},
             [TODAY, TOMORROW],
         )
-        assert (TODAY, 2) in charge
-        assert (TOMORROW, 3) in charge
-        assert applied == [(TODAY, 2), (TODAY, 3), (TOMORROW, 2), (TOMORROW, 3)]
+        assert utc_slot(TODAY, 2) in charge
+        assert utc_slot(TOMORROW, 3) in charge
+        assert applied == [utc_slot(TODAY, 2), utc_slot(TODAY, 3), utc_slot(TOMORROW, 2), utc_slot(TOMORROW, 3)]
 
     def test_fixed_extends_auto_hours(self):
         charge, _, _, _ = apply_fixed_plan(
-            [(TODAY, 0)], [], [], {"charge_hours": [5], "discharge_hours": [], "pv_charge_hours": []},
+            [utc_slot(TODAY, 0)], [], [], {"charge_hours": [5], "discharge_hours": [], "pv_charge_hours": []},
             [TODAY],
         )
-        assert charge == [(TODAY, 0), (TODAY, 5)]
+        assert charge == [utc_slot(TODAY, 0), utc_slot(TODAY, 5)]
 
     def test_fixed_wins_over_auto_charge(self):
         """A fixed discharge hour removes the auto charge hour in the same slot."""
         charge, discharge, pv, _ = apply_fixed_plan(
-            [(TODAY, 5)], [], [], {"charge_hours": [], "discharge_hours": [5], "pv_charge_hours": []},
+            [utc_slot(TODAY, 5)], [], [], {"charge_hours": [], "discharge_hours": [5], "pv_charge_hours": []},
             [TODAY],
         )
         assert charge == []
-        assert discharge == [(TODAY, 5)]
+        assert discharge == [utc_slot(TODAY, 5)]
 
     def test_fixed_wins_over_auto_pv(self):
         charge, discharge, pv, _ = apply_fixed_plan(
-            [], [(TODAY, 5)], [(TODAY, 5)], {"charge_hours": [], "discharge_hours": [5], "pv_charge_hours": []},
+            [], [utc_slot(TODAY, 5)], [utc_slot(TODAY, 5)], {"charge_hours": [], "discharge_hours": [5], "pv_charge_hours": []},
             [TODAY],
         )
         assert pv == []
-        assert discharge == [(TODAY, 5)]
+        assert discharge == [utc_slot(TODAY, 5)]
         assert charge == []
 
     def test_pv_precedence_within_plan(self):
@@ -128,25 +130,25 @@ class TestApplyFixedPlan:
             [], [], [], {"charge_hours": [5], "discharge_hours": [5], "pv_charge_hours": [5]},
             [TODAY],
         )
-        assert pv == [(TODAY, 5)]
+        assert pv == [utc_slot(TODAY, 5)]
         assert charge == []
         assert discharge == []
 
     def test_other_dates_untouched(self):
         charge, _, _, applied = apply_fixed_plan(
-            [("2026-05-01", 2)], [], [], {"charge_hours": [2], "discharge_hours": [], "pv_charge_hours": []},
+            [utc_slot("2026-05-01", 2)], [], [], {"charge_hours": [2], "discharge_hours": [], "pv_charge_hours": []},
             [TODAY],
         )
-        assert charge == [(TODAY, 2), ("2026-05-01", 2)]
-        assert applied == [(TODAY, 2)]
+        assert charge == [utc_slot(TODAY, 2), utc_slot("2026-05-01", 2)]
+        assert applied == [utc_slot(TODAY, 2)]
 
     def test_invalid_hours_filtered(self):
         charge, _, _, applied = apply_fixed_plan(
             [], [], [], {"charge_hours": [24, -1, 5], "discharge_hours": [], "pv_charge_hours": []},
             [TODAY],
         )
-        assert charge == [(TODAY, 5)]
-        assert applied == [(TODAY, 5)]
+        assert charge == [utc_slot(TODAY, 5)]
+        assert applied == [utc_slot(TODAY, 5)]
 
 
 class TestNormalizeFixedPlanName:
@@ -207,7 +209,7 @@ class TestFixedPlanPersistence:
 
     def test_payload_roundtrip(self):
         payload = build_plan_payload(
-            charge_hours=[(TODAY, 1)],
+            charge_hours=[utc_slot(TODAY, 1)],
             discharge_hours=[],
             pv_charge_hours=[],
             blocked_charging_hours=[],
@@ -234,16 +236,16 @@ class TestFixedPlanPersistence:
         applied = apply_loaded_plan(payload)
         assert applied["fixed_plans"] == {}
         assert applied["active_fixed_plan"] is None
-        assert applied["charge_hours"] == [(TODAY, 1)]
+        assert applied["charge_hours"] == [utc_slot(TODAY, 1)]
 
-    def test_storage_version_unchanged_additive_keys(self):
+    def test_storage_version_supports_interval_migration(self):
         """Fixed plans are additive keys on a v1 payload.
 
         Bumping the version would make Home Assistant's Store call the
         unimplemented migrate function and drop existing plans, so the
         load path must tolerate absent keys instead.
         """
-        assert STORAGE_VERSION == 1
+        assert STORAGE_VERSION == 2
 
     def test_coordinator_save_and_load_roundtrip(self, coordinator, mock_store):
         import asyncio
@@ -295,9 +297,9 @@ class TestSetFixedPlanHour:
         assert coordinator.fixed_plans[1]["pv_charge_hours"] == []
 
     def test_inactive_plan_does_not_touch_schedule(self, coordinator):
-        coordinator._charge_hours = [(TODAY, 2)]
+        coordinator._charge_hours = [utc_slot(TODAY, 2)]
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
-        assert coordinator._charge_hours == [(TODAY, 2)]
+        assert coordinator._charge_hours == [utc_slot(TODAY, 2)]
         assert coordinator.active_fixed_plan is None
 
     @patch(DT_UTIL_PATCH)
@@ -306,11 +308,11 @@ class TestSetFixedPlanHour:
         _mock_dt_util(mock_dt_util)
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
         coordinator.set_active_fixed_plan(1)
-        assert (TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
         coordinator.set_fixed_plan_hour(1, 4, ACTION_IDLE)
         # The previously applied hour stays until the next replan hour or
         # Recalculate click re-applies the plan.
-        assert (TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
         assert coordinator.fixed_plans[1]["charge_hours"] == []
 
     def test_invalid_plan_ignored(self, coordinator):
@@ -349,7 +351,7 @@ class TestFixedPlanNaming:
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
         coordinator.set_active_fixed_plan(1)
         coordinator.set_fixed_plan_name(1, "Daily")
-        assert (TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
         assert coordinator.fixed_plans[1] == {
             "charge_hours": [4],
             "discharge_hours": [],
@@ -443,7 +445,7 @@ class TestAddRemoveFixedPlan:
         assert coordinator.fixed_plans == {}
         assert coordinator.active_fixed_plan is None
         # The merged hour is retracted on removal.
-        assert (TODAY, 4) not in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) not in coordinator._charge_hours
 
 
 class TestFixedPlanActivation:
@@ -453,10 +455,10 @@ class TestFixedPlanActivation:
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
         coordinator.set_fixed_plan_hour(1, 22, ACTION_DISCHARGE)
         coordinator.set_active_fixed_plan(1)
-        assert (TODAY, 4) in coordinator._charge_hours
-        assert (TOMORROW, 4) in coordinator._charge_hours
-        assert (TODAY, 22) in coordinator._discharge_hours
-        assert (TOMORROW, 22) in coordinator._discharge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TOMORROW, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 22) in coordinator._discharge_hours
+        assert utc_slot(TOMORROW, 22) in coordinator._discharge_hours
         assert coordinator.active_fixed_plan == 1
 
     def test_activate_unknown_plan_rejected(self, coordinator):
@@ -472,19 +474,19 @@ class TestFixedPlanActivation:
     @patch(DT_UTIL_PATCH)
     def test_deactivate_restores_base(self, mock_dt_util, coordinator):
         _mock_dt_util(mock_dt_util)
-        coordinator._charge_hours = [(TODAY, 2)]
-        coordinator._pv_charge_hours = [(TODAY, 6)]
+        coordinator._charge_hours = [utc_slot(TODAY, 2)]
+        coordinator._pv_charge_hours = [utc_slot(TODAY, 6)]
         coordinator.set_fixed_plan_hour(1, 2, ACTION_DISCHARGE)
         coordinator.set_active_fixed_plan(1)
         # Fixed wins over the auto charge slot at hour 2.
-        assert (TODAY, 2) in coordinator._discharge_hours
-        assert (TODAY, 2) not in coordinator._charge_hours
+        assert utc_slot(TODAY, 2) in coordinator._discharge_hours
+        assert utc_slot(TODAY, 2) not in coordinator._charge_hours
 
         coordinator.set_active_fixed_plan(None)
         # Base restored: auto charge back, fixed discharge gone.
-        assert (TODAY, 2) in coordinator._charge_hours
-        assert (TODAY, 2) not in coordinator._discharge_hours
-        assert (TODAY, 6) in coordinator._pv_charge_hours
+        assert utc_slot(TODAY, 2) in coordinator._charge_hours
+        assert utc_slot(TODAY, 2) not in coordinator._discharge_hours
+        assert utc_slot(TODAY, 6) in coordinator._pv_charge_hours
         assert coordinator.active_fixed_plan is None
 
     def test_deactivate_without_snapshot_keeps_existing_slots(self, coordinator):
@@ -493,11 +495,11 @@ class TestFixedPlanActivation:
         # identified and stay until the next replan/recalc cleans them.
         coordinator._fixed_plans = {1: {"charge_hours": [4], "discharge_hours": [], "pv_charge_hours": []}}
         coordinator._active_fixed_plan = 1
-        coordinator._charge_hours = [(TODAY, 4)]
+        coordinator._charge_hours = [utc_slot(TODAY, 4)]
         coordinator.set_active_fixed_plan(None)
         assert coordinator.active_fixed_plan is None
         assert coordinator._fixed_plan_applied_slots == []
-        assert (TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
 
     @patch(DT_UTIL_PATCH)
     def test_switch_plan_replaces_hours(self, mock_dt_util, coordinator):
@@ -506,13 +508,13 @@ class TestFixedPlanActivation:
         coordinator.set_fixed_plan_hour(2, 4, ACTION_DISCHARGE)
         coordinator.set_fixed_plan_hour(2, 8, ACTION_PV_CHARGE)
         coordinator.set_active_fixed_plan(1)
-        assert (TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
 
         coordinator.set_active_fixed_plan(2)
         assert coordinator.active_fixed_plan == 2
-        assert (TODAY, 4) not in coordinator._charge_hours
-        assert (TODAY, 4) in coordinator._discharge_hours
-        assert (TODAY, 8) in coordinator._pv_charge_hours
+        assert utc_slot(TODAY, 4) not in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) in coordinator._discharge_hours
+        assert utc_slot(TODAY, 8) in coordinator._pv_charge_hours
 
     @patch(DT_UTIL_PATCH)
     def test_deactivate_in_auto_mode_recalculates(self, mock_dt_util, coordinator, mock_hass):
@@ -552,12 +554,12 @@ class TestFixedPlanWithAutoSchedule:
         coordinator.calculate_auto_schedule()
 
         # Auto picks hours 0/1 for charge, 4/5 for discharge.
-        assert (TODAY, 0) in coordinator._charge_hours
-        assert (TODAY, 1) in coordinator._charge_hours
-        assert (TODAY, 5) in coordinator._discharge_hours
+        assert utc_slot(TODAY, 0) in coordinator._charge_hours
+        assert utc_slot(TODAY, 1) in coordinator._charge_hours
+        assert utc_slot(TODAY, 5) in coordinator._discharge_hours
         # Fixed charge hour 4 is added and wins over auto discharge.
-        assert (TODAY, 4) in coordinator._charge_hours
-        assert (TODAY, 4) not in coordinator._discharge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) not in coordinator._discharge_hours
 
     @patch(DT_UTIL_PATCH)
     def test_fixed_hours_applied_to_tomorrow_too(self, mock_dt_util, coordinator):
@@ -574,8 +576,8 @@ class TestFixedPlanWithAutoSchedule:
 
         coordinator.calculate_auto_schedule()
 
-        assert (TODAY, 7) in coordinator._pv_charge_hours
-        assert (TOMORROW, 7) in coordinator._pv_charge_hours
+        assert utc_slot(TODAY, 7) in coordinator._pv_charge_hours
+        assert utc_slot(TOMORROW, 7) in coordinator._pv_charge_hours
 
     @patch(DT_UTIL_PATCH)
     def test_replan_auto_mode_reapplies_fixed(self, mock_dt_util, coordinator):
@@ -592,43 +594,43 @@ class TestFixedPlanWithAutoSchedule:
 
         coordinator._run_replan(_mock_now())
 
-        assert (TODAY, 0) in coordinator._charge_hours
-        assert (TODAY, 4) in coordinator._charge_hours
-        assert (TOMORROW, 4) in coordinator._charge_hours
+        assert utc_slot(TODAY, 0) in coordinator._charge_hours
+        assert utc_slot(TODAY, 4) in coordinator._charge_hours
+        assert utc_slot(TOMORROW, 4) in coordinator._charge_hours
 
     @patch(DT_UTIL_PATCH)
     def test_replan_manual_mode_clears_and_reapplies(self, mock_dt_util, coordinator):
         _mock_dt_util(mock_dt_util)
         coordinator.control_mode = MODE_MANUAL
-        coordinator._charge_hours = [("2026-05-01", 3)]
-        coordinator._discharge_hours = [(TOMORROW, 9)]
+        coordinator._charge_hours = [utc_slot("2026-05-01", 3)]
+        coordinator._discharge_hours = [utc_slot(TOMORROW, 9)]
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
         coordinator.set_active_fixed_plan(1)
 
         coordinator._run_replan(_mock_now())
 
         # Manual hours cleared, fixed plan hours re-applied.
-        assert coordinator._charge_hours == [(TODAY, 4), (TOMORROW, 4)]
+        assert coordinator._charge_hours == [utc_slot(TODAY, 4), utc_slot(TOMORROW, 4)]
         assert coordinator._discharge_hours == []
 
     @patch(DT_UTIL_PATCH)
     def test_clear_schedule_reapplies_active_plan(self, mock_dt_util, coordinator):
         _mock_dt_util(mock_dt_util)
         coordinator.control_mode = MODE_MANUAL
-        coordinator._charge_hours = [("2026-05-01", 3)]
+        coordinator._charge_hours = [utc_slot("2026-05-01", 3)]
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
         coordinator.set_active_fixed_plan(1)
         coordinator.clear_schedule()
-        assert coordinator._charge_hours == [(TODAY, 4), (TOMORROW, 4)]
+        assert coordinator._charge_hours == [utc_slot(TODAY, 4), utc_slot(TOMORROW, 4)]
         assert coordinator._discharge_hours == []
         assert coordinator._pv_charge_hours == []
 
     def test_no_active_plan_auto_unchanged(self, coordinator):
         coordinator.control_mode = MODE_MANUAL
-        coordinator._charge_hours = [(TODAY, 2)]
+        coordinator._charge_hours = [utc_slot(TODAY, 2)]
         coordinator.set_fixed_plan_hour(1, 4, ACTION_CHARGE)
         coordinator.calculate_auto_schedule()
-        assert coordinator._charge_hours == [(TODAY, 2)]
+        assert coordinator._charge_hours == [utc_slot(TODAY, 2)]
 
 
 # ======================================================================

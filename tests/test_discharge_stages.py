@@ -1,3 +1,5 @@
+
+from tests.slots import utc_slot
 """Regression tests for SOC discharge stages and their device setpoints."""
 
 from datetime import datetime, timedelta, timezone
@@ -51,7 +53,7 @@ def test_falling_and_rising_stages(discharge_controller, mode):
     controller, states = discharge_controller
     controller.control_mode = mode
     now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
-    controller._discharge_hours = [("2026-10-01", 12)]
+    controller._discharge_hours = [utc_slot("2026-10-01", 12)]
     # Includes jitter, equality, and the same SOC reached in both directions.
     sequence = [
         (25, ACTION_DISCHARGE, -4500),

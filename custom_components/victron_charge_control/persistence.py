@@ -12,35 +12,47 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .schedule import ScheduleSlot, normalize_fixed_plan, valid_slot
+from homeassistant.helpers.storage import Store
+
+from .epex import parse_epex_start_time
+from .schedule import ScheduleSlot, local_hour_slots, normalize_fixed_plan, sort_slots
 
 
-def serialize_slots(slots: list[ScheduleSlot]) -> list[list[Any]]:
-    """Serialise schedule slots for JSON storage."""
-    return [[d, h] for d, h in slots]
+class ScheduleStore(Store):
+    """Upgrade actual HA storage envelopes, preserving unrelated recovery fields."""
+
+    async def _async_migrate_func(self, old_major_version, old_minor_version, old_data):
+        if old_major_version != 1 or not isinstance(old_data, dict):
+            raise ValueError("Unsupported schedule store version")
+        data = dict(old_data)
+        for key in ("charge_hours", "discharge_hours", "pv_charge_hours"):
+            data[key] = serialize_slots(deserialize_slots(data.get(key)))
+        return data
+
+
+def serialize_slots(slots: list[ScheduleSlot]) -> list[list[str]]:
+    """Serialize UTC interval bounds for JSON storage."""
+    return [[start.isoformat(), end.isoformat()] for start, end in slots]
 
 
 def deserialize_slots(raw: Any) -> list[ScheduleSlot]:
-    """Deserialise slot list from JSON, dropping any malformed entry.
-
-    Each valid slot becomes a ``(date_str, hour)`` tuple; everything
-    else is silently discarded. Returns an empty list on any
-    structural error so a corrupt Store cannot crash the integration.
-    """
+    """Read v2 intervals and legacy dated hours, dropping malformed entries."""
     if not isinstance(raw, list):
         return []
-    result: list[ScheduleSlot] = []
+    result = []
     for item in raw:
-        if (
-            isinstance(item, (list, tuple))
-            and len(item) == 2
-            and isinstance(item[0], str)
-            and isinstance(item[1], int)
-        ):
-            date_str, hour = item[0], item[1]
-            if valid_slot(date_str, hour):
-                result.append((date_str, hour))
-    return result
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        if isinstance(item[0], str) and isinstance(item[1], int):
+            result.extend(local_hour_slots(*item))
+            continue
+        start, end = (parse_epex_start_time(value) for value in item)
+        if start is not None and end is not None and start < end:
+            duration = (end - start).total_seconds()
+            if (duration <= 3600 and duration % 900 == 0
+                    and not start.second and not start.microsecond and start.minute % 15 == 0):
+                result.append((start, end))
+    return sort_slots(result)
 
 
 def deserialize_hours(raw: Any) -> list[int]:

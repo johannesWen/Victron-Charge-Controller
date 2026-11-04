@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.slots import utc_slot
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -95,7 +97,8 @@ class TestAsyncUnloadServices:
         ]
         assert SERVICE_TOGGLE_HOUR in removed
         assert SERVICE_CLEAR_SCHEDULE in removed
-        assert len(removed) == 10
+        assert "set_slot_action" in removed
+        assert len(removed) == 11
 
 
 class TestServiceHandlers:
@@ -121,7 +124,7 @@ class TestServiceHandlers:
 
         await handler(service_call)
 
-        assert ("2026-05-02", 5) in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.charge_hours
 
     @pytest.mark.asyncio
     async def test_set_hour_action_handler(self, mock_hass, coordinator):
@@ -139,7 +142,7 @@ class TestServiceHandlers:
 
         await handler(service_call)
 
-        assert ("2026-05-02", 10) in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 10) in coordinator.discharge_hours
 
     @pytest.mark.asyncio
     async def test_set_hour_action_pv_charge_handler(self, mock_hass, coordinator):
@@ -157,13 +160,13 @@ class TestServiceHandlers:
 
         await handler(service_call)
 
-        assert ("2026-05-02", 12) in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 12) in coordinator.pv_charge_hours
 
     @pytest.mark.asyncio
     async def test_clear_schedule_handler(self, mock_hass, coordinator):
         mock_hass.data[DOMAIN] = {"entry1": coordinator}
-        coordinator._charge_hours = [("2026-05-02", 1), ("2026-05-02", 2)]
-        coordinator._discharge_hours = [("2026-05-02", 20)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1), utc_slot("2026-05-02", 2)]
+        coordinator._discharge_hours = [utc_slot("2026-05-02", 20)]
 
         await async_setup_services(mock_hass)
 

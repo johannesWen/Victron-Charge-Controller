@@ -21,6 +21,8 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN
 from .coordinator import ChargeControlData, VictronChargeControlCoordinator
 from .forecast import SolcastForecastCoordinator
+from .epex import parse_epex_start_time
+from .schedule import active_slot
 
 
 async def async_setup_entry(
@@ -536,21 +538,26 @@ class ScheduleSensor(VictronCCBaseSensor):
 
     @staticmethod
     def _format_slots(slots: list[dict]) -> str:
-        """Format date-aware slots into compact grouped string.
+        """Keep the legacy hourly text when it fits HA's state length limit."""
+        grouped = {}
+        duration = 0.0
+        for slot in slots:
+            start = parse_epex_start_time(slot.get("start_time"))
+            end = parse_epex_start_time(slot.get("end_time"))
+            hours = (end - start).total_seconds() / 3600 if start and end else 1
+            duration += hours
+            label = str(slot["hour"]) if hours == 1 and not slot.get("minute", 0) else f"{slot['hour']:02}:{slot.get('minute', 0):02}"
+            grouped.setdefault(slot["date"], []).append(label)
+        text = "|".join(f"{date}:{','.join(labels)}" for date, labels in sorted(grouped.items()))
+        return text if len(text) <= 255 else f"{duration:g} h scheduled"
 
-        Input:  [{"date": "2026-05-05", "hour": 2}, {"date": "2026-05-05", "hour": 3}, {"date": "2026-05-06", "hour": 1}]
-        Output: "2026-05-05:2,3|2026-05-06:1"
-        """
-        if not slots:
-            return ""
-        grouped: dict[str, list[int]] = {}
-        for s in slots:
-            grouped.setdefault(s["date"], []).append(s["hour"])
-        parts = []
-        for date_str in sorted(grouped):
-            hours = ",".join(str(h) for h in sorted(grouped[date_str]))
-            parts.append(f"{date_str}:{hours}")
-        return "|".join(parts)
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data
+        if data is None or self._schedule_type not in ("charge", "discharge", "pv_charge"):
+            return {}
+        return {"slots": getattr(data, f"{self._schedule_type}_hours"),
+                "time_zone": self.coordinator.hass.config.time_zone}
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -607,45 +614,25 @@ class ChargePlanSensor(VictronCCBaseSensor):
         self._attr_unique_id = f"{entry.entry_id}_charge_plan"
 
     def _build_plan(self, data: ChargeControlData) -> list[dict]:
-        """Build hour-by-hour plan from coordinator data (today + tomorrow)."""
-        now = dt_util.now()
-        today_str = now.strftime("%Y-%m-%d")
-        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-
-        # Build lookup sets for charge/discharge/pv_charge slots
-        charge_set = {(s["date"], s["hour"]) for s in data.charge_hours}
-        discharge_set = {(s["date"], s["hour"]) for s in data.discharge_hours}
-        pv_charge_set = {(s["date"], s["hour"]) for s in data.pv_charge_hours}
-
-        # Price maps per day
-        price_map_today = {p["hour"]: p["price"] for p in data.prices_today}
-        price_map_tomorrow = {p["hour"]: p["price"] for p in data.prices_tomorrow}
-
+        """Apply schedule coverage to the complete, normalized price timeline."""
+        schedules = {
+            action: [(parse_epex_start_time(slot["start_time"]), parse_epex_start_time(slot["end_time"]))
+                     for slot in slots]
+            for action, slots in (("pv_charge", data.pv_charge_hours),
+                                  ("charge", data.charge_hours),
+                                  ("discharge", data.discharge_hours))
+        }
         plan = []
-        for day_str, price_map in [(today_str, price_map_today), (tomorrow_str, price_map_tomorrow)]:
-            for hour in range(24):
-                # Per-day actions take precedence over recurring blocks. A
-                # per-day slot for a blocked hour is a user override (the
-                # auto-scheduler skips blocked hours, so the slot can only
-                # have been placed explicitly via set_hour_action).
-                if (day_str, hour) in pv_charge_set:
-                    action = "pv_charge"
-                elif (day_str, hour) in charge_set:
-                    action = "charge"
-                elif (day_str, hour) in discharge_set:
-                    action = "discharge"
-                elif hour in data.blocked_charging_hours and hour in data.blocked_discharging_hours:
-                    action = "blocked"
-                elif hour in data.blocked_charging_hours:
-                    action = "blocked_charging"
-                elif hour in data.blocked_discharging_hours:
-                    action = "blocked_discharging"
-                else:
-                    action = "idle"
-                entry = {"date": day_str, "hour": hour, "action": action}
-                if hour in price_map:
-                    entry["price"] = price_map[hour]
-                plan.append(entry)
+        for period in data.prices_today + data.prices_tomorrow:
+            start = parse_epex_start_time(period["start_time"])
+            hour = period["hour"]
+            action = next((action for action, slots in schedules.items() if active_slot(slots, start)), None)
+            if action is None:
+                charging = hour in data.blocked_charging_hours
+                discharging = hour in data.blocked_discharging_hours
+                action = ("blocked" if charging and discharging else "blocked_charging" if charging
+                          else "blocked_discharging" if discharging else "idle")
+            plan.append({**period, "action": action})
         return plan
 
     @callback
@@ -653,11 +640,12 @@ class ChargePlanSensor(VictronCCBaseSensor):
         data: ChargeControlData | None = self.coordinator.data
         if data is None:
             self._attr_native_value = "unknown"
-            self._attr_extra_state_attributes = {"plan": []}
+            self._attr_extra_state_attributes = {"plan": [], "time_zone": self.coordinator.hass.config.time_zone}
         else:
             self._attr_native_value = self._plan_summary(data)
             self._attr_extra_state_attributes = {
                 "plan": self._build_plan(data),
+                "time_zone": self.coordinator.hass.config.time_zone,
                 "charge_hours": data.charge_hours,
                 "discharge_hours": data.discharge_hours,
                 "pv_charge_hours": data.pv_charge_hours,

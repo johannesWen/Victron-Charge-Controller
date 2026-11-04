@@ -154,7 +154,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:clock-fast",
         native_min_value=0,
         native_max_value=12,
-        native_step=1,
+        native_step=0.25,
         coordinator_attr="cheapest_hours",
         default_value=DEFAULT_CHEAPEST_HOURS,
     ),
@@ -164,7 +164,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:clock-alert",
         native_min_value=0,
         native_max_value=12,
-        native_step=1,
+        native_step=0.25,
         coordinator_attr="expensive_hours",
         default_value=DEFAULT_EXPENSIVE_HOURS,
     ),
@@ -282,11 +282,7 @@ class VictronCCNumber(CoordinatorEntity[VictronChargeControlCoordinator], Number
     async def async_set_native_value(self, value: float) -> None:
         """Update the coordinator attribute and trigger refresh."""
         attr = self.entity_description.coordinator_attr
-        # Use int for hour counts
-        if attr in ("cheapest_hours", "expensive_hours"):
-            setattr(self.coordinator, attr, int(value))
-        else:
-            setattr(self.coordinator, attr, value)
+        setattr(self.coordinator, attr, value)
 
         # Recalculate schedule if auto-mode params changed
         if attr in (
@@ -308,9 +304,6 @@ class VictronCCNumber(CoordinatorEntity[VictronChargeControlCoordinator], Number
             try:
                 value = float(last_state.state)
                 attr = self.entity_description.coordinator_attr
-                if attr in ("cheapest_hours", "expensive_hours"):
-                    setattr(self.coordinator, attr, int(value))
-                else:
-                    setattr(self.coordinator, attr, value)
+                setattr(self.coordinator, attr, value)
             except (ValueError, TypeError):
                 pass

@@ -27,7 +27,7 @@ from .const import (
     MODE_OFF,
 )
 from .epex import get_battery_soc
-from .schedule import ScheduleSlot
+from .schedule import ScheduleSlot, active_slot
 
 
 @dataclass
@@ -160,10 +160,6 @@ def determine_action(
 
     # Priority 4: Blocked hours — override schedule per action type
     if state.control_mode in (MODE_AUTO, MODE_MANUAL):
-        current_date = now.strftime("%Y-%m-%d")
-        hour = now.hour
-        current_slot: ScheduleSlot = (current_date, hour)
-
         # PV charging takes precedence over plain charge/discharge so a
         # manually-set PV slot is honored even when the auto scheduler
         # also marked the hour. Requires the optional solar surplus
@@ -173,7 +169,7 @@ def determine_action(
         # existing solar surplus between battery and grid export. SOC
         # blocking still applies.
         if (
-            current_slot in state.pv_charge_hours
+            active_slot(state.pv_charge_hours, now)
             and not soc_state.charge_blocked_by_soc
             and state.solar_surplus_entity is not None
         ):
@@ -184,14 +180,14 @@ def determine_action(
         # auto-scheduler skips blocked hours, so the slot can only have
         # been placed explicitly). Honor it.
         if (
-            current_slot in state.charge_hours
+            active_slot(state.charge_hours, now)
             and state.charge_allowed
             and not soc_state.charge_blocked_by_soc
         ):
             return DecisionResult(action=ACTION_CHARGE, soc_state=soc_state)
 
         if (
-            current_slot in state.discharge_hours
+            active_slot(state.discharge_hours, now)
             and state.discharge_allowed
             and not soc_state.discharge_blocked_by_soc
         ):

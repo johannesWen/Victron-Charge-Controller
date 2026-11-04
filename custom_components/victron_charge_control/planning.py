@@ -1,25 +1,15 @@
-"""Auto schedule calculation — pick cheapest/most expensive hours from EPEX.
-
-Extracted from ``coordinator.py``. The pure price-comparison and
-slot-building logic lives here; the coordinator's wrapper applies the
-returned slots back to its own state and triggers the save+refresh
-side effects.
-"""
+"""Select whole source price intervals within hour-based duration budgets."""
 
 from __future__ import annotations
 
-import logging
+from datetime import timezone
 from typing import Any
 
-from .const import EPEX_KEY_START_TIME, MODE_AUTO
-from .epex import (
-    extract_price_ct,
-    find_epex_data,
-    parse_epex_start_time,
-)
-from .schedule import ScheduleSlot, sort_slots
+from homeassistant.util import dt as dt_util
 
-_LOGGER = logging.getLogger(__name__)
+from .const import MODE_AUTO
+from .epex import normalize_price_intervals
+from .schedule import ScheduleSlot, overlaps, sort_slots
 
 
 def calculate_auto_schedule(
@@ -27,95 +17,42 @@ def calculate_auto_schedule(
     *,
     epex_spot_entity: str,
     control_mode: str,
-    cheapest_hours: int,
-    expensive_hours: int,
+    cheapest_hours: float,
+    expensive_hours: float,
     charge_price_threshold: float,
     discharge_price_threshold: float,
     blocked_charging_hours: list[int],
     blocked_discharging_hours: list[int],
     pv_charge_hours: list[ScheduleSlot],
     now: Any,
-) -> list[ScheduleSlot] | None:
-    """Compute optimal charge/discharge hours from EPEX spot prices.
-
-    Returns a tuple ``(charge_slots, discharge_slots)`` of new slot
-    lists, or ``None`` when the call was a no-op (not in auto mode, no
-    EPEX entity, or no future hours with price data).
-    """
+) -> tuple[list[ScheduleSlot], list[ScheduleSlot]] | None:
+    """Count full interval durations, including the current partial interval."""
     if control_mode != MODE_AUTO:
         return None
-
-    epex_state = hass.states.get(epex_spot_entity)
-    if epex_state is None:
-        _LOGGER.warning("EPEX entity %s not found", epex_spot_entity)
+    state = hass.states.get(epex_spot_entity)
+    if state is None or state.state in ("unavailable", "unknown"):
         return None
-
-    epex_data = find_epex_data(epex_state.attributes)
-    if not epex_data:
-        _LOGGER.warning(
-            "No EPEX price data available in %s", epex_spot_entity
-        )
-        return None
-
-    current_slot = (now.strftime("%Y-%m-%d"), now.hour)
-
-    prices: list[dict[str, Any]] = []
-    for item in epex_data:
-        sdt = parse_epex_start_time(item.get(EPEX_KEY_START_TIME))
-        if sdt is None:
-            continue
-
-        slot_date = sdt.strftime("%Y-%m-%d")
-        slot_hour = sdt.hour
-        slot = (slot_date, slot_hour)
-
-        if slot >= current_slot:
-            price = extract_price_ct(item)
-            if price is not None:
-                prices.append({"date": slot_date, "hour": slot_hour, "price": price})
-
+    prices = [item for item in normalize_price_intervals(state.attributes)
+              if item.end > now.astimezone(timezone.utc)]
     if not prices:
-        _LOGGER.info("No future hours with price data available")
         return None
 
-    prices.sort(key=lambda x: x["price"])
+    def select(hours, blocked, threshold, discharge=False):
+        remaining = hours * 3600
+        selected = []
+        # Earliest instant breaks ties in either price direction.
+        for item in sorted(prices, key=lambda item: (-item.price if discharge else item.price, item.start)):
+            duration = (item.end - item.start).total_seconds()
+            if duration > remaining or dt_util.as_local(item.start).hour in blocked:
+                continue
+            if any(overlaps(item.slot, pv) for pv in pv_charge_hours):
+                continue
+            if (item.price < threshold if discharge else item.price > threshold):
+                continue
+            selected.append(item.slot)
+            remaining -= duration
+        return selected
 
-    pv_charge_set = set(pv_charge_hours)
-
-    charge_slots: list[ScheduleSlot] = []
-    for item in prices:
-        if len(charge_slots) >= cheapest_hours:
-            break
-        slot = (item["date"], item["hour"])
-        if slot in pv_charge_set:
-            continue
-        if (
-            item["hour"] not in blocked_charging_hours
-            and item["price"] <= charge_price_threshold
-        ):
-            charge_slots.append(slot)
-
-    discharge_slots: list[ScheduleSlot] = []
-    for item in reversed(prices):
-        if len(discharge_slots) >= expensive_hours:
-            break
-        slot = (item["date"], item["hour"])
-        if slot in pv_charge_set:
-            continue
-        if (
-            item["hour"] not in blocked_discharging_hours
-            and item["price"] >= discharge_price_threshold
-        ):
-            discharge_slots.append(slot)
-
-    # Resolve conflicts: discharge wins (remove from charge).
-    discharge_set = set(discharge_slots)
-    charge_slots = [s for s in charge_slots if s not in discharge_set]
-
-    _LOGGER.info(
-        "Auto schedule calculated — Charge: %s, Discharge: %s (%d hours evaluated)",
-        charge_slots,
-        discharge_slots,
-        len(prices),
-    )
-    return sort_slots(charge_slots), sort_slots(discharge_slots)
+    charge = select(cheapest_hours, blocked_charging_hours, charge_price_threshold)
+    discharge = select(expensive_hours, blocked_discharging_hours, discharge_price_threshold, True)
+    return sort_slots([slot for slot in charge if slot not in discharge]), sort_slots(discharge)

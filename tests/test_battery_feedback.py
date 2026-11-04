@@ -1,3 +1,5 @@
+
+from tests.slots import utc_slot
 """Battery feedback sampling, successful-write baselines, and safe fallbacks."""
 
 import asyncio
@@ -424,21 +426,21 @@ async def test_full_discharge_signs(feedback, measured, expected):
 async def test_leaving_eligible_action_resets_and_reentry_waits(feedback, action):
     coord, _, clock, report, states, _ = feedback
     coord.control_mode = MODE_MANUAL
-    coord._charge_hours = [("2026-11-03",12)]
+    coord._charge_hours = [utc_slot("2026-11-03", 12)]
     await settled(feedback)
     assert coord.battery_feedback_status == "active"
     coord._charge_hours = []
     if action == ACTION_PV_CHARGE:
         coord._solar_surplus_entity = "sensor.solar"
         states["sensor.solar"] = MockState("1000", {"unit_of_measurement":"W"})
-        coord._pv_charge_hours = [("2026-11-03",12)]
+        coord._pv_charge_hours = [utc_slot("2026-11-03", 12)]
     await coord.async_request_refresh()
     await coord.async_request_refresh()
     assert coord.data.desired_action == action
     assert coord.battery_feedback_status == "inactive"
     assert coord.data.setpoint_calculation["battery_feedback_w"] == 0
     coord._pv_charge_hours = []
-    coord._charge_hours = [("2026-11-03",12)]
+    coord._charge_hours = [utc_slot("2026-11-03", 12)]
     await coord.async_request_refresh()
     await coord.async_request_refresh()
     assert coord.data.target_setpoint == 3000
@@ -510,7 +512,7 @@ async def test_failed_permanent_fallback_discards_feedback(feedback):
 async def test_restart_preserves_plan_and_only_restores_switch(feedback, mock_store):
     coord, switch, _, _, _, _ = feedback
     await settled(feedback)
-    coord._charge_hours = [("2026-11-03",13)]
+    coord._charge_hours = [utc_slot("2026-11-03", 13)]
     await coord._async_save_schedule()
     saved = mock_store._data.copy()
     replacement = VictronChargeControlCoordinator(coord.hass, coord.config_entry)
@@ -525,7 +527,7 @@ async def test_restart_preserves_plan_and_only_restores_switch(feedback, mock_st
     assert restored.is_on
     assert replacement._battery_baseline is None
     assert replacement._battery_feedback is None
-    assert replacement._charge_hours == [("2026-11-03",13)]
+    assert replacement._charge_hours == [utc_slot("2026-11-03", 13)]
     assert mock_store._data == saved
 
 
