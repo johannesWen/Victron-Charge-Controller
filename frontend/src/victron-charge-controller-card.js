@@ -72,7 +72,7 @@ const HELP_TEXT = {
     { heading: 'Reading the chart',
       items: [
         'In Price and PV forecast views, each bar shows the scheduled action for one price period (today + tomorrow).',
-        'Tap a Price bar to see price details for that period. Prices automatically use hourly or 15-minute resolution. Scroll horizontally to select individual quarters.',
+        'Tap a Price bar to see price details for that period. The full day fits the card width. Hour blocks contain one hourly bar or four separate 15-minute columns.',
         'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
       ] },
     { heading: 'PV forecast requirements',
@@ -880,10 +880,21 @@ class VictronChargeControllerCard extends LitElement {
       : `${String(entry.hour).padStart(2, '0')}:${String(entry.minute || 0).padStart(2, '0')}`;
   }
 
-  _planChartWidth(periods, padding) {
-    const durations = periods.map(entry => entry.end - entry.start).filter(duration => duration > 0);
-    const shortest = Math.min(...durations);
-    return shortest < 3600000 ? Math.max(600, (periods.at(-1).end - periods[0].start) / shortest * 28 + padding) : 600;
+  _planHourGroups(periods) {
+    const groups = new Map();
+    periods.forEach((entry, index) => {
+      const start = entry.start - (entry.minute || 0) * 60000;
+      const key = Number.isFinite(start) ? start : entry.hour;
+      if (!groups.has(key)) groups.set(key, { hour: entry.hour, start, end: start + 3600000, index });
+    });
+    return [...groups.values()];
+  }
+
+  _planBarGeometry(entry, colX, colW) {
+    const left = entry.minute ? 0.25 : 1;
+    const endMinute = (entry.minute || 0) + (entry.end - entry.start) / 60000;
+    const right = Number.isFinite(endMinute) && endMinute % 60 ? 0.25 : 1;
+    return { x: colX + left, w: Math.max(0, colW - left - right) };
   }
 
   _setPlanSlotAction(entry, action) {
@@ -1513,7 +1524,7 @@ class VictronChargeControllerCard extends LitElement {
     const now = Date.now();
 
     // SVG dimensions
-    const chartW = this._planChartWidth(enrichedPlan, 90);
+    const chartW = 600;
     const chartH = 280;
     const padL = 50;
     const padR = 40;
@@ -1526,7 +1537,6 @@ class VictronChargeControllerCard extends LitElement {
     const timed = Number.isFinite(timelineStart) && timelineEnd > timelineStart;
     const columnX = i => padL + (timed ? (enrichedPlan[i].start - timelineStart) / (timelineEnd - timelineStart) : i / barCount) * plotW;
     const columnW = i => timed ? (enrichedPlan[i].end - enrichedPlan[i].start) / (timelineEnd - timelineStart) * plotW : plotW / barCount;
-    const barGap = 2;
 
     const yPos = (price) => padT + plotH - ((price - scaleMin) / scaleRange) * plotH;
     const zeroInRange = scaleMin <= 0 && scaleMax >= 0;
@@ -1538,7 +1548,7 @@ class VictronChargeControllerCard extends LitElement {
     });
 
     return svg`
-      <svg class="plan-chart" style=${`min-width:${chartW > 600 ? chartW : 0}px`} viewBox="0 0 ${chartW} ${chartH}" preserveAspectRatio="xMidYMid meet">
+      <svg class="plan-chart" viewBox="0 0 ${chartW} ${chartH}" preserveAspectRatio="xMidYMid meet">
         ${this._renderPlanPatterns()}
 
         <!-- Grid lines -->
@@ -1558,10 +1568,9 @@ class VictronChargeControllerCard extends LitElement {
         ${enrichedPlan.map((entry, i) => {
           const price = Number(entry.price);
           if (entry.price == null || !Number.isFinite(price)) return nothing;
-          const x = columnX(i) + barGap / 2;
-          const w = columnW(i) - barGap;
           const colX = columnX(i);
           const colW = columnW(i);
+          const { x, w } = this._planBarGeometry(entry, colX, colW);
           const barTop = yPos(price);
           const barBase = zeroInRange ? yPos(0) : padT + plotH;
           const barY = Math.min(barTop, barBase);
@@ -1637,15 +1646,15 @@ class VictronChargeControllerCard extends LitElement {
           class="plan-axis-unit">ct/kWh</text>
 
         <!-- X-axis labels (every 2 hours) -->
-        ${enrichedPlan.map((entry, i) => {
-          const h = entry.hour ?? i;
-          const current = entry.start <= now && now < entry.end;
-          if (!current && (h % 2 !== 0 || (entry.minute || 0) !== 0)) return nothing;
-          const x = columnX(i) + columnW(i) / 2;
+        ${this._planHourGroups(enrichedPlan).map(group => {
+          const current = group.start <= now && now < group.end;
+          if (!current && group.hour % 2 !== 0) return nothing;
+          const x = timed ? padL + ((group.start + group.end) / 2 - timelineStart) / (timelineEnd - timelineStart) * plotW
+            : columnX(group.index) + columnW(group.index) / 2;
           return svg`
             <text x="${x}" y="${chartH - 6}" text-anchor="middle"
               class="plan-axis-label ${current ? 'plan-current-hour' : ''}"
-            >${String(h).padStart(2, '0')}:${String(entry.minute || 0).padStart(2, '0')}</text>
+            >${String(group.hour).padStart(2, '0')}</text>
           `;
         })}
 
@@ -1824,10 +1833,8 @@ class VictronChargeControllerCard extends LitElement {
     const gap = 4;
     const totalBtnW = btnW * buttons.length + gap * (buttons.length - 1);
     const timed = Number.isFinite(entry.start);
-    const svgEl = this._pickerBar.svgEl;
-    const viewport = svgEl?.closest('.plan-chart-scroll')?.getBoundingClientRect();
-    const minX = viewport ? Math.max(0, this._clientToSvgPoint(viewport.left, viewport.top, svgEl).x) : padL;
-    const maxX = viewport ? Math.min(chartW, this._clientToSvgPoint(viewport.right, viewport.top, svgEl).x) : chartW - padR;
+    const minX = padL;
+    const maxX = chartW - padR;
     const pw = Math.min(timed ? 260 : Math.max(168, totalBtnW + 16), maxX - minX);
     const ph = timed ? 84 : 70;
     let px;
@@ -2824,7 +2831,7 @@ class VictronChargeControllerCard extends LitElement {
         ${charts.days.map((day, index) => html`
           <div class="plan-chart-label">${index === 0 ? 'Today' : 'Tomorrow'} <span class="plan-chart-date">${day.date}</span> - PV 10%: ${day.pv10Kwh === null ? 'unavailable' : this._formatEnergy(day.pv10Kwh, 1)} - PV: ${day.pvKwh === null ? 'unavailable' : this._formatEnergy(day.pvKwh, 1)}</div>
           ${day.hours.every(hour => hour.price === null) ? html`<div class="forecast-status">Prices not yet available</div>` : nothing}
-          <div class="plan-chart-scroll">${this._renderSolarChart(day, charts, forecast.time_zone)}</div>
+          ${this._renderSolarChart(day, charts, forecast.time_zone)}
         `)}
         <div class="plan-legend">
           ${this._renderPlanActionLegend()}
@@ -2836,7 +2843,7 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _renderSolarChart(day, scales, timeZone) {
-    const chartW = this._planChartWidth(day.hours, 100);
+    const chartW = 600;
     const left = 50, right = chartW - 50, top = 38, bottom = 240;
     const now = Date.now();
     const chartId = `solar-${day.date}`;
@@ -2850,7 +2857,7 @@ class VictronChargeControllerCard extends LitElement {
     const hide = () => { this._solarTooltip = null; this.requestUpdate(); };
     const selected = this._solarTooltip?.date === day.date ? day.slots[this._solarTooltip.index] : null;
     return html`
-      <svg class="plan-chart solar-chart" style=${`min-width:${chartW > 600 ? chartW : 0}px`} viewBox=${`0 0 ${chartW} 280`} role="group" aria-label=${`PV forecast and prices for ${day.date}, ${timeZone}`}>
+      <svg class="plan-chart solar-chart" viewBox=${`0 0 ${chartW} 280`} role="group" aria-label=${`PV forecast and prices for ${day.date}, ${timeZone}`}>
         ${[0, 1, 2, 3, 4].map(index => {
           const y = bottom - index / 4 * (bottom - top);
           const price = scales.priceMin + index / 4 * (scales.priceMax - scales.priceMin);
@@ -2864,16 +2871,16 @@ class VictronChargeControllerCard extends LitElement {
         <text x=${right} y="22" text-anchor="end" class="plan-axis-unit">kW</text>
         ${this._renderPlanPatterns()}
         ${day.hours.map(hour => this._renderPlanBar(hour, {
-          x: x(hour.start) + 1, w: Math.max(0, x(hour.end) - x(hour.start) - 2),
+          ...this._planBarGeometry(hour, x(hour.start), x(hour.end) - x(hour.start)),
           colX: x(hour.start), colW: x(hour.end) - x(hour.start), padT: top, plotH: bottom - top,
           barY: Math.min(baseline, priceY(hour.price)), barH: hour.price === null ? 0 : Math.abs(priceY(hour.price) - baseline) || 1,
           isPast: hour.end <= now, isCurrent: hour.start <= now && now < hour.end,
         }))}
         ${forecastAreas(day.intervals, 'pv_estimate', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fff59d" fill-opacity="0.3" stroke="#f9d95b" stroke-width="1.5" />`)}
         ${forecastAreas(day.intervals, 'pv_estimate10', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fbc02d" fill-opacity="0.35" stroke="#e0a800" stroke-width="1.5" />`)}
-        ${day.hours.filter(hour => (hour.hour % 2 === 0 && (hour.minute || 0) === 0) || (hour.start <= now && now < hour.end)).map(hour => svg`
-          <text x=${(x(hour.start) + x(hour.end)) / 2} y="260" text-anchor="middle"
-            class="plan-axis-label ${hour.start <= now && now < hour.end ? 'plan-current-hour' : ''}">${String(hour.hour).padStart(2, '0')}:${String(hour.minute || 0).padStart(2, '0')}</text>`)}
+        ${this._planHourGroups(day.hours).filter(group => group.hour % 2 === 0 || (group.start <= now && now < group.end)).map(group => svg`
+          <text x=${(x(group.start) + x(group.end)) / 2} y="260" text-anchor="middle"
+            class="plan-axis-label ${group.start <= now && now < group.end ? 'plan-current-hour' : ''}">${String(group.hour).padStart(2, '0')}</text>`)}
         ${day.slots.map((slot, index) => svg`
           <rect class="solar-slot" x=${x(slot.start)} y=${top} width=${x(slot.end) - x(slot.start)} height=${bottom - top}
             fill="transparent" tabindex="0" role=${slot.price !== null && day.hours[slot.hourIndex].end > now ? 'button' : 'img'}
@@ -3007,12 +3014,12 @@ class VictronChargeControllerCard extends LitElement {
 
         ${todayChart ? html`
           <div class="plan-chart-label">Today <span class="plan-chart-date">${todayDate}</span></div>
-          <div class="plan-chart-scroll">${todayChart}</div>
+          ${todayChart}
         ` : nothing}
 
         ${tomorrowChart ? html`
           <div class="plan-chart-label">Tomorrow <span class="plan-chart-date">${tomorrowDate}</span></div>
-          <div class="plan-chart-scroll">${tomorrowChart}</div>
+          ${tomorrowChart}
         ` : html`
           <div class="plan-chart-label plan-chart-label-muted">Tomorrow — prices not yet available</div>
         `}
@@ -3679,9 +3686,8 @@ class VictronChargeControllerCard extends LitElement {
       .plan-chart-container {
         display: flex; flex-direction: column; gap: 12px;
       }
-      .plan-chart-scroll { overflow-x: auto; }
       .plan-chart {
-        width: 100%; height: auto;
+        display: block; width: 100%; height: auto; min-width: 0;
         font-family: inherit;
       }
       .plan-axis-label {

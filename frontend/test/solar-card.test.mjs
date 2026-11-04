@@ -186,7 +186,7 @@ for (const now of ['2026-10-25T00:30:00+02:00', '2026-10-25T02:30:00+02:00', '20
     const labels = templates.filter(node => node.strings.join('').includes('class="plan-axis-label ') && node.rendered.includes('plan-current-hour'));
     assert.equal(labels.length, 1);
     const target = charts.days.flatMap(day => day.hours).find(hour => hour.start <= Date.parse(now) && Date.parse(now) < hour.end);
-    assert.ok(labels[0].rendered.includes(`>${String(target.hour).padStart(2, '0')}:${String(target.minute || 0).padStart(2, '0')}</text>`));
+    assert.ok(labels[0].rendered.includes(`>${String(target.hour).padStart(2, '0')}</text>`));
     const chart = charts.days.find(day => day.start <= Date.parse(now) && Date.parse(now) < day.end);
     const expectedX = 50 + (target.start - chart.start) / (chart.end - chart.start) * 500;
     assert.ok(markers[0].rendered.includes(`x="${expectedX}"`), 'outline belongs to the correct repeated hour');
@@ -580,19 +580,81 @@ test('structured actions beat compact schedule states; structured arrays support
   assert.deepEqual(Array.from(instance._enrichPlanDisplayState(withoutActions), period => period.displayAction).slice(0, 4), ['charge', 'discharge', 'idle', 'pv_charge']);
 });
 
-test('mixed price/PV charts provide at least 28px per quarter and preserve full hourly bars', () => {
-  const templates = [], instance = card({ templates });
-  const plan = pricedPeriods('2026-10-25T00:00:00+02:00', 4);
-  plan.push({ ...plan[0], start_time: plan.at(-1).end_time, end_time: '2026-10-26T00:00:00+01:00', price: 5 });
+function dayPlan(start, end, minutes = 15) {
+  const date = start.slice(0, 10);
+  return Array.from({ length: (Date.parse(end) - Date.parse(start)) / (minutes * 60000) }, (_, index) => {
+    const time = Date.parse(start) + index * minutes * 60000;
+    return { start_time: new Date(time).toISOString(), end_time: new Date(time + minutes * 60000).toISOString(),
+      date, hour: forecast.localHour(time, 'Europe/Vienna'), minute: Number(new Intl.DateTimeFormat('en', { timeZone: 'Europe/Vienna', minute: '2-digit' }).format(time)),
+      price: index % 4 + 1, action: 'idle' };
+  });
+}
+function priceBars(rendered) {
+  return [...rendered.matchAll(/<rect class="plan-price-bar"\s+x="([^"]+)" y="[^"]+" width="([^"]+)"/g)]
+    .map(([, x, width]) => ({ x: Number(x), width: Number(width) }));
+}
+
+for (const [start, end, tomorrowEnd, count] of [
+  ['2026-10-15T00:00:00+02:00', '2026-10-16T00:00:00+02:00', '2026-10-17T00:00:00+02:00', 96],
+  ['2026-03-29T00:00:00+01:00', '2026-03-30T00:00:00+02:00', '2026-03-31T00:00:00+02:00', 92],
+  ['2026-10-25T00:00:00+02:00', '2026-10-26T00:00:00+01:00', '2026-10-27T00:00:00+01:00', 100],
+]) for (const view of ['price', 'pv']) test(`${view} fits all ${count} quarters into the day with four columns per hour`, () => {
+  const templates = [], now = new Date(Date.parse(start) + 5.5 * 3600000).toISOString();
+  const instance = card({ now, templates }), plan = dayPlan(start, end);
   published(instance, plan);
-  const price = instance._renderPriceChart(plan);
-  assert.match(price, /min-width:2890px/);
-  const hitWidths = [...price.matchAll(/class="plan-bar-hit"\s+x="[^"]+" y="[^"]+" width="([^"]+)"/g)].map(match => Number(match[1]));
-  assert.ok(hitWidths.every(width => width >= 28));
-  assert.equal(hitWidths.at(-1), 24 * 4 * 28);
-  const charts = chartsFor(plan), pv = instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
-  assert.match(pv, /min-width:2900px/);
-  assert.equal(charts.days[0].hours.length, 5, 'long published interval remains one bar');
+  const charts = chartsFor(plan, start, end, tomorrowEnd), day = charts.days[0];
+  const rendered = view === 'price' ? instance._renderPriceChart(plan) : instance._renderSolarChart(day, charts, 'Europe/Vienna');
+  assert.match(rendered, /viewBox="?0 0 600 280/);
+  assert.doesNotMatch(rendered, /min-width:|plan-chart-scroll/);
+  const bars = priceBars(rendered), plotWidth = view === 'price' ? 510 : 500;
+  assert.equal(bars.length, count);
+  assert.equal(new Set(bars.map(bar => bar.x)).size, count, 'DST quarters retain distinct positions');
+  const targets = view === 'price' ? nodes(templates, 'plan-bar-hit') : nodes(templates, 'solar-slot');
+  assert.equal(targets.length, count, 'each quarter retains its own full-column target');
+  const widths = targets.map(node => Number(node.rendered.match(/width="?([\d.]+)/)[1]));
+  assert.ok(widths.every(width => Math.abs(width - plotWidth / count) < 1e-7));
+  assert.ok(bars.every(bar => bar.width > 0 && bar.x >= 50 && bar.x + bar.width <= 50 + plotWidth));
+  for (let index = 0; index < count; index += 4) {
+    const hourBars = bars.slice(index, index + 4);
+    assert.equal(hourBars.length, 4);
+    const gaps = hourBars.slice(1).map((bar, offset) => bar.x - hourBars[offset].x - hourBars[offset].width);
+    assert.ok(gaps.every(gap => Math.abs(gap - 0.5) < 1e-7), 'quarters have smaller intra-hour gaps');
+    if (index) assert.ok(Math.abs(hourBars[0].x - bars[index - 1].x - bars[index - 1].width - 2) < 1e-7, 'hour blocks have normal 2-unit spacing');
+  }
+  const labels = templates.filter(node => node.strings.join('').includes('class="plan-axis-label '));
+  assert.equal(labels.filter(node => node.rendered.includes('plan-current-hour')).length, 1);
+  assert.ok(labels.length <= Math.ceil(count / 8) + 1, 'hour labels stay sparse');
+  for (const label of labels) assert.match(label.rendered, />\d{2}<\/text>/);
+  const current = labels.find(node => node.rendered.includes('plan-current-hour'));
+  const currentHourStart = Date.parse(start) + 5 * 3600000;
+  const center = 50 + (currentHourStart + 1800000 - Date.parse(start)) / (Date.parse(end) - Date.parse(start)) * plotWidth;
+  const labelX = Number(current.rendered.match(/<text x="?([\d.]+)/)[1]);
+  assert.ok(Math.abs(labelX - center) < 1e-7, 'current label is centered on the full hour');
+});
+
+for (const view of ['price', 'pv']) test(`${view} native hourly day keeps the old full-width bars`, () => {
+  const instance = card(), start = '2026-10-15T00:00:00+02:00', end = '2026-10-16T00:00:00+02:00';
+  const plan = dayPlan(start, end, 60), charts = chartsFor(plan, start, end, '2026-10-17T00:00:00+02:00');
+  const rendered = view === 'price' ? instance._renderPriceChart(plan) : instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+  const bars = priceBars(rendered);
+  assert.equal(bars.length, 24);
+  assert.ok(bars.every(bar => Math.abs(bar.width - ((view === 'price' ? 510 : 500) / 24 - 2)) < 1e-7));
+});
+
+test('mixed price/PV charts keep elapsed-time widths and missing gaps within the full day', () => {
+  const instance = card(), start = '2026-10-25T00:00:00+02:00', end = '2026-10-26T00:00:00+01:00';
+  const plan = dayPlan(start, end);
+  // Preserve four quarters, one hourly interval, then a gap before the remaining quarters.
+  plan[4].end_time = plan[7].end_time;
+  plan.splice(5, 4);
+  const charts = chartsFor(plan);
+  for (const view of ['price', 'pv']) {
+    const rendered = view === 'price' ? instance._renderPriceChart(plan) : instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+    const bars = priceBars(rendered), unit = (view === 'price' ? 510 : 500) / 100;
+    assert.equal(bars.length, 96);
+    assert.ok(Math.abs((bars[4].width + 2) / unit - 4) < 1e-7, 'hourly interval keeps four times the quarter width');
+    assert.ok(bars[5].x - bars[4].x - bars[4].width > unit, 'missing quarter stays an elapsed-time gap');
+  }
 });
 
 for (const view of ['price', 'pv']) test(`${view} exact-period picker rechecks expiry before sending`, () => {
@@ -670,21 +732,17 @@ test('History retains click-to-toggle tooltips', t => {
 });
 
 for (const view of ['price', 'pv']) for (const gesture of ['contextmenu', 'pointerdown', 'keydown']) {
-  for (const edge of ['left', 'right']) for (const scale of [.75, 1.25]) {
-    test(`${view} ${gesture} picker stays inside the scrolled ${edge} edge at SVG scale ${scale}`, t => {
+  for (const edge of ['left', 'right']) for (const scale of [.55, 1.25]) {
+    test(`${view} ${gesture} picker stays inside the full-day ${edge} edge at SVG scale ${scale}`, t => {
       t.mock.timers.enable({ apis: ['setTimeout'] });
       const templates = [], instance = card({ now: '2026-10-24T00:00:00Z', templates });
-      const plan = pricedPeriods('2026-10-25T00:00:00+02:00', 100);
+      const plan = dayPlan('2026-10-25T00:00:00+02:00', '2026-10-26T00:00:00+01:00');
       published(instance, plan);
-      const charts = chartsFor(plan), day = charts.days[0], index = 20;
-      const viewport = { left: 40, right: 350, top: 100 };
+      const charts = chartsFor(plan), day = charts.days[0], index = edge === 'left' ? 0 : 99;
+      const viewport = { left: 40, right: 40 + 600 * scale, top: 100 };
       const clientX = edge === 'left' ? viewport.left + 5 : viewport.right - 5;
-      const barCenter = 50 + index * 28 + 14;
-      const scrollLeft = barCenter - (clientX - viewport.left) / scale;
-      assert.ok(scrollLeft > 0);
       const svgEl = {
-        closest: selector => selector === '.plan-chart-scroll' ? { getBoundingClientRect: () => viewport } : null,
-        getScreenCTM: () => ({ inverse: () => ({ scale, tx: viewport.left - scrollLeft * scale, ty: viewport.top }) }),
+        getScreenCTM: () => ({ inverse: () => ({ scale, tx: viewport.left, ty: viewport.top }) }),
         createSVGPoint: () => ({ x: 0, y: 0, matrixTransform(matrix) {
           return { x: (this.x - matrix.tx) / matrix.scale, y: (this.y - matrix.ty) / matrix.scale };
         } }),
@@ -703,13 +761,15 @@ for (const view of ['price', 'pv']) for (const gesture of ['contextmenu', 'point
       const picker = nodes(templates, 'plan-picker')[0];
       assert.ok(picker);
       const rects = [picker, ...nodes(templates, 'plan-picker-btn')].map(item => {
-        const [, x, , width] = item.rendered.match(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)"/);
-        return { left: viewport.left + (Number(x) - scrollLeft) * scale, right: viewport.left + (Number(x) + Number(width) - scrollLeft) * scale };
+        const [, x, y, width, height] = item.rendered.match(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)"/);
+        return { left: viewport.left + Number(x) * scale, right: viewport.left + (Number(x) + Number(width)) * scale,
+          top: Number(y), bottom: Number(y) + Number(height) };
       });
       assert.equal(rects.length, 5, 'picker and all four action buttons are measured');
       for (const rect of rects) {
         assert.ok(rect.left >= viewport.left - 1e-7, `left ${rect.left} stays within ${viewport.left}`);
         assert.ok(rect.right <= viewport.right + 1e-7, `right ${rect.right} stays within ${viewport.right}`);
+        assert.ok(rect.top >= 0 && rect.bottom <= 280, 'picker and buttons remain vertically within the SVG');
       }
       instance._closePicker();
     });

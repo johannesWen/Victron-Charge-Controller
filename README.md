@@ -204,7 +204,7 @@ To view or edit a time slot:
 - Right-click or hold a current or future price interval to choose Charge, PV, Discharge, or Idle.
 - With a keyboard, focus the slot and press Enter or Space.
 
-Each quarter can have its own action. Scroll horizontally in either chart to select individual quarters on a narrow screen.
+Both charts fit the full day within the card width. Each hour block contains one hourly bar or four separate 15-minute columns, each with its own action.
 Missing prices remain read-only gaps, and past periods cannot be edited. Switch back to Price to edit price limits.
 Recurring fixed plans, blocked hours, and recalculation-hour chips remain whole local hours; both occurrences of a repeated hour use those rules.
 If Solcast data becomes unusable, the card returns to Price.
