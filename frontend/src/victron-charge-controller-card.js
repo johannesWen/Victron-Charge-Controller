@@ -1649,6 +1649,7 @@ class VictronChargeControllerCard extends LitElement {
           `;
         })}
 
+        ${this._renderHourTooltip(chartId, this._planHourGroups(enrichedPlan))}
       </svg>
     `;
   }
@@ -1762,11 +1763,41 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _renderHourTarget(group, chartId, { x, width, top, height }, details = '') {
+  _hourPriceDetails(group) {
+    return group.entries.map(entry => `${this._periodLabel(entry)} · Price: ${entry.price == null ? 'unavailable' : `${Number(entry.price).toFixed(2)} ct/kWh`}`);
+  }
+
+  _renderHourTooltip(chartId, groups, details = group => this._hourPriceDetails(group)) {
+    if (this._pickerBar || this._tooltipBar?.chartId !== chartId) return nothing;
+    const group = groups.find(group => group.index === this._tooltipBar.index);
+    if (!group) return nothing;
+    return svg`<foreignObject class="plan-hour-tooltip" x="56" y="40" width="488" height="210" pointer-events="none" aria-hidden="true">
+      ${html`<div class="plan-hour-details">
+        <strong>${this._periodLabel(group)}</strong>
+        ${details(group).map(detail => html`<div>${detail}</div>`)}
+      </div>`}
+    </foreignObject>`;
+  }
+
+  _renderHourTarget(group, chartId, { x, width, top, height }, details = this._hourPriceDetails(group)) {
+    const show = () => {
+      if (this._pickerBar) return;
+      clearTimeout(this._tooltipHideTimer);
+      this._tooltipHideTimer = null;
+      this._tooltipBar = { chartId, index: group.index };
+      this.requestUpdate();
+    };
+    const hide = () => {
+      if (this._tooltipBar?.chartId !== chartId || this._tooltipBar.index !== group.index) return;
+      this._tooltipBar = null;
+      this.requestUpdate();
+    };
+    const detailLabel = details.join(' · ');
     const editable = group.entries.some(entry => this._editablePeriod(entry, group));
     return svg`<g class="plan-bar-group" tabindex="0" role=${editable ? 'button' : 'img'}
       data-past=${group.end <= Date.now() ? 'true' : 'false'} data-readonly=${String(!editable)}
-      aria-label=${`${this._periodLabel(group)} · ${editable ? 'Choose hour intervals and action' : 'No editable price intervals'}${details}`}
+      aria-label=${`${this._periodLabel(group)} · ${editable ? 'Choose hour intervals and action' : 'No editable price intervals'} · ${detailLabel}`}
+      @mouseenter=${show} @focus=${show} @mouseleave=${hide} @blur=${hide}
       @keydown=${e => this._onBarKeyDown(e, chartId, group.index)}
       @click=${e => this._onBarClick(e, chartId, group.index)}
       @contextmenu=${e => this._onBarContextMenu(e, chartId, group.index)}
@@ -1774,7 +1805,7 @@ class VictronChargeControllerCard extends LitElement {
       @pointermove=${e => this._onBarPointerMove(e)} @pointerup=${e => this._onBarPointerUp(e)}
       @pointercancel=${e => this._onBarPointerUp(e)} @pointerleave=${e => this._onBarPointerUp(e)}>
       <rect class="plan-bar-hit" x=${x} y=${top} width=${width} height=${height} fill="transparent" pointer-events="all" />
-      <title>${this._periodLabel(group)}${details} · Open for interval prices and actions</title>
+      <title>${this._periodLabel(group)} · ${detailLabel}${editable ? ' · Open to choose intervals and action' : ''}</title>
     </g>`;
   }
 
@@ -2820,7 +2851,7 @@ class VictronChargeControllerCard extends LitElement {
     const baseline = priceY(0);
     const pvY = power => priceY(power / scales.pvMax * scales.priceMax);
     const details = group => day.slots.filter(slot => slot.start < group.end && slot.end > group.start).map(slot =>
-      `${forecastTime(slot.start, timeZone)}–${forecastTime(slot.end, timeZone)} · Price: ${slot.price === null ? 'unavailable' : `${slot.price.toFixed(2)} ct/kWh`} · PV: ${slot.pv_estimate === null ? 'unavailable' : `${slot.pv_estimate.toFixed(2)} kW`} · Lower: ${slot.pv_estimate10 === null ? 'unavailable' : `${slot.pv_estimate10.toFixed(2)} kW`}`).join(' · ');
+      `${forecastTime(slot.start, timeZone)}–${forecastTime(slot.end, timeZone)} · Price: ${slot.price === null ? 'unavailable' : `${slot.price.toFixed(2)} ct/kWh`} · PV: ${slot.pv_estimate === null ? 'unavailable' : `${slot.pv_estimate.toFixed(2)} kW`} · Lower: ${slot.pv_estimate10 === null ? 'unavailable' : `${slot.pv_estimate10.toFixed(2)} kW`}`);
     return html`
       <svg class="plan-chart solar-chart" viewBox=${`0 0 ${chartW} 280`} role="group" aria-label=${`PV forecast and prices for ${day.date}, ${timeZone}`}>
         ${[0, 1, 2, 3, 4].map(index => {
@@ -2848,7 +2879,8 @@ class VictronChargeControllerCard extends LitElement {
             class="plan-axis-label ${group.start <= now && now < group.end ? 'plan-current-hour' : ''}">${String(group.hour).padStart(2, '0')}</text>`)}
         ${this._planHourGroups(day.hours).map(group => this._renderHourTarget(group, chartId,
           { x: x(group.start), width: x(group.end) - x(group.start), top, height: bottom - top },
-          ` · ${details(group)}`))}
+          details(group)))}
+        ${this._renderHourTooltip(chartId, this._planHourGroups(day.hours), details)}
       </svg>
     `;
   }
@@ -3702,6 +3734,14 @@ class VictronChargeControllerCard extends LitElement {
       }
       .plan-pv-column {
         pointer-events: none;
+      }
+      .plan-hour-tooltip { pointer-events: none; }
+      .plan-hour-details {
+        box-sizing: border-box; padding: 8px 10px;
+        background: var(--vcc-bg, #fff); color: var(--vcc-text, #212121);
+        border: 1px solid var(--vcc-border, #ddd); border-radius: 5px;
+        font-size: 14px; line-height: 1.25;
+        display: flex; flex-direction: column; gap: 6px;
       }
       .plan-picker p { margin: 0; font-size: .88em; line-height: 1.45; color: var(--vcc-text2); }
       .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

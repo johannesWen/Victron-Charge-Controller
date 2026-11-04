@@ -773,3 +773,62 @@ for (const unavailable of ['past', 'missing']) test(`${unavailable} whole-hour t
     assert.equal(Object.keys(instance._pendingPlanActions).length, 0);
   }
 });
+
+for (const view of ['price', 'pv']) for (const unavailable of ['past', 'missing']) {
+  for (const inspect of ['mouseenter', 'focus']) test(`${view} ${inspect} inspects all ${unavailable} hour details without enabling edits`, () => {
+    const templates = [], instance = card({ now: unavailable === 'past' ? '2026-10-26T00:00:00Z' : '2026-10-24T00:00:00Z', templates });
+    const plan = pricedPeriods();
+    if (unavailable === 'missing') plan.slice(0, 4).forEach(entry => { entry.price = null; });
+    published(instance, plan);
+    const charts = chartsFor(plan), day = charts.days[0];
+    const render = () => view === 'price' ? instance._renderPriceChart(plan) : instance._renderSolarChart(day, charts, 'Europe/Vienna');
+    const initial = render();
+    assert.doesNotMatch(initial, /class="plan-hour-tooltip"/);
+    const target = nodes(templates, 'plan-bar-group').find(node => node.rendered.includes('02:00 GMT+2–02:00 GMT+1'));
+    assert.ok(target);
+    assert.match(target.rendered, /data-readonly=true/);
+    for (const row of forecast.normalizePlan(plan).slice(0, 4)) {
+      assert.ok(target.rendered.includes(instance._periodLabel(row)), 'accessible label and native title identify every actual interval');
+      assert.ok(target.rendered.includes(row.price == null ? 'Price: unavailable' : `Price: ${row.price.toFixed(2)} ct/kWh`));
+    }
+    handler(target, inspect)(event());
+    templates.length = 0;
+    render();
+    const tooltip = nodes(templates, 'plan-hour-tooltip')[0];
+    assert.ok(tooltip);
+    assert.match(tooltip.rendered, /pointer-events="none" aria-hidden="true"/);
+    for (const row of forecast.normalizePlan(plan).slice(0, 4)) {
+      assert.ok(tooltip.rendered.includes(instance._periodLabel(row)));
+      assert.ok(tooltip.rendered.includes(row.price == null ? 'Price: unavailable' : `Price: ${row.price.toFixed(2)} ct/kWh`));
+    }
+    if (view === 'pv') {
+      assert.match(tooltip.rendered, /PV: 2.00 kW/);
+      assert.match(tooltip.rendered, /Lower: 1.00 kW/);
+      assert.match(tooltip.rendered, /PV: unavailable/);
+    }
+    handler(target, 'click')(event());
+    assert.equal(instance._pickerBar, null);
+    assert.equal(Object.keys(instance._pendingPlanActions).length, 0);
+    handler(target, inspect === 'focus' ? 'blur' : 'mouseleave')(event());
+    assert.equal(instance._tooltipBar, null);
+    assert.doesNotMatch(render(), /class="plan-hour-tooltip"/);
+  });
+}
+
+test('opening an editable hour hides passive details and chart switching clears them', () => {
+  const templates = [], instance = card({ templates }), plan = pricedPeriods();
+  published(instance, plan);
+  instance._renderPriceChart(plan);
+  const target = nodes(templates, 'plan-bar-group')[0];
+  handler(target, 'focus')(event());
+  assert.match(instance._renderPriceChart(plan), /class="plan-hour-tooltip"/);
+  handler(target, 'click')(event());
+  assert.equal(instance._pickerBar.selected.size, 4);
+  assert.doesNotMatch(instance._renderPriceChart(plan), /class="plan-hour-tooltip"/);
+  instance._closePicker();
+  handler(target, 'mouseenter')(event());
+  instance._solarForecast = { usable: true };
+  instance._setPlanChartMode('pv');
+  assert.equal(instance._tooltipBar, null);
+  assert.equal(instance._pickerBar, null);
+});
