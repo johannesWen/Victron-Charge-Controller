@@ -373,3 +373,203 @@ def test_unpriced_plan_preserves_restored_quarter_actions(controller):
     {"start_time": "9999-12-31T23:00:00+00:00", "price_ct_per_kwh": 1}])
 def test_invalid_numeric_or_out_of_range_period_is_ignored(entry):
     assert normalized([entry]) == []
+
+
+@pytest.mark.parametrize("blocked,excluded", [([10],True),([11],True),([12],False)])
+@pytest.mark.parametrize("action", ["charge", "discharge"])
+def test_native_period_excluded_when_any_touched_hour_is_blocked(controller, blocked, excluded, action):
+    start = START + timedelta(minutes=45)
+    publish(controller, [price(start, minutes=60)])
+    controller.cheapest_hours = 1 if action == "charge" else 0
+    controller.expensive_hours = 1 if action == "discharge" else 0
+    controller.discharge_price_threshold = 0
+    setattr(controller, f"_blocked_{'charging' if action == 'charge' else 'discharging'}_hours", blocked)
+    controller.calculate_auto_schedule()
+    assert getattr(controller, f"{action}_hours") == ([] if excluded else [(start, start+timedelta(hours=1))])
+
+
+def test_priced_display_splits_at_retained_action_boundaries_and_edits_exact_segment(controller):
+    controller._charge_hours = [utc_slot(DAY, 10, 15, 15)]
+    data = publish(controller, [price(minutes=60)])
+    plan = ChargePlanSensor(controller, MockConfigEntry())._build_plan(data)
+    priced = [item for item in plan if "price" in item]
+    assert [(item["minute"], item["action"], item["price"]) for item in priced] == [
+        (0,"idle",5),(15,"charge",5),(30,"idle",5)]
+    assert [item["end_time"] for item in priced] == [
+        (START+timedelta(minutes=minutes)).isoformat() for minutes in (15,30,60)]
+    assert [{key:value for key,value in item.items() if key != "action"} for item in priced] == [
+        item for item in data.prices_today if "price" in item]
+    controller.set_slot_action(priced[1]["start_time"], "discharge")
+    assert controller.charge_hours == []
+    assert controller.discharge_hours == [utc_slot(DAY,10,15,15)]
+    controller.cheapest_hours = .25
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == []  # Native hourly source remains indivisible.
+
+
+@pytest.mark.parametrize("zone", ["UTC", "Europe/Vienna"])
+def test_midnight_source_is_clipped_published_and_editable(controller, monkeypatch, zone):
+    local_zone = ZoneInfo(zone)
+    monkeypatch.setattr(dt_util, "DEFAULT_TIME_ZONE", local_zone)
+    midnight = datetime(2026,5,3,tzinfo=local_zone).astimezone(timezone.utc)
+    source = midnight-timedelta(minutes=15)
+    monkeypatch.setattr(dt_util, "now", lambda: dt_util.as_local(midnight+timedelta(minutes=5)))
+    data = publish(controller, [price(source, minutes=60)])
+    first = data.prices_today[0]
+    assert first == {"date":"2026-05-03", "hour":0, "minute":0,
+                     "start_time":midnight.isoformat(), "end_time":(midnight+timedelta(minutes=45)).isoformat(), "price":5}
+    controller.set_slot_action(first["start_time"], "charge")
+    assert controller.charge_hours == [(midnight, midnight+timedelta(minutes=45))]
+    with pytest.raises(ServiceValidationError):
+        controller.set_slot_action(source.isoformat(), "charge")  # No longer a displayed segment today.
+    previous = price_timeline(normalized([price(source, minutes=60)]), "2026-05-02")[-1]
+    assert previous["start_time"] == source.isoformat()
+    assert previous["end_time"] == midnight.isoformat()
+    assert previous["date"] == "2026-05-02" and previous["price"] == 5
+
+
+def test_split_display_cannot_be_edited_after_source_loses_coverage(controller):
+    controller._charge_hours = [utc_slot(DAY,10,15,15)]
+    publish(controller, [price(minutes=60)])
+    before = deepcopy(controller.charge_hours)
+    controller.hass.states.get.side_effect = lambda _: MockState("5", {"data":[price()]})
+    with pytest.raises(ServiceValidationError):
+        controller.set_slot_action((START+timedelta(minutes=15)).isoformat(), "discharge")
+    assert controller.charge_hours == before
+
+
+@pytest.mark.parametrize("value", ["nan","inf","-inf","-0.25","12.25","1.1"])
+@pytest.mark.parametrize("key", ["cheapest_hours","expensive_hours"])
+async def test_invalid_duration_restore_keeps_current_safe_budget(controller, key, value):
+    description = next(item for item in NUMBERS if item.key == key)
+    number = VictronCCNumber(controller, MockConfigEntry(), description)
+    number.hass = controller.hass
+    number.async_get_last_state = AsyncMock(return_value=MockState(value))
+    setattr(controller, key, 1.25)
+    with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", new=AsyncMock()):
+        await number.async_added_to_hass()
+    assert getattr(controller,key) == 1.25
+
+
+@pytest.mark.parametrize("value", [float("nan"),float("inf"),float("-inf"),-.25,12.25,1.1,None,"bad"])
+@pytest.mark.parametrize("key", ["cheapest_hours","expensive_hours"])
+def test_invalid_planner_budget_selects_nothing(controller, key, value):
+    publish(controller, [price(START+timedelta(minutes=15*i)) for i in range(8)])
+    setattr(controller,key,value)
+    controller.calculate_auto_schedule()
+    assert getattr(controller,"charge_hours" if key == "cheapest_hours" else "discharge_hours") == []
+
+
+@pytest.mark.parametrize("value", ["nan","inf","-inf","-0.25","12.25","1.1"])
+@pytest.mark.parametrize("key", ["cheapest_hours","expensive_hours"])
+async def test_invalid_duration_rejected_by_real_ha_number_service_without_mutation(controller, key, value):
+    import probatio
+    from types import SimpleNamespace
+    from homeassistant.components.number.services import _async_set_value
+
+    description = next(item for item in NUMBERS if item.key == key)
+    number = VictronCCNumber(controller, MockConfigEntry(), description)
+    number.hass = controller.hass
+    number.async_write_ha_state = MagicMock()
+    controller.async_request_refresh = AsyncMock()
+    controller.calculate_auto_schedule = MagicMock()
+    before = getattr(controller,key)
+    payload = probatio.Schema({probatio.Required("value"):probatio.Coerce(float)})({"value":value})
+    with pytest.raises(ServiceValidationError):
+        await _async_set_value(number, SimpleNamespace(data=payload))
+    assert getattr(controller,key) == before
+    controller.calculate_auto_schedule.assert_not_called()
+    controller.async_request_refresh.assert_not_called()
+    number.async_write_ha_state.assert_not_called()
+
+
+@pytest.mark.parametrize("edit", ["exact","hour","toggle"])
+async def test_manual_pv_outside_fixed_overlay_survives_replan_restart_retraction(controller, edit):
+    publish(controller, [price(START+timedelta(minutes=15*i),value=10-i) for i in range(8)])
+    controller.set_fixed_plan_hour(1,11,"discharge")
+    controller.set_active_fixed_plan(1)
+    if edit == "exact":
+        controller.set_slot_action((START+timedelta(minutes=45)).isoformat(),"pv_charge")
+    elif edit == "hour":
+        controller.set_hour_action(10,"pv_charge",DAY)
+    else:
+        controller.toggle_hour(10,DAY)
+        controller.toggle_hour(10,DAY)
+    expected = list(controller.pv_charge_hours)
+    controller.cheapest_hours = .25
+    controller.calculate_auto_schedule()
+    assert controller.pv_charge_hours == expected
+    assert not any(active_slot(controller.charge_hours, start) for start,_ in expected)
+    await controller._async_save_schedule()
+    restarted = VictronChargeControlCoordinator(controller.hass,MockConfigEntry())
+    restarted.async_request_refresh = MagicMock()
+    restarted.control_mode = MODE_MANUAL
+    await restarted._async_load_schedule()
+    restarted.set_active_fixed_plan(None)
+    assert restarted.pv_charge_hours == expected
+    assert restarted.discharge_hours == []
+
+
+@pytest.mark.parametrize("edit", ["exact","hour","charge_list","discharge_list"])
+async def test_fixed_plan_overrides_edits_but_retraction_restores_edited_base(controller, edit):
+    publish(controller, [price(START+timedelta(minutes=15*i)) for i in range(4)])
+    controller.control_mode = MODE_MANUAL
+    controller.set_fixed_plan_hour(1,10,"pv_charge")
+    controller.set_active_fixed_plan(1)
+    action = "discharge" if edit == "discharge_list" else "charge"
+    if edit == "exact":
+        controller.set_slot_action(START.isoformat(),action)
+        expected = [utc_slot(DAY,10,0,15)]
+    elif edit == "hour":
+        controller.set_hour_action(10,action,DAY)
+        expected = [utc_slot(DAY,10,minute,15) for minute in (0,15,30,45)]
+    else:
+        expected = [utc_slot(DAY,10)]
+        getattr(controller,f"set_{action}_hours")([(DAY,10)])
+    assert active_slot(controller.pv_charge_hours, START)
+    assert not active_slot(getattr(controller,f"{action}_hours"), START)
+    await controller._async_save_schedule()
+    restarted = VictronChargeControlCoordinator(controller.hass,MockConfigEntry())
+    restarted.async_request_refresh = MagicMock()
+    restarted.control_mode = MODE_MANUAL
+    await restarted._async_load_schedule()
+    restarted.set_active_fixed_plan(None)
+    assert getattr(restarted,f"{action}_hours") == expected
+    assert restarted.pv_charge_hours == []
+
+
+def test_public_schedule_uses_display_segments_but_planner_keeps_native_period(controller, monkeypatch):
+    midnight = START.replace(hour=0)+timedelta(days=1)
+    source = midnight-timedelta(minutes=15)
+    monkeypatch.setattr(dt_util,"now",lambda:midnight+timedelta(minutes=5))
+    publish(controller,[price(source,minutes=60)])
+    controller.cheapest_hours = .25
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == []
+    controller.cheapest_hours = 1
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == [(source,midnight+timedelta(minutes=45))]
+    data = publish(controller,[price(source,minutes=60)])
+    priced = data.prices_today[0]
+    assert data.charge_hours == [
+        slot_attributes((source,midnight)),
+        {key:value for key,value in priced.items() if key != "price"},
+    ]
+    controller.set_slot_action(priced["start_time"],"idle")
+    assert controller.charge_hours == [(source,midnight)]
+    controller._clean_expired_slots()
+    assert controller.charge_hours == []
+
+
+@pytest.mark.parametrize("date,blocked,excluded", [
+    ("2026-03-29",2,False), ("2026-03-29",3,True),
+    ("2026-10-25",2,True), ("2026-10-25",3,False),
+])
+def test_crossing_source_blocks_follow_actual_dst_hours(controller,monkeypatch,date,blocked,excluded):
+    monkeypatch.setattr(dt_util,"DEFAULT_TIME_ZONE",ZoneInfo("Europe/Vienna"))
+    start = datetime.fromisoformat(date).replace(hour=0,minute=45,tzinfo=timezone.utc)
+    monkeypatch.setattr(dt_util,"now",lambda:dt_util.as_local(start))
+    publish(controller,[price(start,minutes=60)])
+    controller._blocked_charging_hours = [blocked]
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == ([] if excluded else [(start,start+timedelta(hours=1))])

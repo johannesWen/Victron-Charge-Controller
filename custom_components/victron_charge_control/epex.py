@@ -206,17 +206,17 @@ def price_timeline(
     intervals: list[PriceInterval], date_str: str,
     schedule: Sequence[tuple[datetime, datetime]] = (),
 ) -> list[dict[str, Any]]:
-    """Publish a complete local day, preserving real periods and unpriced gaps."""
+    """Clip source coverage to a civil day and split it at schedule boundaries."""
     from .schedule import slot_attributes
 
     day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
     start = day.astimezone(timezone.utc)
     end = (day + timedelta(days=1)).astimezone(timezone.utc)
-    periods = [item for item in intervals if start <= item.start < end]
+    periods = [item for item in intervals if item.start < end and item.end > start]
     cadence = timedelta(minutes=15) if any(
         item.end - item.start == timedelta(minutes=15) for item in intervals
     ) else timedelta(hours=1)
-    # Restored quarter schedules must remain visible when the price feed is unavailable.
+    # Retained schedules can have finer action boundaries than the current source prices.
     boundaries = sorted({instant for slot in schedule for instant in slot if start < instant < end})
 
     def gap_stop(cursor: datetime, limit: datetime) -> datetime:
@@ -226,14 +226,15 @@ def price_timeline(
     result = []
     cursor = start
     for item in periods:
-        while cursor < item.start:
-            stop = gap_stop(cursor, item.start)
+        begin, finish = max(start, item.start), min(end, item.end)
+        while cursor < begin:
+            stop = gap_stop(cursor, begin)
             result.append(slot_attributes((cursor, stop)))
             cursor = stop
-        entry = slot_attributes(item.slot)
-        entry["price"] = item.price
-        result.append(entry)
-        cursor = item.end
+        splits = [begin, *(boundary for boundary in boundaries if begin < boundary < finish), finish]
+        for left, right in zip(splits, splits[1:]):
+            result.append({**slot_attributes((left, right)), "price": item.price})
+        cursor = finish
     while cursor < end:
         stop = gap_stop(cursor, end)
         result.append(slot_attributes((cursor, stop)))

@@ -99,6 +99,7 @@ from .schedule import (
     apply_fixed_plan,
     clean_expired_slots,
     clear_all as schedule_clear_all,
+    local_hour_slots,
     normalize_blocked_hours,
     normalize_fixed_plan,
     normalize_fixed_plan_name,
@@ -936,14 +937,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def set_charge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set charge hours (date-aware) and trigger update."""
+        if self._active_fixed_plan is not None:
+            self._retract_fixed_plan()
         self._charge_hours = set_charge_slots(slots)
+        self._apply_fixed_plan()
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
 
     def set_discharge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set discharge hours (date-aware) and trigger update."""
+        if self._active_fixed_plan is not None:
+            self._retract_fixed_plan()
         self._discharge_hours = set_discharge_slots(slots)
+        self._apply_fixed_plan()
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -1247,6 +1254,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         )
         if no_op:
             return
+        self._record_schedule_edit(local_hour_slots(date_str or self._today_str(), hour))
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -1287,9 +1295,26 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         )
         if no_op:
             return
+        self._record_schedule_edit(local_hour_slots(date_str or self._today_str(), hour))
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
+
+    def _record_schedule_edit(self, targets: list[ScheduleSlot]) -> None:
+        """Keep explicit edits in the base while the active fixed plan stays on top."""
+        if self._active_fixed_plan is None:
+            return
+        current = (self._charge_hours, self._discharge_hours, self._pv_charge_hours)
+        base = self._fixed_plan_base_snapshot or current
+        self._fixed_plan_base_snapshot = tuple(
+            sort_slots(subtract_slots(previous, targets) + [
+                (max(start, begin), min(end, finish))
+                for start, end in edited for begin, finish in targets
+                if start < finish and begin < end
+            ])
+            for previous, edited in zip(base, current)
+        )
+        self._apply_fixed_plan()
 
     def _source_slots(self) -> list[ScheduleSlot]:
         state = self.hass.states.get(self._epex_spot_entity)
@@ -1312,7 +1337,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if end is None or end <= now:
             raise ServiceValidationError("Target must be a current or future published priced interval")
         # Revalidate against the source in case publication is stale or unavailable.
-        if (start, end) not in self._source_slots():
+        if not any(begin <= start < end <= finish for begin, finish in self._source_slots()):
             raise ServiceValidationError("Target price interval is no longer available")
         slot = (start, end)
         self._charge_hours = subtract_slots(self._charge_hours, [slot])
@@ -1324,6 +1349,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._discharge_hours = sort_slots(self._discharge_hours + [slot])
         elif action == ACTION_PV_CHARGE:
             self._pv_charge_hours = sort_slots(self._pv_charge_hours + [slot])
+        self._record_schedule_edit([slot])
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -2300,6 +2326,19 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         calculation: dict[str, float] | None = None,
     ) -> ChargeControlData:
         """Assemble the per-tick ``ChargeControlData`` returned to entities."""
+        boundaries = sorted({
+            parse_epex_start_time(period[key])
+            for period in price_view.prices_today + price_view.prices_tomorrow
+            for key in ("start_time", "end_time")
+        })
+
+        def public_slots(slots: list[ScheduleSlot]) -> list[dict[str, Any]]:
+            result = []
+            for start, end in slots:
+                splits = [start, *(point for point in boundaries if start < point < end), end]
+                result.extend(slot_attributes(slot) for slot in zip(splits, splits[1:]))
+            return result
+
         return ChargeControlData(
             desired_action=action,
             target_setpoint=setpoint,
@@ -2308,9 +2347,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 and all(math.isfinite(value) for value in calculation.values())
                 else None
             ),
-            charge_hours=[slot_attributes(slot) for slot in self._charge_hours],
-            discharge_hours=[slot_attributes(slot) for slot in self._discharge_hours],
-            pv_charge_hours=[slot_attributes(slot) for slot in self._pv_charge_hours],
+            charge_hours=public_slots(self._charge_hours),
+            discharge_hours=public_slots(self._discharge_hours),
+            pv_charge_hours=public_slots(self._pv_charge_hours),
             blocked_charging_hours=list(self._blocked_charging_hours),
             blocked_discharging_hours=list(self._blocked_discharging_hours),
             fixed_plans={
