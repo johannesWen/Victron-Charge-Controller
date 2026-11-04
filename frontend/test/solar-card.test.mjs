@@ -202,7 +202,7 @@ test('PV enrichment uses current schedule and recurring blocks, and clears a con
   const plan = [{ date: '2026-10-25', hour: 2, price: 4, action: 'idle' }, { date: '2026-10-26', hour: 2, price: 5, action: 'charge' }];
   const values = { charge_hours: '2026-10-26: 02', discharge_hours: '', pv_charge_hours: '', blocked_charging_hours: '2', blocked_discharging_hours: '' };
   instance._val = (_, key) => values[key];
-  instance._state = () => ({ attributes: { plan } });
+  instance._state = () => ({ state: '0 charge, 0 discharge', attributes: { plan } });
   instance._pendingPlanActions['2026-10-25:2'] = { action: 'pv_charge', ts: Date.now() };
   let days;
   instance._renderSolarChart = day => { (days ||= []).push(day); return ''; };
@@ -353,7 +353,7 @@ function pricedPeriods(start = '2026-10-25T02:00:00+02:00', count = 8) {
   }));
 }
 function published(instance, plan, extra = {}) {
-  instance._state = (_, key) => key === 'charge_plan' ? { attributes: { plan, time_zone: 'Europe/Vienna', ...extra } } : undefined;
+  instance._state = (_, key) => key === 'charge_plan' ? { state: '0 charge, 0 discharge', attributes: { plan, time_zone: 'Europe/Vienna', ...extra } } : undefined;
 }
 
 test('structured actions beat compact schedule states; structured arrays support plans without actions', () => {
@@ -643,7 +643,7 @@ test('late source update before rerender is revalidated; inserting an earlier pe
   published(instance, plan.map(row => ({ ...row, price: null })));
   await instance._applyPickerAction('charge');
   assert.equal(calls.length, 1);
-  instance._state = () => ({ attributes: {} });
+  instance._state = () => ({ state: '0 charge, 0 discharge', attributes: {} });
   assert.equal(instance._currentPickerPeriod(instance._pickerBar.rows[0]), null, 'unavailable published plan invalidates the selection');
   instance._closePicker();
 });
@@ -707,6 +707,7 @@ test('partial failure rolls back only failed period, blocks duplicate apply, and
 
 test('dialog focuses a quarter, traps Tab, closes on Escape/outside/close and restores hour focus', async () => {
   const templates = [], instance = card({ templates }), plan = pricedPeriods();
+  published(instance, plan);
   const focused = [], buttons = [0, 1, 2].map(index => ({ focus() { focused.push(index); } }));
   instance.updateComplete = Promise.resolve();
   instance.renderRoot = { querySelector: () => buttons[1], querySelectorAll: () => buttons, activeElement: buttons[2] };
@@ -832,3 +833,58 @@ test('opening an editable hour hides passive details and chart switching clears 
   assert.equal(instance._tooltipBar, null);
   assert.equal(instance._pickerBar, null);
 });
+
+
+for (const view of ['price', 'pv']) for (const outage of ['deleted', 'unavailable', 'unknown']) {
+  test(`${view} ${outage} live plan disables an open picker and prevents cached service writes`, async () => {
+    const templates = [], instance = card({ templates }), plan = pricedPeriods();
+    instance.setConfig({ view: 'plan' });
+    const picker = openHour(instance, plan, 0, view);
+    const entityId = 'sensor.victron_charge_control_charge_plan';
+    const live = { state: '0 charge, 0 discharge', attributes: { plan, time_zone: 'Europe/Vienna' } };
+    instance.hass.states = { [entityId]: live };
+    delete instance._state;
+    delete instance._val;
+    assert.equal(picker.selected.size, 4);
+    const charts = chartsFor(plan);
+    const render = () => {
+      templates.length = 0;
+      if (view === 'price') instance._renderAutoPlanContent();
+      else instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+      return instance._renderPlanPicker();
+    };
+    render();
+    assert.ok(nodes(templates, 'plan-picker-btn').every(node => node.rendered.includes('?disabled=false')));
+    if (outage === 'deleted') delete instance.hass.states[entityId];
+    else instance.hass.states[entityId] = { ...live, state: outage };
+    const calls = [];
+    instance.hass.callService = (...args) => { calls.push(args); };
+    render();
+    assert.equal(nodes(templates, 'plan-picker-period').length, 4);
+    assert.ok(nodes(templates, 'plan-picker-period').every(node => node.rendered.includes('?disabled=true') && node.rendered.includes('aria-pressed=false')));
+    assert.ok(nodes(templates, 'plan-picker-btn').every(node => node.rendered.includes('?disabled=true')));
+    assert.ok(picker.rows.every(row => instance._currentPickerPeriod(row) === null));
+    // A transient outage can recover the original identities, without selecting new periods.
+    instance.hass.states[entityId] = { ...live, state: '1 charge, 2 discharge, 1 pv_charge' };
+    render();
+    assert.ok(nodes(templates, 'plan-picker-btn').every(node => node.rendered.includes('?disabled=false')));
+    assert.equal(picker.selected.size, 4);
+    if (outage === 'deleted') delete instance.hass.states[entityId];
+    else instance.hass.states[entityId] = { ...live, state: outage };
+    // Invoke the handler directly as well: disabled rendering is not the validation boundary.
+    await instance._applyPickerAction('charge');
+    assert.equal(calls.length, 0);
+    assert.equal(Object.keys(instance._pendingPlanActions).length, 0);
+    assert.equal(picker.selected.size, 0);
+    assert.match(picker.result, /0 of 4 intervals updated. 4 unavailable/);
+    instance.hass.states[entityId] = live;
+    render();
+    assert.ok(nodes(templates, 'plan-picker-btn').every(node => node.rendered.includes('?disabled=true')), 'recovery does not undo a cleared selection');
+    instance._togglePickerPeriod(picker.rows[0]);
+    await instance._applyPickerAction('idle');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1], 'set_slot_action');
+    assert.equal(calls[0][2].start_time, plan[0].start_time);
+    assert.equal(instance._pickerBar, null);
+  });
+}

@@ -1829,11 +1829,9 @@ class VictronChargeControllerCard extends LitElement {
     if (!entry || !this._editablePeriod(entry, picker.group)) return null;
     const planEntity = this._state('sensor', 'charge_plan');
     const published = planEntity?.attributes?.plan;
-    if (planEntity && !Array.isArray(published)) return null;
-    if (Array.isArray(published)) {
-      const source = normalizePlan(published).find(period => this._periodIdentity(period) === this._periodIdentity(row));
-      if (!source || !this._editablePeriod(source, picker.group)) return null;
-    }
+    if (!planEntity?.state || ['unknown', 'unavailable'].includes(planEntity.state) || !Array.isArray(published)) return null;
+    const source = normalizePlan(published).find(period => this._periodIdentity(period) === this._periodIdentity(row));
+    if (!source || !this._editablePeriod(source, picker.group)) return null;
     return entry;
   }
 
