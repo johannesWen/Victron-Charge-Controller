@@ -715,3 +715,38 @@ for (const view of ['price', 'pv']) for (const gesture of ['contextmenu', 'point
     });
   }
 }
+
+for (const commit of [true, false]) test(`threshold drag preserves Lit label nodes on ${commit ? 'commit' : 'cancel'}`, t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const instance = card(), calls = [];
+  instance.setConfig({ entity_prefix: 'garage' });
+  instance.hass.callService = (...args) => { calls.push(args); return Promise.resolve(); };
+  instance.classList = { add() {}, remove() {} };
+  instance._addThresholdDragListeners = () => {};
+  instance._removeThresholdDragListeners = () => {};
+  instance._clientToSvgY = y => y;
+  const marker = { nodeType: 8, nodeValue: '?lit$marker$' }, textNode = { nodeType: 3, nodeValue: '10' };
+  const positions = {}, label = {
+    childNodes: [marker, textNode], lastChild: textNode,
+    setAttribute: (key, value) => { positions[key] = value; },
+    set textContent(_) { assert.fail('Replacing label content removes the Lit marker needed for the next render'); },
+  };
+  const lines = [{ setAttribute() {} }, { setAttribute() {} }];
+  const group = { classList: { add() {}, remove() {} }, closest: () => ({}), querySelectorAll: () => lines, querySelector: () => label };
+  const scale = { scaleMin: 0, scaleMax: 40, scaleRange: 40, padT: 38, plotH: 202, step: .25 };
+  instance._onThresholdPointerDown(event({}, { currentTarget: group }), 'charge', scale);
+  instance._onThresholdPointerMove(event({}, { clientY: 118.8 }));
+  assert.equal(textNode.nodeValue, '10', 'a drag before hold unlocks leaves the label unchanged');
+  t.mock.timers.tick(1000);
+  instance._onThresholdPointerMove(event({}, { clientY: 118.8 }));
+  assert.equal(textNode.nodeValue, '24');
+  assert.equal(label.childNodes[0], marker);
+  assert.equal(label.childNodes[1], textNode);
+  assert.equal(marker.nodeValue, '?lit$marker$');
+  assert.ok(Math.abs(positions.y - 122.3) < 1e-7);
+  if (commit) instance._onThresholdPointerUp(event());
+  else instance._finishThresholdDrag(false);
+  assert.equal(instance._thresholdDrag, null);
+  assert.equal(JSON.stringify(calls), JSON.stringify(commit ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: 24 }]] : []));
+  assert.equal(instance._pendingThresholds.charge, commit ? 24 : undefined);
+});

@@ -1271,7 +1271,8 @@ class VictronChargeControllerCard extends LitElement {
     const label = group.querySelector('text');
     if (label) {
       label.setAttribute('y', yPos + 3.5);
-      label.textContent = Math.round(price * 10) / 10;
+      // Keep Lit's marker so the next render can still update this label.
+      if (label.lastChild?.nodeType === 3) label.lastChild.nodeValue = String(Math.round(price * 10) / 10);
     }
   }
 
