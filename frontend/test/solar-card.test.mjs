@@ -649,7 +649,7 @@ for (const preliminary of ['focus', 'mouseenter']) test(`Price click retains a t
   handler(bar, 'click')(event());
   assert.equal(instance._tooltipBar?.chartId, 'today');
   assert.equal(instance._tooltipBar?.index, 1);
-  assert.match(instance._renderPriceChart(plan), /class="plan-bar-tooltip"/);
+  assert.match(instance._renderPriceChart(plan), /class="plan-bar-tooltip" pointer-events="none"/);
   t.mock.timers.tick(9000);
   handler(bar, 'click')(event());
   t.mock.timers.tick(9000);

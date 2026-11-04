@@ -299,7 +299,7 @@ const e=globalThis,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
 
         <!-- Bar tooltip -->
         ${(()=>{if(!this._tooltipBar||this._tooltipBar.chartId!==s)return j;const{index:t}=this._tooltipBar;if(t<0||t>=e.length)return j;const i=e[t],r=Number(i.price);if(null==i.price||!Number.isFinite(r))return j;const a=w(t)+$(t)/2,n=k(r),o=S?k(0):250,l=310;let c=Math.min(n,o)-38-8;c<2&&(c=Math.max(n,o)+8);let d=a-155;d=Math.max(u,Math.min(d,h-g-l));const p=this._periodLabel(i),m=`${r.toFixed(2)} ct/kWh`;return V`
-            <g class="plan-bar-tooltip">
+            <g class="plan-bar-tooltip" pointer-events="none">
               <rect x="${d}" y="${c}" width="${l}" height="${38}" rx="5"
                 fill="var(--vcc-card-bg, var(--card-background-color, #fff))"
                 fill-opacity="0.95"

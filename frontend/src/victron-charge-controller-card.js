@@ -1669,7 +1669,7 @@ class VictronChargeControllerCard extends LitElement {
           const timeLabel = this._periodLabel(entry);
           const priceLabel = `${price.toFixed(2)} ct/kWh`;
           return svg`
-            <g class="plan-bar-tooltip">
+            <g class="plan-bar-tooltip" pointer-events="none">
               <rect x="${tx}" y="${ty}" width="${tw}" height="${th}" rx="5"
                 fill="var(--vcc-card-bg, var(--card-background-color, #fff))"
                 fill-opacity="0.95"
