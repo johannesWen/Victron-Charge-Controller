@@ -198,13 +198,15 @@ The existing EPEX Spot input is detected automatically as 15-minute or 60-minute
 In a detected 15-minute feed, entries without `end_time` use the quarter-hour cadence. True hourly periods mixed into that feed require an explicit `end_time`.
 It uses the Home Assistant time zone even when your browser uses a different zone. Tooltip and picker times include UTC offsets to distinguish repeated times when daylight saving ends. Spring and fall days retain their actual 23 or 25 hours.
 
-To view or edit a time slot:
+To view or edit an hour:
 
-- Hover, tap, or focus the slot to see its values.
-- Right-click or hold a current or future price interval to choose Charge, PV, Discharge, or Idle.
-- With a keyboard, focus the slot and press Enter or Space.
+- Tap or click an hour in Price or PV forecast to open its interval picker. Right-click, hold, or focus the hour and press Enter or Space also work.
+- All available quarters start selected. Deselect any quarters you want to leave unchanged, then choose Charge, PV, Discharge, or Idle to apply only to the selection.
+- Past intervals and missing prices are shown disabled; the current partially elapsed quarter stays editable. Reopening the picker selects all available intervals again.
+- Hourly feeds show one whole-hour choice. Mixed feeds retain their actual interval bounds. Times include UTC offsets so repeated DST hours can be edited separately.
+- Escape, the close button, or clicking outside closes the picker. Each selected interval is saved separately; if a call fails, the picker reports partial results and does not automatically retry.
 
-Both charts fit the full day within the card width. Each hour block contains one hourly bar or four separate 15-minute columns, each with its own action.
+Both charts fit the full day within the card width. Each hour block contains one hourly bar or four separate 15-minute columns, each with its own action. The whole hour is the chart selection target; quarter choices use full-size buttons in the picker.
 Missing prices remain read-only gaps, and past periods cannot be edited. Switch back to Price to edit price limits.
 Recurring fixed plans, blocked hours, and recalculation-hour chips remain whole local hours; both occurrences of a repeated hour use those rules.
 If Solcast data becomes unusable, the card returns to Price.
