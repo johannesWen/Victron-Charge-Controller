@@ -13,7 +13,7 @@
 </p>
 
 Victron Charge Controller schedules battery charging and discharging in Home Assistant.
-It uses EPEX Spot prices to charge during cheap hours and discharge during expensive hours.
+It uses EPEX Spot prices to charge during cheap periods and discharge during expensive periods.
 You can also set a schedule or control your Victron ESS from a dashboard or automation.
 
 ## Contents
@@ -57,7 +57,7 @@ Restarting in Auto mode does not replace your saved schedule.
 | --- | --- |
 | Home Assistant | Runs the integration and dashboard. |
 | Victron GX (Built-in) | Provides battery data and writable power controls. |
-| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly electricity prices for today and tomorrow. |
+| [EPEX Spot](https://github.com/mampfes/ha_epex_spot) | Provides hourly or 15-minute electricity prices for today and tomorrow. |
 
 ## Installation
 
@@ -86,7 +86,7 @@ Select these entities during setup. Leave optional fields empty if you do not us
 | Battery SOC sensor | Yes | Battery charge percentage. Example: GX Device - DC battery charge. |
 | AC power setpoint | Yes | Permanent idle target in watts. Example: GX Device - AC power setpoint. |
 | AC grid setpoint | Yes | Temporary target in watts, stored in RAM. Example: GX Device - AC grid setpoint. |
-| EPEX Spot price sensor | Yes | Hourly prices. Example: EPEX Spot Data - Market Price. |
+| EPEX Spot price sensor | Yes | Hourly or 15-minute prices. Example: EPEX Spot Data - Market Price. |
 | Max grid feed-in entity | Yes | Writable export limit in watts. Example: GX Device - ESS max feed-in power. |
 | Maximum discharge power entity | No | Writable number in W that accepts `0` to prevent battery discharge and `−1` for unlimited discharge. Required for [Disable Discharge](#disable-discharge). |
 | Grid consumption energy sensor | No | Total grid import in kWh, for cost tracking. |
@@ -193,16 +193,19 @@ Zero battery feedback is hidden; older controller calculations without that term
 When a limit caps the target, the original result appears in parentheses, such as `5,000 W (6,000 W)`.
 
 In the Plan card, switch from Price to PV forecast to view expected solar production.
-The chart shows the main Solcast forecast and a lower estimate, alongside hourly electricity prices.
-It uses the Home Assistant time zone.
+The chart shows the main Solcast forecast and a lower estimate, alongside electricity price intervals.
+The existing EPEX Spot input is detected automatically as 15-minute or 60-minute data; hourly prices stay hourly, and mixed feeds keep their actual intervals without averaging. Price input remains the existing EPEX Spot sensor; no other provider adapter or new resolution setting is added.
+It uses the Home Assistant time zone even when your browser uses a different zone. Tooltip and picker times include UTC offsets to distinguish repeated times when daylight saving ends. Spring and fall days retain their actual 23 or 25 hours.
 
 To view or edit a time slot:
 
 - Hover, tap, or focus the slot to see its values.
-- Right-click or hold a current or future hour with a price to choose Charge, PV, Discharge, or Idle.
+- Right-click or hold a current or future price interval to choose Charge, PV, Discharge, or Idle.
 - With a keyboard, focus the slot and press Enter or Space.
 
-Hours without prices are read-only. Switch back to Price to edit price limits.
+Each quarter can have its own action. Scroll horizontally in either chart to select individual quarters on a narrow screen.
+Missing prices remain read-only gaps, and past periods cannot be edited. Switch back to Price to edit price limits.
+Recurring fixed plans, blocked hours, and recalculation-hour chips remain whole local hours; both occurrences of a repeated hour use those rules.
 If Solcast data becomes unusable, the card returns to Price.
 
 | Plan | History |
@@ -356,8 +359,8 @@ Existing settings and schedules remain saved.
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
 | Max Grid Setpoint | Number | Highest allowed grid setpoint. |
 | Setpoint Deadband | Number | Minimum change in watts for normal power updates. Set to `0` to disable. |
-| Cheapest Hours | Number | Number of low-price hours selected for auto charge. |
-| Expensive Hours | Number | Number of high-price hours selected for auto discharge. |
+| Cheapest Hours (Charge Duration in the card) | Number | Auto-charge duration budget in hours, adjustable in 0.25-hour steps. |
+| Expensive Hours (Discharge Duration in the card) | Number | Auto-discharge duration budget in hours, adjustable in 0.25-hour steps. |
 | Charge Price Threshold | Number | Maximum price for automatic charging. |
 | Discharge Price Threshold | Number | Minimum price for automatic discharging. |
 | Grid Feed-in Price Threshold | Number | Reduce feed-in when the price falls below this value. |
@@ -390,8 +393,9 @@ Existing settings and schedules remain saved.
 
 | Service | Description |
 | --- | --- |
-| `victron_charge_control.toggle_hour` | Cycle an hour through `idle`, `charge`, `pv_charge`, `discharge`, `blocked`, and back to `idle`. |
-| `victron_charge_control.set_hour_action` | Set an hour to `idle`, `charge`, `pv_charge`, `discharge`, or `blocked`. |
+| `victron_charge_control.toggle_hour` | Cycle a whole local hour (all quarters and both DST occurrences) through `idle`, `charge`, `pv_charge`, `discharge`, `blocked`, and back to `idle`. |
+| `victron_charge_control.set_hour_action` | Set a whole local hour to `idle`, `charge`, `pv_charge`, `discharge`, or `blocked`, including all quarters and both occurrences of a repeated DST hour. |
+| `victron_charge_control.set_slot_action` | Set one exact current/future priced interval using aware `start_time` and `action`: `idle`, `charge`, `pv_charge`, or `discharge`. Invalid, unpriced, or past targets are rejected without changing the schedule. |
 | `victron_charge_control.set_blocked_charging_hours` | Replace the list of charging-blocked hours. |
 | `victron_charge_control.set_blocked_discharging_hours` | Replace the list of discharging-blocked hours. |
 | `victron_charge_control.set_fixed_plan_hour` | Set a plan hour to `charge`, `pv_charge`, `discharge`, or `idle`. Creates the plan if needed. |
@@ -400,6 +404,8 @@ Existing settings and schedules remain saved.
 | `victron_charge_control.remove_fixed_plan` | Delete a fixed plan (deactivates it first when active). |
 | `victron_charge_control.calculate_schedule` | Recalculate the automatic schedule from EPEX Spot prices. |
 | `victron_charge_control.clear_schedule` | Clear scheduled and blocked hours. An active fixed plan still applies. |
+
+Automatic selection takes whole eligible price intervals without exceeding the duration budget. For example, 1.25 hours can select five quarters from a 15-minute feed; an hourly feed selects one whole hour. The budget spans the available current and future data, rather than guaranteeing a duration each day. Existing entity IDs and saved duration values remain valid.
 
 ## Defaults
 

@@ -1,7 +1,7 @@
 import { LitElement, html, svg, css, nothing } from 'lit';
 import { CARD_VERSION } from 'virtual:integration-version';
 import { normalizeView } from './view.mjs';
-import { ForecastPoller, buildForecastCharts, forecastAreas, forecastTime } from './solar-forecast.mjs';
+import { ForecastPoller, buildForecastCharts, forecastAreas, forecastTime, normalizePlan } from './solar-forecast.mjs';
 
 // ────────────────────────────────────────────────────────────
 // Constants
@@ -71,8 +71,9 @@ const HELP_TEXT = {
   plan: [
     { heading: 'Reading the chart',
       items: [
-        'In Price and PV forecast views, each bar shows the scheduled action for one hour (today + tomorrow).',
-        'Tap a Price bar to see price details for that hour.',
+        'In Price and PV forecast views, each bar shows the scheduled action for one price period (today + tomorrow).',
+        'Tap a Price bar to see price details for that period. Prices automatically use hourly or 15-minute resolution. Scroll horizontally to select individual quarters.',
+        'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
       ] },
     { heading: 'PV forecast requirements',
       items: [
@@ -84,10 +85,10 @@ const HELP_TEXT = {
       items: [
         'On the automatic Plan page, use the Price / PV forecast toggle below Charge Allowed and Discharge Allowed to switch views. Today and Tomorrow use the Home Assistant time zone.',
         'The light-yellow area shows the central Solcast estimate (pv_estimate). The yellow area shows the lower, 10th-percentile estimate (pv_estimate10), not 10% of the central value. Both show power in kW on the right axis; the areas overlap and are not added together.',
-        'Hourly price bars use the same action colors, blocked-hour hatching and past-hour styling as Price. The current hour has a dashed outline and highlighted label. Bars and forecast curves share the same zero line, with negative prices below it. Price thresholds are shown only in Price view.',
+        'Price interval bars use the same action colors, blocked-hour hatching and past-hour styling as Price. The current price period has a dashed outline and highlighted label. Bars and forecast curves share the same zero line, with negative prices below it. Price thresholds are shown only in Price view.',
         'Each title shows PV 10% and PV energy in kWh, calculated from the available forecast intervals for that day. These are forecast totals, not measured production; missing intervals are not counted as zero. A missing day or missing lower estimates is shown as unavailable.',
         'Hover, tap or keyboard-focus a time slot to see its time, price and PV estimates in the top-left tooltip. Half-hour forecasts are preserved, and missing values remain gaps. Prices can be unavailable while the PV forecast is still shown.',
-        'Right-click or hold a priced current or future hour to change its action, or focus its time slot and press Enter or Space. Hours without prices are read-only. The view returns to Price if the forecast becomes unusable. Switching views does not enable PV charging or alter charging permissions.',
+        'Right-click or hold a current or future priced period to change its action, or focus its time slot and press Enter or Space. Periods without prices are read-only. The view returns to Price if the forecast becomes unusable. Switching views does not enable PV charging or alter charging permissions.',
         'Forecast data is read from the integration cache every minute while this page is open. This does not request a Solcast refresh or change the charging schedule.',
       ] },
     { heading: 'Charging modes',
@@ -110,7 +111,7 @@ const HELP_TEXT = {
         ],
         'Outside planned hours the controller uses Idle Setpoint, normally 0 W; an enabled Grid Consumer adds the consumer shortfall after solar surplus in active control modes.',
       ] },
-    { heading: 'Override an hour',
+    { heading: 'Override a price period',
       items: [
         [
           { text: 'Press and hold', bold: true },
@@ -148,7 +149,7 @@ const HELP_TEXT = {
 const SETTINGS_HELP = {
   control_mode: [
     { heading: 'Off', items: ['Requests Idle and resets the grid target to the configured Idle Setpoint. It does not switch off the Victron system or prevent battery flows managed by Victron.'] },
-    { heading: 'Auto', items: ['Builds a price-based schedule from available current and future EPEX hours using the hour counts, price thresholds and recurring blocks. An active fixed plan and individual hour overrides can change that schedule. Permission switches and SOC protection still apply.'] },
+    { heading: 'Auto', items: ['Builds a price-based schedule from available current and future EPEX periods using the duration budgets, price thresholds and recurring blocks. An active fixed plan and individual period overrides can change that schedule. Permission switches and SOC protection still apply.'] },
     { heading: 'Manual', items: ['Follows the hours you choose in the Plan card and any active fixed plan instead of selecting hours by price. Unscheduled hours use Idle. Permission switches and SOC protection still apply; selected Recalculation Hours reset manual charge/discharge slots.'] },
     { heading: 'Force Charge', items: ['Requests grid charging at Charge Power without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Charge Allowed and obeys Max SOC, hysteresis and grid setpoint limits.'] },
     { heading: 'Force Discharge', items: ['Requests discharge without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Discharge Allowed and obeys SOC protection, discharge stages and export limits.'] },
@@ -221,19 +222,19 @@ const SETTINGS_HELP = {
     'During active control, all computed setpoints, including Idle and PV Charge, are clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. Actual grid power also depends on the Victron system and connected loads.',
   ],
   cheapest_hours_auto_charge: [
-    'Sets the maximum number of cheapest eligible hours selected for grid charging across the available current and future price data, rather than a guaranteed count per day.',
-    'Only hours at or below Charge Price Threshold qualify. Recurring blocked charging hours and PV Charge slots are skipped; conflicts with selected discharge hours favor discharge. Zero selects no automatic grid-charge hours. Changing this value in Auto recalculates the schedule.',
+    'Sets the grid-charge duration budget in hours, in 0.25-hour steps, across available current and future prices. Whole price intervals are selected without exceeding the budget; hourly feeds keep whole hours.',
+    'Only periods at or below Charge Price Threshold qualify. Recurring blocked charging hours and PV Charge slots are skipped; conflicts with selected discharge hours favor discharge. Zero selects no automatic grid-charge periods. Changing this value in Auto recalculates the schedule.',
   ],
   expensive_hours_auto_discharge: [
-    'Sets the maximum number of most expensive eligible hours selected for discharge across the available current and future price data, rather than a guaranteed count per day.',
-    'Only hours at or above Discharge Price Threshold qualify. Recurring blocked discharging hours and PV Charge slots are skipped. Zero selects no automatic discharge hours. Changing this value in Auto recalculates the schedule; actual discharge still requires permission and sufficient SOC.',
+    'Sets the discharge duration budget in hours, in 0.25-hour steps, across available current and future prices. Whole price intervals are selected without exceeding the budget; hourly feeds keep whole hours.',
+    'Only periods at or above Discharge Price Threshold qualify. Recurring blocked discharging hours and PV Charge slots are skipped. Zero selects no automatic discharge periods. Changing this value in Auto recalculates the schedule; actual discharge still requires permission and sufficient SOC.',
   ],
   charge_price_threshold: [
-    'Sets the highest EPEX spot price, in ct/kWh, eligible for automatic grid charging. A price equal to the threshold qualifies. Raising it allows more hours to qualify; Cheapest Hours still caps how many are selected.',
+    'Sets the highest EPEX spot price, in ct/kWh, eligible for automatic grid charging. A price equal to the threshold qualifies. Raising it allows more hours to qualify; Charge Duration caps the total selected duration.',
     'Changing it in Auto recalculates the schedule. It does not gate Force Charge or explicitly chosen manual/fixed-plan hours. This is the spot-price comparison, not a total electricity bill calculation.',
   ],
   discharge_price_threshold: [
-    'Sets the lowest EPEX spot price, in ct/kWh, eligible for automatic discharge. A price equal to the threshold qualifies. Raising it restricts selection to higher-priced hours; Expensive Hours caps their count.',
+    'Sets the lowest EPEX spot price, in ct/kWh, eligible for automatic discharge. A price equal to the threshold qualifies. Raising it restricts selection to higher-priced hours; Discharge Duration caps their total duration.',
     'Changing it in Auto recalculates the schedule. It does not gate Force Discharge or explicitly chosen manual/fixed-plan hours. Permission switches and SOC limits still govern execution.',
   ],
   grid_feed_in_control: [
@@ -321,6 +322,7 @@ class VictronChargeControllerCard extends LitElement {
     this._tooltipHideTimer = null;
     // Manual action picker state
     this._pickerBar = null;
+    this._chartPeriods = {};
     this._pickerHideTimer = null;
     this._barHoldTimer = null;
     this._barHoldStart = null;
@@ -341,7 +343,7 @@ class VictronChargeControllerCard extends LitElement {
     this._pendingFixedPlanHours = {};   // plan -> { hour -> action }
     this._pendingActiveFixedPlan = undefined; // number | null | undefined (= none)
     this._pendingFixedPlanNames = {};   // plan -> { value, ts }
-    this._pendingPlanActions = {};      // 'date:hour' -> action
+    this._pendingPlanActions = {};      // absolute start (legacy date:hour) -> action
     this._lastScheduleUpdateSeen = null;
     // Inline plan-rename editor state (detail view only)
     this._planNameEditing = false;
@@ -806,67 +808,37 @@ class VictronChargeControllerCard extends LitElement {
       .filter(n => !isNaN(n) && n >= 0 && n <= 23);
   }
 
-  _parseScheduleSlots(value) {
-    if (value === undefined || value === null || value === 'unknown' || value === 'unavailable') return null;
-    const trimmed = String(value).trim();
-    if (!trimmed) return new Set();
-
-    const slots = new Set();
-    for (const group of trimmed.split('|')) {
-      const [date, hoursText, ...rest] = group.split(':');
-      if (!date || hoursText === undefined || rest.length > 0) return null;
-      const dateText = date.trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) return null;
-      for (const rawHour of hoursText.split(',')) {
-        const hourText = rawHour.trim();
-        if (!hourText) continue;
-        if (!/^\d+$/.test(hourText)) return null;
-        const hour = Number.parseInt(hourText, 10);
-        if (Number.isNaN(hour) || hour < 0 || hour > 23) return null;
-        slots.add(`${dateText}:${hour}`);
-      }
-    }
-    return slots;
-  }
-
   _normalizePlanAction(action) {
     if (action === 'charge' || action === 'pv_charge' || action === 'discharge' || action === 'blocked') return action;
     return 'idle';
   }
 
   _enrichPlanDisplayState(plan) {
-    const chargeSlots = this._parseScheduleSlots(this._val('sensor', 'charge_hours'));
-    const dischargeSlots = this._parseScheduleSlots(this._val('sensor', 'discharge_hours'));
-    const pvChargeSlots = this._parseScheduleSlots(this._val('sensor', 'pv_charge_hours'));
-    const hasScheduleSensors = chargeSlots !== null && dischargeSlots !== null && pvChargeSlots !== null;
-    const blockedChargingHours = this._parseHours(this._val('text', 'blocked_charging_hours'));
-    const blockedDischargingHours = this._parseHours(this._val('text', 'blocked_discharging_hours'));
+    const attributes = this._state('sensor', 'charge_plan')?.attributes || {};
+    const slotKey = entry => Number.isFinite(Date.parse(entry.start_time)) ? String(Date.parse(entry.start_time)) : `${entry.date}:${entry.hour}`;
+    const blockedChargingHours = attributes.blocked_charging_hours ?? this._parseHours(this._val('text', 'blocked_charging_hours'));
+    const blockedDischargingHours = attributes.blocked_discharging_hours ?? this._parseHours(this._val('text', 'blocked_discharging_hours'));
 
-    return plan.map(entry => {
+    return normalizePlan(plan).map(entry => {
       const hour = entry.hour;
-      const slotKey = entry.date !== undefined && hour !== undefined ? `${entry.date}:${hour}` : null;
+      const key = slotKey(entry);
       const blockedCharging = blockedChargingHours.includes(hour) || entry.action === 'blocked_charging' || entry.action === 'blocked';
       const blockedDischarging = blockedDischargingHours.includes(hour) || entry.action === 'blocked_discharging' || entry.action === 'blocked';
 
       let displayAction = this._normalizePlanAction(entry.action);
-      // Per-day actions take precedence over recurring blocks (user override
-      // via the plan-card picker). The blocked_*_hours flags are still used
-      // for the hatched overlay so the user can see the hour is also blocked.
-      if (hasScheduleSensors && slotKey) {
-        // PV charge takes precedence over plain charge/discharge (matches backend).
-        if (pvChargeSlots.has(slotKey)) displayAction = 'pv_charge';
-        else if (chargeSlots.has(slotKey)) displayAction = 'charge';
-        else if (dischargeSlots.has(slotKey)) displayAction = 'discharge';
-        else if (blockedCharging && blockedDischarging) displayAction = 'blocked';
-        else displayAction = 'idle';
+      // Published actions are authoritative; structured schedules support older plans without actions.
+      if (entry.action == null) {
+        for (const [action, name] of [['discharge', 'discharge_hours'], ['charge', 'charge_hours'], ['pv_charge', 'pv_charge_hours']]) {
+          if (attributes[name]?.some(slot => slotKey(slot) === key)) displayAction = action;
+        }
       }
 
       // Optimistic pending edit wins over the last known schedule state;
       // cleared as soon as the schedule sensors reflect the picked action.
-      const pending = slotKey ? this._pendingPlanActions[slotKey] : undefined;
+      const pending = this._pendingPlanActions[key];
       if (pending) {
         if (pending.action === displayAction) {
-          delete this._pendingPlanActions[slotKey];
+          delete this._pendingPlanActions[key];
         } else {
           displayAction = pending.action;
         }
@@ -899,54 +871,32 @@ class VictronChargeControllerCard extends LitElement {
     });
   }
 
-  _extractEpexPrices(attrs, targetDate) {
-    // Find the EPEX data list from entity attributes
-    let rawData = null;
-    if (Array.isArray(attrs.data) && attrs.data.length > 0) {
-      rawData = attrs.data;
-    } else {
-      // Fallback: search for any list attribute with price-like dicts
-      for (const [, val] of Object.entries(attrs)) {
-        if (!Array.isArray(val) || val.length === 0) continue;
-        const first = val[0];
-        if (first && typeof first === 'object' && ('start_time' in first || 'price_ct_per_kwh' in first || 'price_per_kwh' in first)) {
-          rawData = val;
-          break;
-        }
-      }
-    }
-    if (!rawData) return {};
+  _planTimeZone() {
+    return this._state('sensor', 'charge_plan')?.attributes?.time_zone || this.hass?.config?.time_zone || this._solarForecast.time_zone;
+  }
 
-    const d = targetDate || new Date();
-    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const priceMap = {};
-    for (const item of rawData) {
-      const st = item.start_time;
-      if (!st) continue;
-      let dt;
-      if (typeof st === 'string') {
-        dt = new Date(st);
-      } else if (st instanceof Date) {
-        dt = st;
-      } else {
-        continue;
-      }
-      if (isNaN(dt.getTime())) continue;
-      const itemDate = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-      if (itemDate !== dateStr) continue;
-      // Extract price in ct/kWh
-      let price = item.price_ct_per_kwh;
-      if (price === undefined || price === null) {
-        const priceEur = item.price_per_kwh;
-        if (priceEur !== undefined && priceEur !== null) {
-          price = parseFloat(priceEur) * 100;
-        }
-      }
-      if (price !== undefined && price !== null) {
-        priceMap[dt.getHours()] = parseFloat(price);
-      }
-    }
-    return priceMap;
+  _periodLabel(entry, timeZone = this._planTimeZone()) {
+    return Number.isFinite(entry.start) ? `${forecastTime(entry.start, timeZone)}–${forecastTime(entry.end, timeZone)}`
+      : `${String(entry.hour).padStart(2, '0')}:${String(entry.minute || 0).padStart(2, '0')}`;
+  }
+
+  _planChartWidth(periods, padding) {
+    const durations = periods.map(entry => entry.end - entry.start).filter(duration => duration > 0);
+    const shortest = Math.min(...durations);
+    return shortest < 3600000 ? Math.max(600, (periods.at(-1).end - periods[0].start) / shortest * 28 + padding) : 600;
+  }
+
+  _setPlanSlotAction(entry, action) {
+    if (entry.price == null || !Number.isFinite(Number(entry.price)) || (Number.isFinite(entry.end) && entry.end <= Date.now())) return;
+    if (!entry.start_time) { this._setPlanHourAction(entry.hour, action, entry.date); return; }
+    const key = String(Date.parse(entry.start_time));
+    if (!Number.isFinite(entry.start) || !(entry.end > entry.start)) return;
+    const pending = { action, ts: Date.now() };
+    this._pendingPlanActions[key] = pending;
+    this.requestUpdate();
+    this._callService('victron_charge_control', 'set_slot_action', { start_time: entry.start_time, action }, () => {
+      if (this._pendingPlanActions[key] === pending) delete this._pendingPlanActions[key];
+    });
   }
 
   // ── Reusable render fragments ───────────────────────────
@@ -1478,8 +1428,8 @@ class VictronChargeControllerCard extends LitElement {
       <!-- Keep automatic scheduling settings available in every control mode. -->
       ${this._renderSection('Auto Mode', 'mdi:auto-fix', html`
         ${this._renderGridConsumer()}
-        ${this._renderSlider('Cheapest Hours', 'cheapest_hours_auto_charge', ' h')}
-        ${this._renderSlider('Expensive Hours', 'expensive_hours_auto_discharge', ' h')}
+        ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h')}
+        ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h')}
         ${this._renderSlider('Charge Price Threshold', 'charge_price_threshold', ' ct/kWh')}
         ${this._renderSlider('Discharge Price Threshold', 'discharge_price_threshold', ' ct/kWh')}
       `)}
@@ -1535,7 +1485,9 @@ class VictronChargeControllerCard extends LitElement {
 
   // ── Shared chart renderer ────────────────────────────────
 
-  _renderPriceChart(enrichedPlan, { showCurrentHour = false, chargeThreshold = null, dischargeThreshold = null, forcedScaleMin = null, forcedScaleMax = null, chartId = 'today' } = {}) {
+  _renderPriceChart(enrichedPlan, { chargeThreshold = null, dischargeThreshold = null, forcedScaleMin = null, forcedScaleMax = null, chartId = 'today' } = {}) {
+    enrichedPlan = normalizePlan(enrichedPlan);
+    this._chartPeriods[chartId] = enrichedPlan;
     // Extract prices and determine scale
     const validPrices = enrichedPlan
       .map(p => p.price)
@@ -1557,10 +1509,10 @@ class VictronChargeControllerCard extends LitElement {
     }
     const scaleRange = scaleMax - scaleMin || 1;
 
-    const currentHour = new Date().getHours();
+    const now = Date.now();
 
     // SVG dimensions
-    const chartW = 600;
+    const chartW = this._planChartWidth(enrichedPlan, 90);
     const chartH = 280;
     const padL = 50;
     const padR = 40;
@@ -1569,7 +1521,10 @@ class VictronChargeControllerCard extends LitElement {
     const plotW = chartW - padL - padR;
     const plotH = chartH - padT - padB;
     const barCount = enrichedPlan.length;
-    const barW = plotW / barCount;
+    const timelineStart = enrichedPlan[0].start, timelineEnd = enrichedPlan.at(-1).end;
+    const timed = Number.isFinite(timelineStart) && timelineEnd > timelineStart;
+    const columnX = i => padL + (timed ? (enrichedPlan[i].start - timelineStart) / (timelineEnd - timelineStart) : i / barCount) * plotW;
+    const columnW = i => timed ? (enrichedPlan[i].end - enrichedPlan[i].start) / (timelineEnd - timelineStart) * plotW : plotW / barCount;
     const barGap = 2;
 
     const yPos = (price) => padT + plotH - ((price - scaleMin) / scaleRange) * plotH;
@@ -1582,7 +1537,7 @@ class VictronChargeControllerCard extends LitElement {
     });
 
     return svg`
-      <svg class="plan-chart" viewBox="0 0 ${chartW} ${chartH}" preserveAspectRatio="xMidYMid meet">
+      <svg class="plan-chart" style=${`min-width:${chartW > 600 ? chartW : 0}px`} viewBox="0 0 ${chartW} ${chartH}" preserveAspectRatio="xMidYMid meet">
         ${this._renderPlanPatterns()}
 
         <!-- Grid lines -->
@@ -1602,21 +1557,24 @@ class VictronChargeControllerCard extends LitElement {
         ${enrichedPlan.map((entry, i) => {
           const price = Number(entry.price);
           if (entry.price == null || !Number.isFinite(price)) return nothing;
-          const h = entry.hour ?? i;
-          const x = padL + i * barW + barGap / 2;
-          const w = barW - barGap;
-          const colX = padL + i * barW;
-          const colW = barW;
+          const x = columnX(i) + barGap / 2;
+          const w = columnW(i) - barGap;
+          const colX = columnX(i);
+          const colW = columnW(i);
           const barTop = yPos(price);
           const barBase = zeroInRange ? yPos(0) : padT + plotH;
           const barY = Math.min(barTop, barBase);
           const barH = Math.abs(barTop - barBase) || 1;
-          const isPast = showCurrentHour && h < currentHour;
-          const isCurrent = showCurrentHour && h === currentHour;
+          const isPast = Number.isFinite(entry.end) && entry.end <= now;
+          const isCurrent = entry.start <= now && now < entry.end;
           return svg`
             <g class="plan-bar-group"
-              data-past=${isPast ? 'true' : 'false'} tabindex="0" role="button"
-              aria-label=${`${String(h).padStart(2, '0')}:00 · ${price.toFixed(2)} ct/kWh${isPast ? '' : ' · Change hour action'}`}
+              data-past=${isPast ? 'true' : 'false'} tabindex="0" role=${isPast ? 'img' : 'button'}
+              aria-label=${`${this._periodLabel(entry)} · ${price.toFixed(2)} ct/kWh${isPast ? '' : ' · Change period action'}`}
+              @focus=${() => { this._tooltipBar = { chartId, index: i }; this.requestUpdate(); }}
+              @mouseenter=${() => { this._tooltipBar = { chartId, index: i }; this.requestUpdate(); }}
+              @blur=${() => { this._tooltipBar = null; this.requestUpdate(); }}
+              @mouseleave=${() => { this._tooltipBar = null; this.requestUpdate(); }}
               @keydown=${e => this._onBarKeyDown(e, chartId, i)}
               @click=${(e) => this._onBarClick(e, chartId, i)}
               @contextmenu=${(e) => this._onBarContextMenu(e, chartId, i)}
@@ -1680,12 +1638,13 @@ class VictronChargeControllerCard extends LitElement {
         <!-- X-axis labels (every 2 hours) -->
         ${enrichedPlan.map((entry, i) => {
           const h = entry.hour ?? i;
-          if (h % 2 !== 0 && !(showCurrentHour && h === currentHour)) return nothing;
-          const x = padL + i * barW + barW / 2;
+          const current = entry.start <= now && now < entry.end;
+          if (!current && (h % 2 !== 0 || (entry.minute || 0) !== 0)) return nothing;
+          const x = columnX(i) + columnW(i) / 2;
           return svg`
             <text x="${x}" y="${chartH - 6}" text-anchor="middle"
-              class="plan-axis-label ${showCurrentHour && h === currentHour ? 'plan-current-hour' : ''}"
-            >${String(h).padStart(2, '0')}</text>
+              class="plan-axis-label ${current ? 'plan-current-hour' : ''}"
+            >${String(h).padStart(2, '0')}:${String(entry.minute || 0).padStart(2, '0')}</text>
           `;
         })}
 
@@ -1697,18 +1656,17 @@ class VictronChargeControllerCard extends LitElement {
           const entry = enrichedPlan[index];
           const price = Number(entry.price);
           if (entry.price == null || !Number.isFinite(price)) return nothing;
-          const h = entry.hour ?? index;
-          const barCenterX = padL + index * barW + barW / 2;
+          const barCenterX = columnX(index) + columnW(index) / 2;
           const barTopY = yPos(price);
           const barBaseY = zeroInRange ? yPos(0) : padT + plotH;
           const barTop = Math.min(barTopY, barBaseY);
-          const tw = 96;
+          const tw = 310;
           const th = 38;
           let ty = barTop - th - 8;
           if (ty < 2) ty = Math.max(barTopY, barBaseY) + 8;
           let tx = barCenterX - tw / 2;
           tx = Math.max(padL, Math.min(tx, chartW - padR - tw));
-          const timeLabel = `${String(h).padStart(2, '0')}:00`;
+          const timeLabel = this._periodLabel(entry);
           const priceLabel = `${price.toFixed(2)} ct/kWh`;
           return svg`
             <g class="plan-bar-tooltip">
@@ -1726,7 +1684,7 @@ class VictronChargeControllerCard extends LitElement {
 
         <!-- Manual action picker -->
         ${this._renderPlanPicker(enrichedPlan, { chartId, padL, padR, chartW, chartH,
-          position: index => ({ center: padL + index * barW + barW / 2,
+          position: index => ({ center: columnX(index) + columnW(index) / 2,
             top: yPos(Number(enrichedPlan[index].price)), base: zeroInRange ? yPos(0) : padT + plotH }) })}
       </svg>
     `;
@@ -1841,19 +1799,18 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _renderPlanPicker(enrichedPlan, { chartId, padL, padR, chartW, chartH, position }) {
+  _renderPlanPicker(enrichedPlan, { chartId, padL, padR, chartW, chartH, position, timeZone }) {
     if (!this._pickerBar || this._pickerBar.chartId !== chartId) return nothing;
-    const { index } = this._pickerBar;
+    const index = this._pickerBar.startTime
+      ? enrichedPlan.findIndex(entry => Date.parse(entry.start_time) === Date.parse(this._pickerBar.startTime)) : this._pickerBar.index;
     if (index < 0 || index >= enrichedPlan.length) return nothing;
     const entry = enrichedPlan[index];
     const price = Number(entry.price);
-    if (entry.price == null || !Number.isFinite(price)) return nothing;
-    const h = entry.hour ?? index;
-    const entryDate = entry.date;
+    if (entry.price == null || !Number.isFinite(price) || entry.end <= Date.now()) return nothing;
     const { center: barCenterX, top: barTopY, base: barBaseY } = position(index);
     const barTop = Math.min(barTopY, barBaseY);
     const currentAction = entry.displayAction || entry.action || 'idle';
-    const timeLabel = `${String(h).padStart(2, '0')}:00`;
+    const timeLabel = this._periodLabel(entry, timeZone);
     const priceLabel = `${price.toFixed(2)} ct/kWh`;
     const buttons = [
       { key: 'charge',    label: 'Charge',  color: 'var(--vcc-success, #4caf50)' },
@@ -1865,8 +1822,9 @@ class VictronChargeControllerCard extends LitElement {
     const btnH = 24;
     const gap = 4;
     const totalBtnW = btnW * buttons.length + gap * (buttons.length - 1);
-    const pw = Math.max(168, totalBtnW + 16);
-    const ph = 70;
+    const timed = Number.isFinite(entry.start);
+    const pw = timed ? 260 : Math.max(168, totalBtnW + 16);
+    const ph = timed ? 84 : 70;
     let px;
     let py;
     if (this._pickerBar.anchorX != null && this._pickerBar.anchorY != null && this._pickerBar.svgEl) {
@@ -1880,7 +1838,7 @@ class VictronChargeControllerCard extends LitElement {
     }
     px = Math.max(padL, Math.min(px, chartW - padR - pw));
     py = Math.max(2, Math.min(py, chartH - ph - 2));
-    const btnY = py + 30;
+    const btnY = py + (timed ? 44 : 30);
     const btnStartX = px + (pw - totalBtnW) / 2;
     return svg`
       <g class="plan-picker"
@@ -1892,14 +1850,15 @@ class VictronChargeControllerCard extends LitElement {
           fill-opacity="0.97"
           stroke="var(--vcc-border, #e0e0e0)" stroke-width="0.8" />
         <text x="${px + pw / 2}" y="${py + 16}" text-anchor="middle"
-          class="plan-picker-title">${timeLabel} · ${priceLabel}</text>
+          class="plan-picker-title">${timeLabel}${timed ? '' : ` · ${priceLabel}`}</text>
+        ${timed ? svg`<text x=${px + pw / 2} y=${py + 32} text-anchor="middle" class="plan-tooltip-price">${priceLabel}</text>` : nothing}
         ${buttons.map((b, bi) => {
           const bx = btnStartX + bi * (btnW + gap);
           const isActive = currentAction === b.key;
           const choose = e => {
             e.preventDefault();
             e.stopPropagation();
-            if (entry.end == null || entry.end > Date.now()) this._setPlanHourAction(h, b.key, entryDate);
+            this._setPlanSlotAction(entry, b.key);
             this._closePicker();
           };
           return svg`
@@ -2008,7 +1967,8 @@ class VictronChargeControllerCard extends LitElement {
   _openPicker(chartId, index, anchorX = null, anchorY = null, svgEl = null) {
     this._pickerTrigger = null;
     this._solarTooltip = null;
-    this._pickerBar = { chartId, index, anchorX, anchorY, svgEl };
+    const startTime = this._chartPeriods[chartId]?.[index]?.start_time;
+    this._pickerBar = { chartId, index, startTime, anchorX, anchorY, svgEl };
     if (this._tooltipBar) {
       this._tooltipBar = null;
       if (this._tooltipHideTimer) {
@@ -2859,7 +2819,7 @@ class VictronChargeControllerCard extends LitElement {
         ${charts.days.map((day, index) => html`
           <div class="plan-chart-label">${index === 0 ? 'Today' : 'Tomorrow'} <span class="plan-chart-date">${day.date}</span> - PV 10%: ${day.pv10Kwh === null ? 'unavailable' : this._formatEnergy(day.pv10Kwh, 1)} - PV: ${day.pvKwh === null ? 'unavailable' : this._formatEnergy(day.pvKwh, 1)}</div>
           ${day.hours.every(hour => hour.price === null) ? html`<div class="forecast-status">Prices not yet available</div>` : nothing}
-          ${this._renderSolarChart(day, charts, forecast.time_zone)}
+          <div class="plan-chart-scroll">${this._renderSolarChart(day, charts, forecast.time_zone)}</div>
         `)}
         <div class="plan-legend">
           ${this._renderPlanActionLegend()}
@@ -2871,9 +2831,11 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _renderSolarChart(day, scales, timeZone) {
-    const left = 50, right = 550, top = 38, bottom = 240;
+    const chartW = this._planChartWidth(day.hours, 100);
+    const left = 50, right = chartW - 50, top = 38, bottom = 240;
     const now = Date.now();
     const chartId = `solar-${day.date}`;
+    this._chartPeriods[chartId] = day.hours;
     const x = time => left + (time - day.start) / (day.end - day.start) * (right - left);
     const priceY = price => bottom - (price - scales.priceMin) / (scales.priceMax - scales.priceMin) * (bottom - top);
     const baseline = priceY(0);
@@ -2883,7 +2845,7 @@ class VictronChargeControllerCard extends LitElement {
     const hide = () => { this._solarTooltip = null; this.requestUpdate(); };
     const selected = this._solarTooltip?.date === day.date ? day.slots[this._solarTooltip.index] : null;
     return html`
-      <svg class="plan-chart solar-chart" viewBox="0 0 600 280" role="group" aria-label=${`PV forecast and prices for ${day.date}, ${timeZone}`}>
+      <svg class="plan-chart solar-chart" style=${`min-width:${chartW > 600 ? chartW : 0}px`} viewBox=${`0 0 ${chartW} 280`} role="group" aria-label=${`PV forecast and prices for ${day.date}, ${timeZone}`}>
         ${[0, 1, 2, 3, 4].map(index => {
           const y = bottom - index / 4 * (bottom - top);
           const price = scales.priceMin + index / 4 * (scales.priceMax - scales.priceMin);
@@ -2904,14 +2866,14 @@ class VictronChargeControllerCard extends LitElement {
         }))}
         ${forecastAreas(day.intervals, 'pv_estimate', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fff59d" fill-opacity="0.3" stroke="#f9d95b" stroke-width="1.5" />`)}
         ${forecastAreas(day.intervals, 'pv_estimate10', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fbc02d" fill-opacity="0.35" stroke="#e0a800" stroke-width="1.5" />`)}
-        ${day.hours.filter(hour => hour.hour % 2 === 0 || (hour.start <= now && now < hour.end)).map(hour => svg`
+        ${day.hours.filter(hour => (hour.hour % 2 === 0 && (hour.minute || 0) === 0) || (hour.start <= now && now < hour.end)).map(hour => svg`
           <text x=${(x(hour.start) + x(hour.end)) / 2} y="260" text-anchor="middle"
-            class="plan-axis-label ${hour.start <= now && now < hour.end ? 'plan-current-hour' : ''}">${String(hour.hour).padStart(2, '0')}</text>`)}
+            class="plan-axis-label ${hour.start <= now && now < hour.end ? 'plan-current-hour' : ''}">${String(hour.hour).padStart(2, '0')}:${String(hour.minute || 0).padStart(2, '0')}</text>`)}
         ${day.slots.map((slot, index) => svg`
           <rect class="solar-slot" x=${x(slot.start)} y=${top} width=${x(slot.end) - x(slot.start)} height=${bottom - top}
             fill="transparent" tabindex="0" role=${slot.price !== null && day.hours[slot.hourIndex].end > now ? 'button' : 'img'}
             data-past=${day.hours[slot.hourIndex].end <= now ? 'true' : 'false'} data-readonly=${slot.price === null ? 'true' : 'false'}
-            aria-label=${`${details(slot)}${slot.price !== null && day.hours[slot.hourIndex].end > now ? ' · Change hour action' : ''}`}
+            aria-label=${`${details(slot)}${slot.price !== null && day.hours[slot.hourIndex].end > now ? ' · Change period action' : ''}`}
             @mouseenter=${() => show(index)} @mouseleave=${hide} @focus=${() => show(index)} @blur=${hide}
             @contextmenu=${e => this._onBarContextMenu(e, chartId, slot.hourIndex)}
             @pointerdown=${e => this._onBarPointerDown(e, chartId, slot.hourIndex)}
@@ -2921,11 +2883,11 @@ class VictronChargeControllerCard extends LitElement {
             @keydown=${e => { if (e.key === 'Escape') hide(); this._onBarKeyDown(e, chartId, slot.hourIndex); }}>
           </rect>`)}
         ${selected ? svg`
-          <foreignObject x=${left + 6} y=${top + 6} width=${right - left - 12} height=${bottom - top - 12} pointer-events="none">
+          <foreignObject x=${Math.min(right - 340, Math.max(left + 6, x(selected.start) - 150))} y=${top + 6} width="334" height=${bottom - top - 12} pointer-events="none">
             ${html`<div class="solar-tooltip" role="status">${details(selected)}</div>`}
           </foreignObject>` : nothing}
-        ${this._pickerBar?.chartId === chartId && day.hours[this._pickerBar.index]?.end > now
-          ? this._renderPlanPicker(day.hours, { chartId, padL: left, padR: 600 - right, chartW: 600, chartH: 280,
+        ${this._pickerBar?.chartId === chartId
+          ? this._renderPlanPicker(day.hours, { chartId, padL: left, padR: chartW - right, chartW, chartH: 280, timeZone,
             position: index => ({ center: (x(day.hours[index].start) + x(day.hours[index].end)) / 2,
               top: priceY(day.hours[index].price), base: baseline }) }) : nothing}
       </svg>
@@ -2946,7 +2908,6 @@ class VictronChargeControllerCard extends LitElement {
 
     const priceEntity = this._state('sensor', 'current_price');
     const currentPrice = priceEntity?.state;
-    const attrs = priceEntity?.attributes || {};
 
     // --- Split plan by date ---
     const dates = [...new Set(plan.map(p => p.date))].sort();
@@ -2956,32 +2917,7 @@ class VictronChargeControllerCard extends LitElement {
     let todayPlan = plan.filter(p => p.date === todayDate);
     const rawTomorrowPlan = tomorrowDate ? plan.filter(p => p.date === tomorrowDate) : [];
 
-    // Fallback: enrich today's plan with EPEX prices if entries lack them
-    const todayHasPrices = todayPlan.some(p => p.price !== undefined && p.price !== null);
-    if (!todayHasPrices) {
-      const priceMap = this._extractEpexPrices(attrs);
-      if (Object.keys(priceMap).length > 0) {
-        todayPlan = todayPlan.map(p => ({
-          ...p,
-          price: priceMap[p.hour] ?? null,
-        }));
-      }
-    }
-
-    // Fallback: enrich tomorrow's plan with EPEX prices if entries lack them
     let tomorrowPlan = rawTomorrowPlan;
-    const tomorrowHasPrices = tomorrowPlan.some(p => p.price !== undefined && p.price !== null);
-    if (!tomorrowHasPrices && tomorrowDate) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowPriceMap = this._extractEpexPrices(attrs, tomorrow);
-      if (Object.keys(tomorrowPriceMap).length > 0) {
-        tomorrowPlan = tomorrowPlan.map(p => ({
-          ...p,
-          price: tomorrowPriceMap[p.hour] ?? null,
-        }));
-      }
-    }
 
     todayPlan = this._enrichPlanDisplayState(todayPlan);
     tomorrowPlan = this._enrichPlanDisplayState(tomorrowPlan);
@@ -2999,8 +2935,6 @@ class VictronChargeControllerCard extends LitElement {
       delete this._pendingThresholds.discharge;
     }
 
-    const currentHour = new Date().getHours();
-
     // Compute shared y-axis scale across both plans
     const allValidPrices = [...todayPlan, ...tomorrowPlan]
       .map(p => p.price)
@@ -3017,7 +2951,7 @@ class VictronChargeControllerCard extends LitElement {
       sharedScaleMax = Math.max(1, Math.ceil(maxP + pRange * 0.1));
     }
 
-    const todayChart = this._renderPriceChart(todayPlan, { showCurrentHour: true, chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, forcedScaleMin: sharedScaleMin, forcedScaleMax: sharedScaleMax, chartId: 'today' });
+    const todayChart = this._renderPriceChart(todayPlan, { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, forcedScaleMin: sharedScaleMin, forcedScaleMax: sharedScaleMax, chartId: 'today' });
 
     // Tomorrow chart: render if we have plan entries (even without prices, shows actions)
     const tomorrowHasAnyPrices = tomorrowPlan.some(p => p.price !== undefined && p.price !== null);
@@ -3068,12 +3002,12 @@ class VictronChargeControllerCard extends LitElement {
 
         ${todayChart ? html`
           <div class="plan-chart-label">Today <span class="plan-chart-date">${todayDate}</span></div>
-          ${todayChart}
+          <div class="plan-chart-scroll">${todayChart}</div>
         ` : nothing}
 
         ${tomorrowChart ? html`
           <div class="plan-chart-label">Tomorrow <span class="plan-chart-date">${tomorrowDate}</span></div>
-          ${tomorrowChart}
+          <div class="plan-chart-scroll">${tomorrowChart}</div>
         ` : html`
           <div class="plan-chart-label plan-chart-label-muted">Tomorrow — prices not yet available</div>
         `}
@@ -3740,6 +3674,7 @@ class VictronChargeControllerCard extends LitElement {
       .plan-chart-container {
         display: flex; flex-direction: column; gap: 12px;
       }
+      .plan-chart-scroll { overflow-x: auto; }
       .plan-chart {
         width: 100%; height: auto;
         font-family: inherit;

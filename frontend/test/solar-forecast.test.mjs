@@ -243,3 +243,42 @@ test('unknown command explains the required restart and a later poll can recover
   await flush();
   assert.equal(states.at(-1).usable, true);
 });
+
+const quarterPlan = (start, end, date) => Array.from({ length: (Date.parse(end) - Date.parse(start)) / (HOUR / 4) }, (_, index) => ({
+  start_time: new Date(Date.parse(start) + index * HOUR / 4).toISOString(),
+  end_time: new Date(Date.parse(start) + (index + 1) * HOUR / 4).toISOString(),
+  date, hour: 0, minute: index % 4 * 15, price: index, action: ['idle', 'charge', 'pv_charge', 'discharge'][index % 4],
+}));
+
+for (const [name, start, middle, end, count] of [
+  ['spring', '2026-03-29T00:00:00+01:00', '2026-03-30T00:00:00+02:00', '2026-03-31T00:00:00+02:00', 92],
+  ['fall', '2026-10-25T00:00:00+02:00', '2026-10-26T00:00:00+01:00', '2026-10-27T00:00:00+01:00', 100],
+]) test(`timestamped ${name} quarters stay distinct and preserve PV energy`, () => {
+  const forecast = normalizeForecast(fixture(start, middle, end));
+  forecast.intervals = [{ start: forecast.days[0].start, end: forecast.days[0].end, pv_estimate: 2, pv_estimate10: 1 }];
+  const plan = quarterPlan(start, middle, start.slice(0, 10));
+  const charts = buildForecastCharts(forecast, plan), day = charts.days[0];
+  assert.equal(day.hours.length, count);
+  assert.deepEqual(day.hours.map(period => period.price), plan.map(period => period.price));
+  assert.deepEqual(day.hours.map(period => period.action), plan.map(period => period.action));
+  assert.equal(new Set(day.hours.map(period => period.start)).size, count);
+  assert.ok(day.hours.every(period => period.end - period.start === HOUR / 4));
+  assert.equal(day.pvKwh, buildForecastCharts(forecast).days[0].pvKwh);
+  assert.equal(day.pv10Kwh, count / 4);
+  assert.equal(day.pvKwh, count / 2);
+  assert.equal(day.hours.filter(period => period.hour === 2).length, name === 'fall' ? 8 : 0);
+  for (const slot of day.slots) {
+    assert.equal(slot.price, day.hours[slot.hourIndex].price);
+    assert.equal(slot.pv_estimate, 2);
+  }
+});
+
+test('mixed hourly and quarter intervals retain boundaries and a missing quarter remains a gap', () => {
+  const raw = fixture('2026-10-15T00:00:00+02:00', '2026-10-16T00:00:00+02:00', '2026-10-17T00:00:00+02:00');
+  const plan = quarterPlan(raw.days[0].start, '2026-10-15T02:00:00+02:00', '2026-10-15');
+  plan.splice(0, 4, { ...plan[0], end_time: plan[3].end_time, price: -5 });
+  plan[2].price = null;
+  const day = buildForecastCharts(normalizeForecast(raw), plan).days[0];
+  assert.deepEqual(day.hours.slice(0, 5).map(period => [(period.end - period.start) / HOUR, period.price]), [[1, -5], [.25, 4], [.25, null], [.25, 6], [.25, 7]]);
+  assert.ok(day.slots.filter(slot => slot.start >= Date.parse(plan[2].start_time) && slot.end <= Date.parse(plan[2].end_time)).every(slot => slot.price === null));
+});
