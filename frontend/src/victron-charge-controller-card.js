@@ -1823,7 +1823,11 @@ class VictronChargeControllerCard extends LitElement {
     const gap = 4;
     const totalBtnW = btnW * buttons.length + gap * (buttons.length - 1);
     const timed = Number.isFinite(entry.start);
-    const pw = timed ? 260 : Math.max(168, totalBtnW + 16);
+    const svgEl = this._pickerBar.svgEl;
+    const viewport = svgEl?.closest('.plan-chart-scroll')?.getBoundingClientRect();
+    const minX = viewport ? Math.max(0, this._clientToSvgPoint(viewport.left, viewport.top, svgEl).x) : padL;
+    const maxX = viewport ? Math.min(chartW, this._clientToSvgPoint(viewport.right, viewport.top, svgEl).x) : chartW - padR;
+    const pw = Math.min(timed ? 260 : Math.max(168, totalBtnW + 16), maxX - minX);
     const ph = timed ? 84 : 70;
     let px;
     let py;
@@ -1836,7 +1840,7 @@ class VictronChargeControllerCard extends LitElement {
       if (py < 2) py = Math.max(barTopY, barBaseY) + 8;
       px = barCenterX - pw / 2;
     }
-    px = Math.max(padL, Math.min(px, chartW - padR - pw));
+    px = Math.max(minX, Math.min(px, maxX - pw));
     py = Math.max(2, Math.min(py, chartH - ph - 2));
     const btnY = py + (timed ? 44 : 30);
     const btnStartX = px + (pw - totalBtnW) / 2;
@@ -1888,7 +1892,7 @@ class VictronChargeControllerCard extends LitElement {
     if (!['Enter', ' ', 'ContextMenu'].includes(e.key) && !(e.shiftKey && e.key === 'F10')) return;
     e.preventDefault();
     if (e.currentTarget.dataset.past === 'true' || e.currentTarget.dataset.readonly === 'true') return;
-    this._openPicker(chartId, index);
+    this._openPicker(chartId, index, null, null, e.currentTarget.closest?.('svg') || null);
     this._pickerTrigger = e.currentTarget;
     this.updateComplete?.then(() => this.renderRoot?.querySelector('.plan-picker-btn')?.focus());
   }

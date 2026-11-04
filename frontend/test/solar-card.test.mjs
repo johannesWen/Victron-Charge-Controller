@@ -668,3 +668,50 @@ test('History retains click-to-toggle tooltips', t => {
   assert.equal(instance._tooltipBar, null);
   assert.equal(instance._tooltipHideTimer, null);
 });
+
+for (const view of ['price', 'pv']) for (const gesture of ['contextmenu', 'pointerdown', 'keydown']) {
+  for (const edge of ['left', 'right']) for (const scale of [.75, 1.25]) {
+    test(`${view} ${gesture} picker stays inside the scrolled ${edge} edge at SVG scale ${scale}`, t => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const templates = [], instance = card({ now: '2026-10-24T00:00:00Z', templates });
+      const plan = pricedPeriods('2026-10-25T00:00:00+02:00', 100);
+      published(instance, plan);
+      const charts = chartsFor(plan), day = charts.days[0], index = 20;
+      const viewport = { left: 40, right: 350, top: 100 };
+      const clientX = edge === 'left' ? viewport.left + 5 : viewport.right - 5;
+      const barCenter = 50 + index * 28 + 14;
+      const scrollLeft = barCenter - (clientX - viewport.left) / scale;
+      assert.ok(scrollLeft > 0);
+      const svgEl = {
+        closest: selector => selector === '.plan-chart-scroll' ? { getBoundingClientRect: () => viewport } : null,
+        getScreenCTM: () => ({ inverse: () => ({ scale, tx: viewport.left - scrollLeft * scale, ty: viewport.top }) }),
+        createSVGPoint: () => ({ x: 0, y: 0, matrixTransform(matrix) {
+          return { x: (this.x - matrix.tx) / matrix.scale, y: (this.y - matrix.ty) / matrix.scale };
+        } }),
+      };
+      const render = () => view === 'price' ? instance._renderPriceChart(plan) : instance._renderSolarChart(day, charts, 'Europe/Vienna');
+      render();
+      const node = view === 'price' ? nodes(templates, 'plan-bar-group')[index]
+        : nodes(templates, 'solar-slot')[day.slots.findIndex(slot => slot.hourIndex === index)];
+      const currentTarget = { dataset: {}, closest: selector => selector === 'svg' ? svgEl : null, focus() {} };
+      handler(node, gesture)(event({}, { currentTarget, clientX, clientY: 180, button: 0, key: 'Enter' }));
+      if (gesture === 'pointerdown') t.mock.timers.tick(500);
+      assert.ok(instance._pickerBar);
+      if (gesture === 'keydown') assert.equal(instance._pickerBar.anchorX, null, 'keyboard positions from the selected bar without a pointer anchor');
+      templates.length = 0;
+      render();
+      const picker = nodes(templates, 'plan-picker')[0];
+      assert.ok(picker);
+      const rects = [picker, ...nodes(templates, 'plan-picker-btn')].map(item => {
+        const [, x, , width] = item.rendered.match(/<rect x="([^"]+)" y="([^"]+)" width="([^"]+)"/);
+        return { left: viewport.left + (Number(x) - scrollLeft) * scale, right: viewport.left + (Number(x) + Number(width) - scrollLeft) * scale };
+      });
+      assert.equal(rects.length, 5, 'picker and all four action buttons are measured');
+      for (const rect of rects) {
+        assert.ok(rect.left >= viewport.left - 1e-7, `left ${rect.left} stays within ${viewport.left}`);
+        assert.ok(rect.right <= viewport.right + 1e-7, `right ${rect.right} stays within ${viewport.right}`);
+      }
+      instance._closePicker();
+    });
+  }
+}
