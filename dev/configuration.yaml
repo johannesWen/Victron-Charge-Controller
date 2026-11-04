@@ -226,45 +226,37 @@ template:
           {{ (states('input_number.grid_feed_in_kwh_value') | float(300) + (history_days * ns.daily) + ns.today + (hourly[h] * elapsed_hour)) | round(3) }}
         icon: mdi:transmission-tower-export
 
-      # EPEX Spot price sensor with 24h of simulated prices.
-      # Prices are realistic: cheap at night (0.01-0.05 €), moderate midday
-      # (0.08-0.15 €), expensive in the evening peak (0.18-0.32 €).
-      # The data attribute includes configurable historical days, today, and
-      # tomorrow so dummy price data lines up with the synthetic energy meters.
+      # Today/tomorrow use quarter-hour prices around the hourly cost profile.
+      # History stays hourly to fit Home Assistant's template output limit.
       - name: "EPEX Spot Price"
         unique_id: dummy_epex_spot
         unit_of_measurement: "€/kWh"
         icon: mdi:currency-eur
         state: >-
-          {% set h = now().hour %}
-          {% set prices = [0.032,0.028,0.021,0.015,0.023,0.057,0.084,0.123,0.156,0.142,0.118,0.105,0.091,0.087,0.112,0.189,0.225,0.283,0.321,0.257,0.194,0.148,0.096,0.052] %}
-          {{ prices[h] }}
+          {% set current = now() %}
+          {% set prices = [0.032,0.028,0.021,0.015,0.023,0.057,0.084,0.123,0.156,0.142,0.118,0.105,0.091,0.087,0.112,0.189,0.225,0.283,0.421,0.257,0.194,0.148,0.096,0.052] %}
+          {{ (prices[current.hour] + [-0.006,-0.002,0.002,0.006][current.minute // 15]) | round(3) }}
         attributes:
           data: >-
             {% set prices_today = [0.032,0.028,0.021,0.015,0.023,0.057,0.084,0.123,0.156,0.142,0.118,0.105,0.091,0.087,0.112,0.189,0.225,0.283,0.421,0.257,0.194,0.148,0.096,0.052] %}
             {% set prices_tomorrow = [-0.038,-0.101,0.025,0.018,0.029,0.063,0.095,0.134,0.168,0.155,0.129,0.112,0.098,0.093,0.125,0.201,0.245,0.298,0.342,0.271,0.208,0.161,0.105,0.061] %}
             {% set today = now().replace(hour=0, minute=0, second=0, microsecond=0) %}
-            {% set tomorrow = today + timedelta(days=1) %}
             {% set history_days = states('input_number.energy_history_days') | int(30) %}
             {% set ns = namespace(entries=[]) %}
-            {% for d in range(-history_days, 0) %}
+            {% for d in range(-history_days, 2) %}
               {% set day = today + timedelta(days=d) %}
-              {% set day_factor = 1 + ((d | abs) % 5 - 2) * 0.04 %}
-              {% for h in range(24) %}
-                {% set start = day + timedelta(hours=h) %}
-                {% set end = day + timedelta(hours=h+1) %}
-                {% set ns.entries = ns.entries + [{"start_time": start.isoformat(), "end_time": end.isoformat(), "price_per_kwh": (prices_today[h] * day_factor) | round(3)}] %}
+              {% set day_start = as_timestamp(day) %}
+              {% set day_end = as_timestamp(day + timedelta(days=1)) %}
+              {% set seconds = 3600 if d < 0 else 900 %}
+              {% set prices = prices_tomorrow if d == 1 else prices_today %}
+              {% set day_factor = 1 + ((d | abs) % 5 - 2) * 0.04 if d < 0 else 1 %}
+              {# Step through elapsed UTC time so DST days have 23 or 25 hours. #}
+              {% for i in range(((day_end - day_start) / seconds) | int) %}
+                {% set start = as_local(as_datetime(day_start + i * seconds)) %}
+                {% set end = as_local(as_datetime(day_start + (i+1) * seconds)) %}
+                {% set offset = 0 if d < 0 else [-0.006,-0.002,0.002,0.006][start.minute // 15] %}
+                {% set ns.entries = ns.entries + [{"start_time": start.isoformat(), "end_time": end.isoformat(), "price_per_kwh": (prices[start.hour] * day_factor + offset) | round(3)}] %}
               {% endfor %}
-            {% endfor %}
-            {% for h in range(24) %}
-              {% set start = today + timedelta(hours=h) %}
-              {% set end = today + timedelta(hours=h+1) %}
-              {% set ns.entries = ns.entries + [{"start_time": start.isoformat(), "end_time": end.isoformat(), "price_per_kwh": prices_today[h]}] %}
-            {% endfor %}
-            {% for h in range(24) %}
-              {% set start = tomorrow + timedelta(hours=h) %}
-              {% set end = tomorrow + timedelta(hours=h+1) %}
-              {% set ns.entries = ns.entries + [{"start_time": start.isoformat(), "end_time": end.isoformat(), "price_per_kwh": prices_tomorrow[h]}] %}
             {% endfor %}
             {{ ns.entries }}
 
