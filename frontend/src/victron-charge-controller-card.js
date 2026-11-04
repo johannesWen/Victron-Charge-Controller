@@ -1900,7 +1900,7 @@ class VictronChargeControllerCard extends LitElement {
       e.stopPropagation();
       return;
     }
-    if (this._tooltipBar?.chartId === chartId && this._tooltipBar?.index === index) {
+    if (chartId === 'history' && this._tooltipBar?.chartId === chartId && this._tooltipBar?.index === index) {
       this._tooltipBar = null;
       if (this._tooltipHideTimer) {
         clearTimeout(this._tooltipHideTimer);

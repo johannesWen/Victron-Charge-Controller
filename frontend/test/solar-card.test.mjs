@@ -638,3 +638,33 @@ test('exact-period service failure rolls back its edit without discarding a newe
   assert.equal(instance._pendingPlanActions[key], undefined);
   assert.equal(instance._enrichPlanDisplayState(plan)[0].displayAction, 'idle');
 });
+
+for (const preliminary of ['focus', 'mouseenter']) test(`Price click retains a tooltip already shown by ${preliminary}`, t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const templates = [], instance = card({ templates }), plan = pricedPeriods();
+  published(instance, plan);
+  instance._renderPriceChart(plan);
+  const bar = nodes(templates, 'plan-bar-group')[1];
+  handler(bar, preliminary)(event());
+  handler(bar, 'click')(event());
+  assert.equal(instance._tooltipBar?.chartId, 'today');
+  assert.equal(instance._tooltipBar?.index, 1);
+  assert.match(instance._renderPriceChart(plan), /class="plan-bar-tooltip"/);
+  t.mock.timers.tick(9000);
+  handler(bar, 'click')(event());
+  t.mock.timers.tick(9000);
+  assert.equal(instance._tooltipBar?.index, 1, 'another click retains the tooltip and refreshes its timeout');
+  t.mock.timers.tick(1000);
+  assert.equal(instance._tooltipBar, null);
+  assert.equal(instance._tooltipHideTimer, null);
+});
+
+test('History retains click-to-toggle tooltips', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const instance = card();
+  instance._onBarClick(event(), 'history', 0);
+  assert.equal(instance._tooltipBar?.index, 0);
+  instance._onBarClick(event(), 'history', 0);
+  assert.equal(instance._tooltipBar, null);
+  assert.equal(instance._tooltipHideTimer, null);
+});

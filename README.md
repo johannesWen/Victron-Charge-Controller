@@ -195,6 +195,7 @@ When a limit caps the target, the original result appears in parentheses, such a
 In the Plan card, switch from Price to PV forecast to view expected solar production.
 The chart shows the main Solcast forecast and a lower estimate, alongside electricity price intervals.
 The existing EPEX Spot input is detected automatically as 15-minute or 60-minute data; hourly prices stay hourly, and mixed feeds keep their actual intervals without averaging. Price input remains the existing EPEX Spot sensor; no other provider adapter or new resolution setting is added.
+In a detected 15-minute feed, entries without `end_time` use the quarter-hour cadence. True hourly periods mixed into that feed require an explicit `end_time`.
 It uses the Home Assistant time zone even when your browser uses a different zone. Tooltip and picker times include UTC offsets to distinguish repeated times when daylight saving ends. Spring and fall days retain their actual 23 or 25 hours.
 
 To view or edit a time slot:
