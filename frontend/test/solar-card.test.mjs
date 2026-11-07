@@ -764,9 +764,11 @@ for (const unavailable of ['past', 'missing']) test(`${unavailable} whole-hour t
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const templates = [], instance = card({ now: unavailable === 'past' ? '2026-10-26T00:00:00Z' : '2026-10-24T00:00:00Z', templates });
   const plan = pricedPeriods().map(row => ({ ...row, price: unavailable === 'missing' ? null : row.price }));
+  published(instance, plan);
   const charts = chartsFor(plan);
   instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
   const target = nodes(templates, 'plan-bar-group').find(node => node.rendered.includes('02:00 GMT+2–02:00 GMT+1'));
+  assert.ok(target);
   for (const gesture of ['click', 'contextmenu', 'pointerdown', 'keydown']) {
     handler(target, gesture)(event({ past: String(unavailable === 'past'), readonly: 'true' }, { key: 'Enter', button: 0 }));
     t.mock.timers.tick(500);
