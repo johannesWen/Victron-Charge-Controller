@@ -1873,7 +1873,7 @@ class VictronChargeControllerCard extends LitElement {
           <span class="vcc-help-title" id="plan-picker-title">${this._periodLabel(picker.group)}</span>
           <button type="button" class="vcc-help-close" aria-label="Close hour picker" @click=${() => this._closePicker()}>✕</button>
         </div>
-        <p id="plan-picker-description">All available intervals start selected. Past intervals and missing prices are unavailable.</p>
+        <p id="plan-picker-description">Available intervals selected. Tap to deselect.</p>
         <div class="plan-picker-periods" aria-label="Intervals to change">
           ${picker.rows.map(row => {
             const entry = this._currentPickerPeriod(row), available = !!entry;
@@ -3741,16 +3741,19 @@ class VictronChargeControllerCard extends LitElement {
         font-size: 14px; line-height: 1.25;
         display: flex; flex-direction: column; gap: 6px;
       }
-      .plan-picker p { margin: 0; font-size: .88em; line-height: 1.45; color: var(--vcc-text2); }
-      .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-      .plan-picker button { min-height: 44px; font: inherit; cursor: pointer; }
+      .vcc-help-dialog.plan-picker { width: min(360px, calc(100vw - 24px)); padding: 10px; gap: 8px; }
+      .plan-picker p, .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
+      .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+      .plan-picker-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .plan-picker button { min-height: 44px; font: inherit; font-size: .85em; cursor: pointer; }
       .plan-picker .vcc-help-close { min-width: 44px; flex-shrink: 0; }
       .plan-picker-period, .plan-picker-btn {
         border: 1px solid var(--vcc-border); border-radius: 6px;
-        background: var(--vcc-card-bg, var(--card-background-color, #fff)); color: var(--vcc-text); padding: 10px;
+        background: var(--vcc-card-bg, var(--card-background-color, #fff)); color: var(--vcc-text); padding: 6px;
       }
-      .plan-picker-period { display: flex; flex-direction: column; gap: 5px; text-align: left; }
-      .plan-picker-period span { font-size: .8em; line-height: 1.4; }
+      .plan-picker-period { display: flex; flex-direction: column; justify-content: center; gap: 2px; text-align: left; }
+      .plan-picker-period span { font-size: .85em; line-height: 1.3; }
+      @media (max-width: 359px) { .plan-picker-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       .plan-picker-period[aria-pressed="true"] { border-color: var(--vcc-accent); box-shadow: inset 0 0 0 1px var(--vcc-accent); background: var(--vcc-accent-light, rgba(3,169,244,.12)); }
       .plan-picker button:disabled { opacity: .5; cursor: default; }
       .plan-picker button:focus-visible { outline: 2px solid var(--vcc-accent); outline-offset: 2px; }
