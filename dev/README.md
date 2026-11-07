@@ -155,6 +155,17 @@ docker compose down
 
 ## Backfill Cost Statistics
 
+Both the devcontainer and standalone Compose setup use the shared
+`sensor.epex_spot_price` dummy feed. Today and tomorrow contain varying 15-minute
+prices with explicit timezone-aware interval boundaries (92 in spring, 96 on
+normal days, 100 in autumn). The current state follows the current quarter;
+tomorrow's feed includes negative-price examples. Historical prices stay hourly
+to keep the default 30-day attribute within Home Assistant's template output
+limit. Quarter offsets have zero mean, preserving today's hourly backfill profile.
+Restart Home Assistant or reload Template entities after updating the config.
+For an existing saved schedule, click **Recalculate** manually to plan
+with the new quarters; bootstrap intentionally preserves saved schedules.
+
 The History view reads Home Assistant long-term statistics for:
 
 - `sensor.victron_charge_control_grid_energy_cost`

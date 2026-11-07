@@ -1,5 +1,7 @@
 """Dual-actuator lifecycle regressions using real HA refresh serialization."""
 
+from tests.slots import utc_slot
+
 import asyncio
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -454,7 +456,7 @@ async def test_scheduled_targets_route_only_to_ram(consumer, action, expected):
     coord.control_mode = MODE_MANUAL
     coord.action_confirm_seconds = 0
     now = dt_util.now()
-    slot = (now.strftime("%Y-%m-%d"), now.hour)
+    slot = utc_slot(now.strftime("%Y-%m-%d"), now.hour)
     setattr(coord, f"_{action}_hours", [slot])
     if action == "pv_charge":
         coord._solar_surplus_entity = "sensor.solar"

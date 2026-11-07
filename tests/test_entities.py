@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.slots import public_slot, public_day
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -267,8 +269,8 @@ class TestChargePlanSensor:
 
     def test_native_value_with_data(self, coordinator):
         coordinator.data = ChargeControlData(
-            charge_hours=[{"date": "2026-05-02", "hour": 1}, {"date": "2026-05-02", "hour": 2}],
-            discharge_hours=[{"date": "2026-05-02", "hour": 20}],
+            charge_hours=[public_slot("2026-05-02", 1), public_slot("2026-05-02", 2)],
+            discharge_hours=[public_slot("2026-05-02", 20)],
         )
         entry = MockConfigEntry()
         sensor = ChargePlanSensor(coordinator, entry)
@@ -285,11 +287,12 @@ class TestChargePlanSensor:
         from datetime import datetime, timezone
         mock_dt_util.now.return_value = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
         coordinator.data = ChargeControlData(
-            charge_hours=[{"date": "2026-05-02", "hour": 2}],
-            discharge_hours=[{"date": "2026-05-02", "hour": 20}],
+            charge_hours=[public_slot("2026-05-02", 2)],
+            discharge_hours=[public_slot("2026-05-02", 20)],
             blocked_charging_hours=[5],
             blocked_discharging_hours=[5],
-            prices_today=[{"hour": 2, "price": 5.0}, {"hour": 20, "price": 25.0}],
+            prices_today=public_day("2026-05-02", {2: 5.0, 20: 25.0}),
+            prices_tomorrow=public_day("2026-05-03"),
         )
         entry = MockConfigEntry()
         sensor = ChargePlanSensor(coordinator, entry)
@@ -306,7 +309,7 @@ class TestChargePlanSensor:
 
     def test_native_value_includes_pv_charge_only_when_present(self, coordinator):
         coordinator.data = ChargeControlData(
-            charge_hours=[{"date": "2026-05-02", "hour": 1}],
+            charge_hours=[public_slot("2026-05-02", 1)],
         )
         entry = MockConfigEntry()
         sensor = ChargePlanSensor(coordinator, entry)
@@ -314,8 +317,8 @@ class TestChargePlanSensor:
         assert sensor.native_value == "1 charge, 0 discharge"
 
         coordinator.data = ChargeControlData(
-            charge_hours=[{"date": "2026-05-02", "hour": 1}],
-            pv_charge_hours=[{"date": "2026-05-02", "hour": 12}, {"date": "2026-05-02", "hour": 13}],
+            charge_hours=[public_slot("2026-05-02", 1)],
+            pv_charge_hours=[public_slot("2026-05-02", 12), public_slot("2026-05-02", 13)],
         )
         assert sensor.native_value == "1 charge, 0 discharge, 2 pv_charge"
 
@@ -324,8 +327,10 @@ class TestChargePlanSensor:
         from datetime import datetime, timezone
         mock_dt_util.now.return_value = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
         coordinator.data = ChargeControlData(
-            charge_hours=[{"date": "2026-05-02", "hour": 2}],
-            pv_charge_hours=[{"date": "2026-05-02", "hour": 12}],
+            charge_hours=[public_slot("2026-05-02", 2)],
+            pv_charge_hours=[public_slot("2026-05-02", 12)],
+            prices_today=public_day("2026-05-02"),
+            prices_tomorrow=public_day("2026-05-03"),
         )
         entry = MockConfigEntry()
         sensor = ChargePlanSensor(coordinator, entry)
@@ -339,7 +344,7 @@ class TestChargePlanSensor:
         sensor.async_write_ha_state = MagicMock()
         sensor._handle_coordinator_update()
         assert sensor._attr_extra_state_attributes["pv_charge_hours"] == [
-            {"date": "2026-05-02", "hour": 12}
+            public_slot("2026-05-02", 12)
         ]
 
 
@@ -505,17 +510,17 @@ class TestVictronCCNumber:
         assert coordinator.charge_power == 4000.0
 
     @pytest.mark.asyncio
-    async def test_set_int_for_hour_counts(self, coordinator):
+    async def test_set_fractional_hour_duration(self, coordinator):
         entry = MockConfigEntry()
         desc = next(d for d in NUMBERS if d.key == "cheapest_hours")
         number = VictronCCNumber(coordinator, entry, desc)
         coordinator.async_request_refresh = AsyncMock()
         number.async_write_ha_state = MagicMock()
 
-        await number.async_set_native_value(6.0)
+        await number.async_set_native_value(6.25)
 
-        assert coordinator.cheapest_hours == 6
-        assert isinstance(coordinator.cheapest_hours, int)
+        assert coordinator.cheapest_hours == 6.25
+        assert desc.native_step == 0.25
 
     def test_unique_id(self, coordinator):
         entry = MockConfigEntry()

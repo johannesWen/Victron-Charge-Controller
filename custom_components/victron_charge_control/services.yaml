@@ -22,7 +22,7 @@ toggle_hour:
 
 set_hour_action:
   name: Set Hour Action
-  description: "Set a specific hour to charge, discharge, or idle"
+  description: "Set the entire local hour, including all quarter intervals and both occurrences when clocks fall back."
   fields:
     hour:
       name: Hour
@@ -264,3 +264,25 @@ calculate_schedule:
 clear_schedule:
   name: Clear Schedule
   description: "Clear all scheduled charge and discharge hours"
+
+set_slot_action:
+  name: Set Slot Action
+  description: "Set one current or future priced interval from the charge plan. Use its offset-bearing start_time; past, missing-price and invalid intervals are rejected."
+  fields:
+    start_time:
+      name: Start time
+      description: "Exact ISO8601 start_time from the published plan, including its UTC offset."
+      required: true
+      example: "2026-05-02T14:15:00+00:00"
+      selector:
+        text:
+    action:
+      name: Action
+      required: true
+      selector:
+        select:
+          options:
+            - "idle"
+            - "charge"
+            - "pv_charge"
+            - "discharge"

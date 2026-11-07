@@ -1,6 +1,8 @@
 """Charge-window discharge holds, durable cleanup and independent controls."""
 from __future__ import annotations
 
+from tests.slots import utc_slot
+
 import asyncio
 import json
 from datetime import timedelta
@@ -47,7 +49,7 @@ def configure(context):
 
 def slot(now=None):
     now = now or dt_util.now()
-    return now.strftime("%Y-%m-%d"), now.hour
+    return utc_slot(now.strftime("%Y-%m-%d"), now.hour)
 
 
 @pytest.mark.parametrize("mode", [MODE_FORCE_CHARGE, MODE_AUTO, MODE_MANUAL])
@@ -90,7 +92,7 @@ async def test_only_current_regular_charge_slots_hold(consumer, mode, kind):
         if kind == "pv_only":
             coord._charge_hours = []
     elif kind == "other_hour":
-        coord._charge_hours = [(slot()[0], (slot()[1] + 1) % 24)]
+        coord._charge_hours = [slot(dt_util.now() + timedelta(hours=1))]
     else:
         coord._charge_hours = [slot(dt_util.now() + timedelta(days=1 if kind == "tomorrow" else -1))]
     await switch.async_turn_on()
@@ -334,7 +336,7 @@ async def test_release_save_failure_retries_without_losing_obligation(consumer, 
 async def test_restart_cleans_old_entity_before_new_hold(consumer, mock_store, changed):
     coord, _, _, _, states = configure(consumer)
     states[OTHER] = MockState("-1")
-    mock_store._data = {KEY: LIMIT, "charge_hours": [list(slot())]}
+    mock_store._data = {KEY: LIMIT, "charge_hours": [[value.isoformat() for value in slot()]]}
     entry = MockConfigEntry(data={**MOCK_CONFIG_DATA, CONF_MAX_DISCHARGE_POWER_ENTITY: OTHER if changed else LIMIT})
     restarted = VictronChargeControlCoordinator(coord.hass, entry)
     restarted.data = coord.data
@@ -524,7 +526,7 @@ async def test_independent_hold_and_ram_deadlines_and_event_storms(consumer):
 async def test_shutdown_while_store_load_pending_cleans_restored_obligation(consumer, mock_store):
     coord, _, _, _, states = configure(consumer)
     entered, release = asyncio.Event(), asyncio.Event()
-    mock_store._data = {KEY: LIMIT, "charge_hours": [list(slot())]}
+    mock_store._data = {KEY: LIMIT, "charge_hours": [[value.isoformat() for value in slot()]]}
     load = mock_store.async_load
     async def delayed_load():
         entered.set()
@@ -552,7 +554,7 @@ async def test_shutdown_while_store_load_pending_cleans_restored_obligation(cons
 async def test_store_load_failure_defers_hold_and_recovers_existing_cleanup(consumer, mock_store):
     coord, _, clock, _, states = configure(consumer)
     states[OTHER] = MockState("0")
-    mock_store._data = {KEY: OTHER, "charge_hours": [list(slot())]}
+    mock_store._data = {KEY: OTHER, "charge_hours": [[value.isoformat() for value in slot()]]}
     load = mock_store.async_load
     mock_store.async_load = AsyncMock(side_effect=OSError("cannot read"))
     restarted = VictronChargeControlCoordinator(coord.hass, MockConfigEntry(data={**MOCK_CONFIG_DATA, CONF_MAX_DISCHARGE_POWER_ENTITY: LIMIT}))
@@ -633,7 +635,7 @@ async def test_shutdown_drains_real_store_before_replacement(consumer, tmp_path,
             await asyncio.wait_for(stop, 2)
 
     stored = json.loads(Path(coord._store.path).read_text())["data"]
-    assert stored["charge_hours"] == [list(slot())]
+    assert stored["charge_hours"] == [[value.isoformat() for value in slot()]]
     assert stored["blocked_charging_hours"] == [18, 19]
     assert stored[KEY] is None
     assert writes(coord) == ([0, -1] if held else [])
@@ -691,3 +693,24 @@ async def test_slow_failed_write_is_paced_from_completion(consumer):
         await coord.async_request_refresh()
     assert writes(coord) == [0]
     coord.hass.services.async_call.side_effect = successful
+
+
+@pytest.mark.parametrize("pv_next", [False, True])
+async def test_quarter_boundary_releases_discharge_hold(consumer, monkeypatch, pv_next):
+    coord, switch, clock, _, states = configure(consumer)
+    coord.control_mode = MODE_MANUAL
+    start = dt_util.now().replace(minute=0, second=0, microsecond=0)
+    current = start + timedelta(minutes=14, seconds=59)
+    monkeypatch.setattr(dt_util, "now", lambda: current)
+    coord._charge_hours = [(start, start + timedelta(minutes=15))]
+    if pv_next:
+        coord._pv_charge_hours = [(start+timedelta(minutes=15), start+timedelta(minutes=30))]
+    await switch.async_turn_on()
+    assert writes(coord)[-1] == 0
+    current = start + timedelta(minutes=15)
+    await coord.async_request_refresh()
+    assert writes(coord)[-1] == -1
+    assert coord._discharge_release_entity is None
+    before = len(writes(coord))
+    await clock.advance(5)
+    assert len(writes(coord)) == before

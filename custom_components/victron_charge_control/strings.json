@@ -80,7 +80,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Victron Charge Control \u2014 Settings",
+        "title": "Victron Charge Control — Settings",
         "description": "Update your Victron and EPEX Spot entities. Fields marked required must be configured. Optional fields can be left empty. The expected units are shown in each label.",
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
@@ -307,6 +307,22 @@
   "exceptions": {
     "ram_setpoint_required": {
       "message": "Reconfigure this integration and select a distinct AC grid setpoint (RAM) number entity. The existing AC power setpoint remains the permanent idle fallback. Schedules and settings are preserved."
+    }
+  },
+  "services": {
+    "set_slot_action": {
+      "name": "Set Slot Action",
+      "description": "Set one current or future priced interval from the charge plan. Past, missing-price and invalid intervals are rejected.",
+      "fields": {
+        "start_time": {
+          "name": "Start time",
+          "description": "Exact ISO8601 start_time from the published plan, including its UTC offset."
+        },
+        "action": {
+          "name": "Action",
+          "description": "Action for this interval: charge, pv_charge, discharge or idle."
+        }
+      }
     }
   }
 }

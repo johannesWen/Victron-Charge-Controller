@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.slots import utc_slot, stored_slot
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -64,7 +66,7 @@ class TestForecastLifecycle:
         coord.control_mode = MODE_FORCE_CHARGE
         coord.forecast_coordinator.data = ForecastSnapshot(status=status, usable=status == "ready")
         mock_hass.states.get.return_value = MockState("50")
-        slots = [("2099-01-01", 4)]
+        slots = [utc_slot("2099-01-01", 4)]
         coord._charge_hours = list(slots)
         coord._safety_startup_deadline = None
 
@@ -101,7 +103,7 @@ class TestForecastLifecycle:
             await asyncio.wait_for(coord.async_setup(), timeout=1)
         await started.wait()
 
-        assert coord._charge_hours == [("2026-05-02", 1)]
+        assert coord._charge_hours == [utc_slot("2026-05-02", 1)]
         coord.async_request_refresh.assert_awaited_once()
         coord.calculate_auto_schedule.assert_not_called()
         mock_hass.services.async_call.assert_not_awaited()
@@ -226,13 +228,13 @@ class TestScheduleManagement:
     """Tests for schedule management methods."""
 
     def test_set_charge_hours(self, coordinator):
-        coordinator.set_charge_hours([("2026-05-02", 3), ("2026-05-02", 1), ("2026-05-02", 2), ("2026-05-02", 2), ("2026-05-02", 25)])
+        coordinator.set_charge_hours([utc_slot("2026-05-02", 3), utc_slot("2026-05-02", 1), utc_slot("2026-05-02", 2), utc_slot("2026-05-02", 2), ("2026-05-02", 25)])
         # Invalid hour 25 filtered, deduped, sorted
-        assert coordinator.charge_hours == [("2026-05-02", 1), ("2026-05-02", 2), ("2026-05-02", 3)]
+        assert coordinator.charge_hours == [utc_slot("2026-05-02", 1), utc_slot("2026-05-02", 2), utc_slot("2026-05-02", 3)]
 
     def test_set_discharge_hours(self, coordinator):
-        coordinator.set_discharge_hours([("2026-05-02", 20), ("2026-05-02", 21), ("2026-05-03", 22)])
-        assert coordinator.discharge_hours == [("2026-05-02", 20), ("2026-05-02", 21), ("2026-05-03", 22)]
+        coordinator.set_discharge_hours([utc_slot("2026-05-02", 20), utc_slot("2026-05-02", 21), utc_slot("2026-05-03", 22)])
+        assert coordinator.discharge_hours == [utc_slot("2026-05-02", 20), utc_slot("2026-05-02", 21), utc_slot("2026-05-03", 22)]
 
     def test_set_blocked_charging_hours(self, coordinator):
         coordinator.set_blocked_charging_hours([18, 19, 20])
@@ -248,9 +250,9 @@ class TestScheduleManagement:
         assert coordinator.replan_hours == [18]
 
     def test_clear_schedule(self, coordinator):
-        coordinator._charge_hours = [("2026-05-02", 1), ("2026-05-02", 2)]
-        coordinator._discharge_hours = [("2026-05-02", 20)]
-        coordinator._pv_charge_hours = [("2026-05-02", 12)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1), utc_slot("2026-05-02", 2)]
+        coordinator._discharge_hours = [utc_slot("2026-05-02", 20)]
+        coordinator._pv_charge_hours = [utc_slot("2026-05-02", 12)]
         coordinator._blocked_charging_hours = [18]
         coordinator._blocked_discharging_hours = [15]
         coordinator.clear_schedule()
@@ -266,27 +268,27 @@ class TestToggleHour:
 
     def test_idle_to_charge(self, coordinator):
         coordinator.toggle_hour(5, "2026-05-02")
-        assert ("2026-05-02", 5) in coordinator.charge_hours
-        assert ("2026-05-02", 5) not in coordinator.discharge_hours
-        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.pv_charge_hours
 
     def test_charge_to_pv_charge(self, coordinator):
-        coordinator._charge_hours = [("2026-05-02", 5)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 5)]
         coordinator.toggle_hour(5, "2026-05-02")
-        assert ("2026-05-02", 5) not in coordinator.charge_hours
-        assert ("2026-05-02", 5) in coordinator.pv_charge_hours
-        assert ("2026-05-02", 5) not in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.discharge_hours
 
     def test_pv_charge_to_discharge(self, coordinator):
-        coordinator._pv_charge_hours = [("2026-05-02", 5)]
+        coordinator._pv_charge_hours = [utc_slot("2026-05-02", 5)]
         coordinator.toggle_hour(5, "2026-05-02")
-        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
-        assert ("2026-05-02", 5) in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.discharge_hours
 
     def test_discharge_to_blocked(self, coordinator):
-        coordinator._discharge_hours = [("2026-05-02", 5)]
+        coordinator._discharge_hours = [utc_slot("2026-05-02", 5)]
         coordinator.toggle_hour(5, "2026-05-02")
-        assert ("2026-05-02", 5) not in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.discharge_hours
         assert 5 in coordinator.blocked_charging_hours
         assert 5 in coordinator.blocked_discharging_hours
 
@@ -296,8 +298,8 @@ class TestToggleHour:
         coordinator.toggle_hour(5, "2026-05-02")
         assert 5 not in coordinator.blocked_charging_hours
         assert 5 not in coordinator.blocked_discharging_hours
-        assert ("2026-05-02", 5) not in coordinator.charge_hours
-        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.pv_charge_hours
 
     def test_invalid_hour_ignored(self, coordinator):
         coordinator.toggle_hour(-1, "2026-05-02")
@@ -311,19 +313,19 @@ class TestSetHourAction:
 
     def test_set_charge(self, coordinator):
         coordinator.set_hour_action(5, ACTION_CHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) in coordinator.charge_hours
-        assert ("2026-05-02", 5) not in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.discharge_hours
 
     def test_set_discharge(self, coordinator):
         coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) in coordinator.discharge_hours
-        assert ("2026-05-02", 5) not in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.charge_hours
 
     def test_set_pv_charge(self, coordinator):
         coordinator.set_hour_action(5, ACTION_PV_CHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) in coordinator.pv_charge_hours
-        assert ("2026-05-02", 5) not in coordinator.charge_hours
-        assert ("2026-05-02", 5) not in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.discharge_hours
 
     def test_set_blocked(self, coordinator):
         coordinator.set_hour_action(5, ACTION_BLOCKED, "2026-05-02")
@@ -331,21 +333,21 @@ class TestSetHourAction:
         assert 5 in coordinator.blocked_discharging_hours
 
     def test_set_idle(self, coordinator):
-        coordinator._charge_hours = [("2026-05-02", 5)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 5)]
         coordinator.set_hour_action(5, ACTION_IDLE, "2026-05-02")
-        assert ("2026-05-02", 5) not in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.charge_hours
 
     def test_replaces_previous_action(self, coordinator):
-        coordinator._charge_hours = [("2026-05-02", 5)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 5)]
         coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) not in coordinator.charge_hours
-        assert ("2026-05-02", 5) in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.discharge_hours
 
     def test_replaces_pv_charge_with_charge(self, coordinator):
-        coordinator._pv_charge_hours = [("2026-05-02", 5)]
+        coordinator._pv_charge_hours = [utc_slot("2026-05-02", 5)]
         coordinator.set_hour_action(5, ACTION_CHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) not in coordinator.pv_charge_hours
-        assert ("2026-05-02", 5) in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) not in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.charge_hours
 
     def test_invalid_hour(self, coordinator):
         coordinator.set_hour_action(25, ACTION_CHARGE, "2026-05-02")
@@ -357,7 +359,7 @@ class TestSetHourAction:
         coordinator._blocked_charging_hours = [5]
         coordinator._blocked_discharging_hours = [5]
         coordinator.set_hour_action(5, ACTION_CHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) in coordinator.charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.charge_hours
         assert 5 in coordinator.blocked_charging_hours
         assert 5 in coordinator.blocked_discharging_hours
 
@@ -365,7 +367,7 @@ class TestSetHourAction:
         coordinator._blocked_charging_hours = [5]
         coordinator._blocked_discharging_hours = [5]
         coordinator.set_hour_action(5, ACTION_DISCHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) in coordinator.discharge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.discharge_hours
         assert 5 in coordinator.blocked_charging_hours
         assert 5 in coordinator.blocked_discharging_hours
 
@@ -373,7 +375,7 @@ class TestSetHourAction:
         coordinator._blocked_charging_hours = [5]
         coordinator._blocked_discharging_hours = [5]
         coordinator.set_hour_action(5, ACTION_PV_CHARGE, "2026-05-02")
-        assert ("2026-05-02", 5) in coordinator.pv_charge_hours
+        assert utc_slot("2026-05-02", 5) in coordinator.pv_charge_hours
         assert 5 in coordinator.blocked_charging_hours
         assert 5 in coordinator.blocked_discharging_hours
 
@@ -684,7 +686,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_AUTO
         coordinator.charge_allowed = True
         coordinator.max_soc = 95.0
-        coordinator._charge_hours = [("2026-04-28", 3)]
+        coordinator._charge_hours = [utc_slot("2026-04-28", 3)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_CHARGE
@@ -694,7 +696,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_AUTO
         coordinator.discharge_allowed = True
         coordinator.min_soc = 10.0
-        coordinator._discharge_hours = [("2026-04-28", 20)]
+        coordinator._discharge_hours = [utc_slot("2026-04-28", 20)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 20, 15, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_DISCHARGE
@@ -702,8 +704,8 @@ class TestDetermineAction:
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_auto_idle_when_no_schedule(self, mock_dt_util, coordinator):
         coordinator.control_mode = MODE_AUTO
-        coordinator._charge_hours = [("2026-04-28", 3)]
-        coordinator._discharge_hours = [("2026-04-28", 20)]
+        coordinator._charge_hours = [utc_slot("2026-04-28", 3)]
+        coordinator._discharge_hours = [utc_slot("2026-04-28", 20)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 10, 0, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_IDLE
@@ -714,7 +716,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_AUTO
         coordinator.charge_allowed = True
         coordinator.max_soc = 95.0
-        coordinator._charge_hours = [("2026-04-29", 3)]
+        coordinator._charge_hours = [utc_slot("2026-04-29", 3)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_IDLE
@@ -744,7 +746,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_AUTO
         coordinator.charge_allowed = True
         coordinator.max_soc = 95.0
-        coordinator._charge_hours = [("2026-04-28", 3)]
+        coordinator._charge_hours = [utc_slot("2026-04-28", 3)]
         coordinator._blocked_charging_hours = [3]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
@@ -755,7 +757,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_AUTO
         coordinator.discharge_allowed = True
         coordinator.min_soc = 10.0
-        coordinator._discharge_hours = [("2026-04-28", 20)]
+        coordinator._discharge_hours = [utc_slot("2026-04-28", 20)]
         coordinator._blocked_discharging_hours = [20]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 20, 15, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
@@ -777,7 +779,7 @@ class TestDetermineAction:
         coordinator.control_mode = MODE_MANUAL
         coordinator.charge_allowed = True
         coordinator.max_soc = 95.0
-        coordinator._charge_hours = [("2026-04-28", 3)]
+        coordinator._charge_hours = [utc_slot("2026-04-28", 3)]
         mock_dt_util.now.return_value = datetime(2026, 4, 28, 3, 30, tzinfo=timezone.utc)
         self._set_soc(coordinator, 50.0)
         assert coordinator._determine_action() == ACTION_CHARGE
@@ -1498,8 +1500,8 @@ class TestPVCharging:
         assert coordinator.pv_charge_share == DEFAULT_PV_CHARGE_SHARE
 
     def test_pv_charge_hours_property(self, coordinator):
-        coordinator._pv_charge_hours = [("2026-05-02", 12), ("2026-05-02", 13)]
-        assert coordinator.pv_charge_hours == [("2026-05-02", 12), ("2026-05-02", 13)]
+        coordinator._pv_charge_hours = [utc_slot("2026-05-02", 12), utc_slot("2026-05-02", 13)]
+        assert coordinator.pv_charge_hours == [utc_slot("2026-05-02", 12), utc_slot("2026-05-02", 13)]
 
     def test_setpoint_0_percent_exports_all_surplus(self, mock_hass):
         coord = self._make_solar_coordinator(mock_hass)
@@ -1642,7 +1644,7 @@ class TestPVCharging:
         coord.control_mode = MODE_AUTO
         coord.charge_allowed = True
         coord.max_soc = 95.0
-        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
         assert coord._determine_action() == ACTION_PV_CHARGE
@@ -1654,7 +1656,7 @@ class TestPVCharging:
         coord.control_mode = MODE_AUTO
         coord.charge_allowed = False
         coord.max_soc = 95.0
-        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
         assert coord._determine_action() == ACTION_PV_CHARGE
@@ -1666,7 +1668,7 @@ class TestPVCharging:
         coord.charge_allowed = True
         coord.max_soc = 95.0
         coord.soc_hysteresis = 2.0
-        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 96.0, mock_dt_util, when)
         assert coord._determine_action() == ACTION_IDLE
@@ -1677,7 +1679,7 @@ class TestPVCharging:
         coordinator.control_mode = MODE_AUTO
         coordinator.charge_allowed = True
         coordinator.max_soc = 95.0
-        coordinator._pv_charge_hours = [("2026-04-28", 12)]
+        coordinator._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         coordinator.hass.states.get.side_effect = lambda eid: {
             "sensor.battery_soc": MockState("50"),
             "number.ac_grid_setpoint": MockState("0"),
@@ -1696,7 +1698,7 @@ class TestPVCharging:
         coord.control_mode = MODE_AUTO
         coord.charge_allowed = True
         coord.max_soc = 95.0
-        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         coord._blocked_charging_hours = [12]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
@@ -1709,8 +1711,8 @@ class TestPVCharging:
         coord.control_mode = MODE_AUTO
         coord.charge_allowed = True
         coord.max_soc = 95.0
-        coord._pv_charge_hours = [("2026-04-28", 12)]
-        coord._charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
+        coord._charge_hours = [utc_slot("2026-04-28", 12)]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
         assert coord._determine_action() == ACTION_PV_CHARGE
@@ -1723,7 +1725,7 @@ class TestPVCharging:
         coord.charge_allowed = True
         coord.max_soc = 95.0
         coord.soc_hysteresis = 2.0
-        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 96.0, mock_dt_util, when)
         assert coord._determine_action() == ACTION_IDLE
@@ -1735,7 +1737,7 @@ class TestPVCharging:
         coord.control_mode = MODE_AUTO
         coord.charge_allowed = False
         coord.max_soc = 95.0
-        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         coord._blocked_charging_hours = [12]
         when = datetime(2026, 4, 28, 12, 30, tzinfo=timezone.utc)
         self._set_soc_and_time(coord, 50.0, mock_dt_util, when)
@@ -1744,7 +1746,7 @@ class TestPVCharging:
     def test_clean_expired_slots_trims_pv_charge(self, mock_hass):
         from custom_components.victron_charge_control.coordinator import dt_util
         coord = self._make_solar_coordinator(mock_hass)
-        coord._pv_charge_hours = [("2026-04-28", 12)]
+        coord._pv_charge_hours = [utc_slot("2026-04-28", 12)]
         with patch.object(dt_util, "now", return_value=datetime(2026, 4, 28, 13, 0, tzinfo=timezone.utc)):
             coord._clean_expired_slots()
         assert coord.pv_charge_hours == []
@@ -1793,17 +1795,17 @@ class TestCalculateAutoSchedule:
 
         coordinator.calculate_auto_schedule()
 
-        assert ("2026-04-28", 0) in coordinator.charge_hours
-        assert ("2026-04-28", 1) in coordinator.charge_hours
-        assert ("2026-04-28", 5) in coordinator.discharge_hours
-        assert ("2026-04-28", 4) in coordinator.discharge_hours
+        assert utc_slot("2026-04-28", 0) in coordinator.charge_hours
+        assert utc_slot("2026-04-28", 1) in coordinator.charge_hours
+        assert utc_slot("2026-04-28", 5) in coordinator.discharge_hours
+        assert utc_slot("2026-04-28", 4) in coordinator.discharge_hours
 
     def test_not_auto_mode_does_nothing(self, coordinator):
         coordinator.control_mode = MODE_MANUAL
-        coordinator._charge_hours = [("2026-05-02", 1)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1)]
         coordinator.calculate_auto_schedule()
         # Should not change existing schedule
-        assert coordinator.charge_hours == [("2026-05-02", 1)]
+        assert coordinator.charge_hours == [utc_slot("2026-05-02", 1)]
 
     def test_missing_epex_entity(self, coordinator):
         coordinator.control_mode = MODE_AUTO
@@ -1831,8 +1833,8 @@ class TestCalculateAutoSchedule:
         coordinator.calculate_auto_schedule()
 
         # Discharge wins, removed from charge
-        assert ("2026-04-28", 3) in coordinator.discharge_hours
-        assert ("2026-04-28", 3) not in coordinator.charge_hours
+        assert utc_slot("2026-04-28", 3) in coordinator.discharge_hours
+        assert utc_slot("2026-04-28", 3) not in coordinator.charge_hours
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_blocked_hours_excluded_from_auto(self, mock_dt_util, coordinator):
@@ -1862,8 +1864,8 @@ class TestCalculateAutoSchedule:
 
         coordinator.calculate_auto_schedule()
 
-        assert ("2026-04-28", 0) not in coordinator.charge_hours
-        assert ("2026-04-28", 5) not in coordinator.discharge_hours
+        assert utc_slot("2026-04-28", 0) not in coordinator.charge_hours
+        assert utc_slot("2026-04-28", 5) not in coordinator.discharge_hours
 
     @patch("custom_components.victron_charge_control.coordinator.dt_util")
     def test_pv_charge_slots_excluded_from_auto(self, mock_dt_util, coordinator):
@@ -1874,7 +1876,7 @@ class TestCalculateAutoSchedule:
         coordinator.charge_price_threshold = 15.0
         coordinator.discharge_price_threshold = 20.0
         # Hour 0 would be the cheapest charge candidate; pre-mark it as pv_charge.
-        coordinator._pv_charge_hours = [("2026-04-28", 0)]
+        coordinator._pv_charge_hours = [utc_slot("2026-04-28", 0)]
 
         now = datetime(2026, 4, 28, 0, 0, tzinfo=timezone.utc)
         mock_dt_util.now.return_value = now
@@ -1894,11 +1896,11 @@ class TestCalculateAutoSchedule:
         coordinator.calculate_auto_schedule()
 
         # pv_charge slot preserved and not co-opted into charge/discharge
-        assert ("2026-04-28", 0) in coordinator.pv_charge_hours
-        assert ("2026-04-28", 0) not in coordinator.charge_hours
-        assert ("2026-04-28", 0) not in coordinator.discharge_hours
+        assert utc_slot("2026-04-28", 0) in coordinator.pv_charge_hours
+        assert utc_slot("2026-04-28", 0) not in coordinator.charge_hours
+        assert utc_slot("2026-04-28", 0) not in coordinator.discharge_hours
         # Auto picks the next-cheapest hour for charge instead
-        assert ("2026-04-28", 1) in coordinator.charge_hours
+        assert utc_slot("2026-04-28", 1) in coordinator.charge_hours
 
 
 # ======================================================================
@@ -2664,8 +2666,8 @@ class TestReplanHours:
             coordinator.set_replan_hours([3])
         coordinator.control_mode = MODE_MANUAL
         coordinator._clean_expired_slots = MagicMock()
-        coordinator._charge_hours = [("2026-05-02", 1)]
-        coordinator._discharge_hours = [("2026-05-02", 20)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1)]
+        coordinator._discharge_hours = [utc_slot("2026-05-02", 20)]
         coordinator.async_request_refresh = MagicMock()
 
         coordinator._run_replan()
@@ -2698,14 +2700,14 @@ class TestPlanPersistenceSave:
 
     @pytest.mark.asyncio
     async def test_set_charge_hours_writes_store(self, coordinator, mock_store):
-        coordinator.set_charge_hours([("2026-05-02", 3), ("2026-05-02", 1)])
+        coordinator.set_charge_hours([utc_slot("2026-05-02", 3), utc_slot("2026-05-02", 1)])
         # The fire-and-forget save is scheduled via hass.async_create_task.
         # In sync test contexts the helper returns a MagicMock and the
         # coroutine is never awaited, so we drive the save directly.
         await coordinator._async_save_schedule()
         assert len(mock_store.save_calls) == 1
         payload = mock_store.save_calls[-1]
-        assert payload["charge_hours"] == [["2026-05-02", 1], ["2026-05-02", 3]]
+        assert payload["charge_hours"] == [stored_slot("2026-05-02", 1), stored_slot("2026-05-02", 3)]
         assert payload["discharge_hours"] == []
         assert payload["pv_charge_hours"] == []
         assert payload["blocked_charging_hours"] == []
@@ -2714,11 +2716,11 @@ class TestPlanPersistenceSave:
 
     @pytest.mark.asyncio
     async def test_set_discharge_hours_writes_store(self, coordinator, mock_store):
-        coordinator.set_discharge_hours([("2026-05-02", 20)])
+        coordinator.set_discharge_hours([utc_slot("2026-05-02", 20)])
         await coordinator._async_save_schedule()
         assert len(mock_store.save_calls) == 1
         payload = mock_store.save_calls[-1]
-        assert payload["discharge_hours"] == [["2026-05-02", 20]]
+        assert payload["discharge_hours"] == [stored_slot("2026-05-02", 20)]
 
     @pytest.mark.asyncio
     async def test_set_blocked_charging_hours_writes_store(self, coordinator, mock_store):
@@ -2740,14 +2742,14 @@ class TestPlanPersistenceSave:
         coordinator.toggle_hour(5, "2026-05-02")
         await coordinator._async_save_schedule()
         payload = mock_store.save_calls[-1]
-        assert payload["charge_hours"] == [["2026-05-02", 5]]
+        assert payload["charge_hours"] == [stored_slot("2026-05-02", 5)]
 
     @pytest.mark.asyncio
     async def test_set_hour_action_pv_charge_writes_store(self, coordinator, mock_store):
         coordinator.set_hour_action(7, ACTION_PV_CHARGE, "2026-05-02")
         await coordinator._async_save_schedule()
         payload = mock_store.save_calls[-1]
-        assert payload["pv_charge_hours"] == [["2026-05-02", 7]]
+        assert payload["pv_charge_hours"] == [stored_slot("2026-05-02", 7)]
 
     @pytest.mark.asyncio
     async def test_set_hour_action_blocked_writes_store(self, coordinator, mock_store):
@@ -2759,9 +2761,9 @@ class TestPlanPersistenceSave:
 
     @pytest.mark.asyncio
     async def test_clear_schedule_writes_empty_store(self, coordinator, mock_store):
-        coordinator._charge_hours = [("2026-05-02", 1)]
-        coordinator._discharge_hours = [("2026-05-02", 20)]
-        coordinator._pv_charge_hours = [("2026-05-02", 12)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1)]
+        coordinator._discharge_hours = [utc_slot("2026-05-02", 20)]
+        coordinator._pv_charge_hours = [utc_slot("2026-05-02", 12)]
         coordinator._blocked_charging_hours = [18]
         coordinator._blocked_discharging_hours = [15]
         coordinator.clear_schedule()
@@ -2818,11 +2820,11 @@ class TestPlanPersistenceSave:
         assert len(mock_store.save_calls) == 1
         payload = mock_store.save_calls[-1]
         # Cheapest 2 hours: 0 and 1
-        assert ["2026-04-28", 0] in payload["charge_hours"]
-        assert ["2026-04-28", 1] in payload["charge_hours"]
+        assert stored_slot("2026-04-28", 0) in payload["charge_hours"]
+        assert stored_slot("2026-04-28", 1) in payload["charge_hours"]
         # Most expensive 2 hours: 3 and 2
-        assert ["2026-04-28", 2] in payload["discharge_hours"]
-        assert ["2026-04-28", 3] in payload["discharge_hours"]
+        assert stored_slot("2026-04-28", 2) in payload["discharge_hours"]
+        assert stored_slot("2026-04-28", 3) in payload["discharge_hours"]
 
     @pytest.mark.asyncio
     async def test_save_failure_does_not_raise(self, coordinator, mock_store):
@@ -2867,18 +2869,18 @@ class TestPlanPersistenceLoad:
         )
 
         mock_store.async_load = AsyncMock(return_value=None)
-        coordinator._charge_hours = [("2026-05-02", 1)]
-        coordinator._discharge_hours = [("2026-05-02", 20)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1)]
+        coordinator._discharge_hours = [utc_slot("2026-05-02", 20)]
         coordinator._blocked_charging_hours = [18]
         coordinator._blocked_discharging_hours = [15]
-        coordinator._pv_charge_hours = [("2026-05-02", 12)]
+        coordinator._pv_charge_hours = [utc_slot("2026-05-02", 12)]
 
         await coordinator._async_load_schedule()
 
         # State must be preserved, not wiped
-        assert coordinator._charge_hours == [("2026-05-02", 1)]
-        assert coordinator._discharge_hours == [("2026-05-02", 20)]
-        assert coordinator._pv_charge_hours == [("2026-05-02", 12)]
+        assert coordinator._charge_hours == [utc_slot("2026-05-02", 1)]
+        assert coordinator._discharge_hours == [utc_slot("2026-05-02", 20)]
+        assert coordinator._pv_charge_hours == [utc_slot("2026-05-02", 12)]
         assert coordinator._blocked_charging_hours == [18]
         assert coordinator._blocked_discharging_hours == [15]
         # Flag stays false because nothing was actually applied
@@ -2898,11 +2900,11 @@ class TestPlanPersistenceLoad:
         await coordinator._async_load_schedule()
 
         assert coordinator._charge_hours == [
-            ("2026-05-02", 1),
-            ("2026-05-02", 3),
+            utc_slot("2026-05-02", 1),
+            utc_slot("2026-05-02", 3),
         ]
-        assert coordinator._discharge_hours == [("2026-05-02", 20)]
-        assert coordinator._pv_charge_hours == [("2026-05-02", 12)]
+        assert coordinator._discharge_hours == [utc_slot("2026-05-02", 20)]
+        assert coordinator._pv_charge_hours == [utc_slot("2026-05-02", 12)]
         assert coordinator._blocked_charging_hours == [18, 19, 20]
         assert coordinator._blocked_discharging_hours == [15, 16]
         assert coordinator._last_schedule_update is not None
@@ -2931,7 +2933,7 @@ class TestPlanPersistenceLoad:
         await coordinator._async_load_schedule()
 
         # Only the valid slot survived
-        assert coordinator._charge_hours == [("2026-05-02", 1)]
+        assert coordinator._charge_hours == [utc_slot("2026-05-02", 1)]
         # Hours: 50 and -1 dropped, "5" dropped, duplicates deduped -> 3, 5
         assert coordinator._blocked_charging_hours == [3, 5]
         # _last_schedule_update untouched (None in payload)
@@ -2941,25 +2943,25 @@ class TestPlanPersistenceLoad:
     async def test_load_with_non_dict_payload(self, coordinator, mock_store):
         """A list or string payload must be treated like an empty Store."""
         mock_store.async_load = AsyncMock(return_value=["unexpected", "list"])
-        coordinator._charge_hours = [("2026-05-02", 1)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1)]
 
         await coordinator._async_load_schedule()
 
         # State preserved, no crash
-        assert coordinator._charge_hours == [("2026-05-02", 1)]
+        assert coordinator._charge_hours == [utc_slot("2026-05-02", 1)]
         assert coordinator._schedule_loaded_from_store is False
 
     @pytest.mark.asyncio
     async def test_load_handles_store_read_error(self, coordinator, mock_store):
         """A failing Store.async_load must not crash the integration."""
         mock_store.async_load = AsyncMock(side_effect=OSError("disk full"))
-        coordinator._charge_hours = [("2026-05-02", 1)]
+        coordinator._charge_hours = [utc_slot("2026-05-02", 1)]
 
         # Must not raise
         await coordinator._async_load_schedule()
 
         # State preserved
-        assert coordinator._charge_hours == [("2026-05-02", 1)]
+        assert coordinator._charge_hours == [utc_slot("2026-05-02", 1)]
         assert coordinator._schedule_loaded_from_store is False
 
 
@@ -3006,8 +3008,8 @@ class TestAsyncSetupNoReplan:
 
         # The Store was loaded and applied
         mock_store.async_load.assert_awaited()
-        assert coord._charge_hours == [("2026-05-02", 1), ("2026-05-02", 2)]
-        assert coord._discharge_hours == [("2026-05-02", 20)]
+        assert coord._charge_hours == [utc_slot("2026-05-02", 1), utc_slot("2026-05-02", 2)]
+        assert coord._discharge_hours == [utc_slot("2026-05-02", 20)]
         assert coord._blocked_charging_hours == [18]
         assert coord._blocked_discharging_hours == [15]
         assert coord._schedule_loaded_from_store is True
@@ -3229,9 +3231,9 @@ class TestSetupRaceWithTextEntityRestore:
         ):
             await coord.async_setup()
 
-        assert coord._charge_hours == [("2026-05-02", 1), ("2026-05-02", 2)]
-        assert coord._discharge_hours == [("2026-05-02", 20)]
-        assert coord._pv_charge_hours == [("2026-05-02", 12)]
+        assert coord._charge_hours == [utc_slot("2026-05-02", 1), utc_slot("2026-05-02", 2)]
+        assert coord._discharge_hours == [utc_slot("2026-05-02", 20)]
+        assert coord._pv_charge_hours == [utc_slot("2026-05-02", 12)]
         assert coord._blocked_charging_hours == [18, 19, 20]
         assert coord._blocked_discharging_hours == [15, 16]
         assert coord._schedule_loaded_from_store is True
@@ -3264,12 +3266,12 @@ class TestSetupRaceWithTextEntityRestore:
         # async test contexts ``hass.async_create_task`` schedules the
         # coroutine on the loop and the test must yield once for it to
         # run.
-        coord.set_charge_hours([("2026-05-02", 5)])
+        coord.set_charge_hours([utc_slot("2026-05-02", 5)])
         # Drive the save synchronously so the assertion is
         # deterministic without depending on event-loop scheduling.
         await coord._async_save_schedule()
         assert len(mock_store.save_calls) == 1
-        assert mock_store.save_calls[-1]["charge_hours"] == [["2026-05-02", 5]]
+        assert mock_store.save_calls[-1]["charge_hours"] == [stored_slot("2026-05-02", 5)]
 
     @pytest.mark.asyncio
     async def test_saves_suspended_during_setup_no_user_path(

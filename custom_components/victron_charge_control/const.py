@@ -5,16 +5,8 @@ from __future__ import annotations
 DOMAIN = "victron_charge_control"
 
 # --- Persistent storage ---
-# Used to save the charge/discharge plan so it survives Home Assistant
-# restarts. The actual Store key is unique per config entry and is
-# constructed as ``f"{STORAGE_KEY_PREFIX}.{entry_id}"``. Bump
-# ``STORAGE_VERSION`` whenever the persisted shape changes in a way that
-# is no longer backward-compatible; Home Assistant then calls the
-# (unimplemented) migrate function and previously written data is lost.
-# Purely additive keys are instead tolerated by the load path
-# (``persistence.apply_loaded_plan`` defaults absent keys), which keeps
-# existing plans intact across integration updates.
-STORAGE_VERSION = 1
+# v2 persists UTC interval bounds; ScheduleStore migrates dated v1 hours.
+STORAGE_VERSION = 2
 STORAGE_KEY_PREFIX = f"{DOMAIN}_schedule"
 
 # --- Config entry keys (from config flow) ---

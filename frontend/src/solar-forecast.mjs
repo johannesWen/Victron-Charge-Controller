@@ -26,14 +26,20 @@ export function localHour(time, timeZone) {
 }
 
 export function forecastTime(time, timeZone) {
-  return new Intl.DateTimeFormat(undefined, { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' }).format(time);
+  return new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' }).format(time);
+}
+
+export function normalizePlan(plan = []) {
+  return plan.map(entry => ({ ...entry, start: timestamp(entry.start_time), end: timestamp(entry.end_time),
+    price: numeric(entry.price) ? entry.price : null }));
 }
 
 export function buildForecastCharts(forecast, plan = []) {
+  plan = normalizePlan(plan);
   const civilHour = new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, hour: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' });
   const days = forecast.days.map(day => {
     const entries = new Map(plan.filter(entry => entry.date === day.date).map(entry => [Number(entry.hour), entry]));
-    const hours = [];
+    let hours = [];
     let previousHour;
     // Split at civil-hour and offset changes, including partial DST hours.
     for (let start = day.start; start < day.end; start += HOUR / 60) {
@@ -43,9 +49,21 @@ export function buildForecastCharts(forecast, plan = []) {
       else {
         const hour = localHour(start, forecast.time_zone);
         const entry = entries.get(hour);
-        hours.push({ ...entry, date: day.date, start, end, hour, price: numeric(entry?.price) ? entry.price : null });
+        hours.push({ ...entry, date: day.date, start, end, hour, minute: Number(new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, minute: '2-digit' }).format(start)), price: numeric(entry?.price) ? entry.price : null });
       }
       previousHour = key;
+    }
+    const periods = plan.filter(entry => Number.isFinite(entry.start) && entry.end > entry.start && entry.start < day.end && entry.end > day.start);
+    if (plan.some(entry => Number.isFinite(entry.start))) {
+      const boundaries = [...new Set([day.start, day.end,
+        ...periods.flatMap(entry => [Math.max(day.start, entry.start), Math.min(day.end, entry.end)]),
+        ...hours.map(hour => hour.start).filter(time => !periods.some(entry => entry.start < time && time < entry.end))])].sort((a, b) => a - b);
+      hours = boundaries.slice(0, -1).map((start, index) => {
+        const entry = periods.find(entry => entry.start <= start && start < entry.end);
+        return { ...entry, date: day.date, start, end: boundaries[index + 1], hour: localHour(start, forecast.time_zone),
+          minute: Number(new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, minute: '2-digit' }).format(start)),
+          price: entry?.price ?? null };
+      });
     }
     const intervals = forecast.intervals.filter(interval => interval.start < day.end && interval.end > day.start)
       .map(interval => ({ ...interval, start: Math.max(day.start, interval.start), end: Math.min(day.end, interval.end) }));

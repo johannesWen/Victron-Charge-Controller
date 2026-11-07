@@ -23,7 +23,6 @@ from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
 )
-from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -70,7 +69,6 @@ from .const import (
     EPEX_ATTR_DATA,
     EPEX_KEY_PRICE,
     EPEX_KEY_PRICE_EUR,
-    EPEX_KEY_START_TIME,
     MAX_FIXED_PLANS,
     MODE_AUTO,
     MODE_FORCE_CHARGE,
@@ -91,23 +89,32 @@ from .epex import (
     get_current_price_ct,
     get_entity_float,
     normalize_price_eur_per_kwh,
+    normalize_price_intervals,
+    parse_epex_start_time,
+    price_timeline,
 )
 from .schedule import (
+    ScheduleSlot,
+    active_slot,
     apply_fixed_plan,
     clean_expired_slots,
     clear_all as schedule_clear_all,
+    local_hour_slots,
     normalize_blocked_hours,
     normalize_fixed_plan,
     normalize_fixed_plan_name,
     set_charge_slots,
     set_discharge_slots,
     set_hour_action as schedule_set_hour_action,
+    slot_attributes,
     sort_slots,
+    subtract_slots,
     today_str as schedule_today_str,
     toggle_hour as schedule_toggle_hour,
     valid_slot,
 )
 from .persistence import (
+    ScheduleStore as Store,
     apply_loaded_plan,
     build_plan_payload,
     deserialize_hours,
@@ -137,9 +144,6 @@ from .planning import calculate_auto_schedule as planning_calculate_auto_schedul
 from .forecast import SolcastForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-
-# Type alias for a date-qualified schedule slot: (ISO date "YYYY-MM-DD", hour 0-23)
-ScheduleSlot = tuple[str, int]
 
 
 @dataclass
@@ -287,8 +291,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.idle_setpoint: float = DEFAULT_IDLE_SETPOINT
         self.min_grid_setpoint: float = DEFAULT_MIN_GRID_SETPOINT
         self.max_grid_setpoint: float = DEFAULT_MAX_GRID_SETPOINT
-        self.cheapest_hours: int = DEFAULT_CHEAPEST_HOURS
-        self.expensive_hours: int = DEFAULT_EXPENSIVE_HOURS
+        self.cheapest_hours: float = DEFAULT_CHEAPEST_HOURS
+        self.expensive_hours: float = DEFAULT_EXPENSIVE_HOURS
         self.charge_price_threshold: float = DEFAULT_CHARGE_PRICE_THRESHOLD
         self.discharge_price_threshold: float = DEFAULT_DISCHARGE_PRICE_THRESHOLD
         self.setpoint_deadband: float = DEFAULT_DEADBAND
@@ -341,7 +345,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Numbered, user-defined recurring hour-of-day patterns that are
         # merged on top of the auto-planned hours for today + tomorrow
         # while activated. ``_fixed_plan_applied_slots`` tracks every
-        # (date, hour) slot the active plan wrote (in-memory only) and
+        # UTC interval the active plan wrote (in-memory only) and
         # ``_fixed_plan_base_snapshot`` keeps the schedule state from
         # just before the last merge, so deactivating or switching plans
         # restores the pre-merge plan instead of leaving holes behind.
@@ -913,7 +917,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     @staticmethod
     def _sort_slots(slots: list[ScheduleSlot]) -> list[ScheduleSlot]:
-        """Sort schedule slots by (date, hour)."""
+        """Sort schedule intervals by their UTC bounds."""
         return sort_slots(slots)
 
     @staticmethod
@@ -934,6 +938,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def set_charge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set charge hours (date-aware) and trigger update."""
         self._charge_hours = set_charge_slots(slots)
+        if self._fixed_plan_base_snapshot is not None:
+            self._fixed_plan_base_snapshot = (
+                list(self._charge_hours), *self._fixed_plan_base_snapshot[1:]
+            )
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -941,6 +949,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def set_discharge_hours(self, slots: list[ScheduleSlot]) -> None:
         """Set discharge hours (date-aware) and trigger update."""
         self._discharge_hours = set_discharge_slots(slots)
+        if self._fixed_plan_base_snapshot is not None:
+            self._fixed_plan_base_snapshot = (
+                self._fixed_plan_base_snapshot[0], list(self._discharge_hours),
+                self._fixed_plan_base_snapshot[2],
+            )
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -991,7 +1004,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # auto plan and win over it in the same hour (one action per hour).
     #
     # Retraction bookkeeping (in-memory only):
-    #   _fixed_plan_applied_slots — every (date, hour) the last merge
+    #   _fixed_plan_applied_slots — every UTC interval the last merge
     #     wrote, used as a fallback to strip the merge again.
     #   _fixed_plan_base_snapshot — the three slot lists from just
     #     before the last merge, restored wholesale when the influence
@@ -1172,6 +1185,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._pv_charge_hours,
             plan,
             [schedule_today_str(now), tomorrow],
+            self._source_slots(),
         )
 
     def _install_replan_listener(self) -> None:
@@ -1199,6 +1213,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         recomputed from EPEX prices, in manual mode the user-picked hours are
         cleared so the next day starts fresh.
         """
+        if self.control_mode == MODE_MANUAL and self._active_fixed_plan is not None:
+            # Reset the underlying plan, retaining only its nonexpired manual PV slots.
+            self._retract_fixed_plan()
         self._clean_expired_slots()
         if self.control_mode == MODE_AUTO:
             self.calculate_auto_schedule()
@@ -1239,9 +1256,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._pv_charge_hours,
             self._blocked_charging_hours,
             self._blocked_discharging_hours,
+            self._source_slots(),
         )
         if no_op:
             return
+        self._record_schedule_edit(local_hour_slots(date_str or self._today_str(), hour))
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -1278,9 +1297,64 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._pv_charge_hours,
             self._blocked_charging_hours,
             self._blocked_discharging_hours,
+            self._source_slots(),
         )
         if no_op:
             return
+        self._record_schedule_edit(local_hour_slots(date_str or self._today_str(), hour))
+        self._last_schedule_update = dt_util.now()
+        self._async_schedule_save()
+        self.hass.async_create_task(self.async_request_refresh())
+
+    def _record_schedule_edit(self, targets: list[ScheduleSlot]) -> None:
+        """Save daily edits in the base without reapplying the fixed overlay yet."""
+        if self._active_fixed_plan is None:
+            return
+        current = (self._charge_hours, self._discharge_hours, self._pv_charge_hours)
+        base = self._fixed_plan_base_snapshot or current
+        self._fixed_plan_base_snapshot = tuple(
+            sort_slots(subtract_slots(previous, targets) + [
+                (max(start, begin), min(end, finish))
+                for start, end in edited for begin, finish in targets
+                if start < finish and begin < end
+            ])
+            for previous, edited in zip(base, current)
+        )
+
+    def _source_slots(self) -> list[ScheduleSlot]:
+        state = self.hass.states.get(self._epex_spot_entity)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return []
+        return [item.slot for item in normalize_price_intervals(state.attributes)]
+
+    def set_slot_action(self, start_time: str, action: str) -> None:
+        """Edit one published priced interval by instant, with no invalid side effects."""
+        from homeassistant.exceptions import ServiceValidationError
+
+        start = parse_epex_start_time(start_time)
+        if start is None or action not in (ACTION_CHARGE, ACTION_PV_CHARGE, ACTION_DISCHARGE, ACTION_IDLE):
+            raise ServiceValidationError("Expected an offset-bearing start_time and a supported action")
+        now = dt_util.as_utc(dt_util.now())
+        published = (self.data.prices_today + self.data.prices_tomorrow) if self.data else []
+        target = next((item for item in published if item.get("price") is not None
+                       and parse_epex_start_time(item.get("start_time")) == start), None)
+        end = parse_epex_start_time(target.get("end_time")) if target else None
+        if end is None or end <= now:
+            raise ServiceValidationError("Target must be a current or future published priced interval")
+        # Revalidate against the source in case publication is stale or unavailable.
+        if not any(begin <= start < end <= finish for begin, finish in self._source_slots()):
+            raise ServiceValidationError("Target price interval is no longer available")
+        slot = (start, end)
+        self._charge_hours = subtract_slots(self._charge_hours, [slot])
+        self._discharge_hours = subtract_slots(self._discharge_hours, [slot])
+        self._pv_charge_hours = subtract_slots(self._pv_charge_hours, [slot])
+        if action == ACTION_CHARGE:
+            self._charge_hours = sort_slots(self._charge_hours + [slot])
+        elif action == ACTION_DISCHARGE:
+            self._discharge_hours = sort_slots(self._discharge_hours + [slot])
+        elif action == ACTION_PV_CHARGE:
+            self._pv_charge_hours = sort_slots(self._pv_charge_hours + [slot])
+        self._record_schedule_edit([slot])
         self._last_schedule_update = dt_util.now()
         self._async_schedule_save()
         self.hass.async_create_task(self.async_request_refresh())
@@ -1309,7 +1383,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # The charge/discharge/pv_charge plan and the blocked-hour lists are
     # written to a Home Assistant ``Store`` on every change and reloaded
     # on startup. The Store payload is intentionally minimal: slot lists
-    # are serialized as ``[[date, hour], ...]`` and the schedule update
+    # are serialized as ``[[start_time, end_time], ...]`` and the schedule update
     # timestamp as an ISO string (or ``None``). Malformed entries are
     # silently dropped at load time so a corrupted Store can never wedge
     # the integration; the user can always press the **Recalculate
@@ -1358,6 +1432,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 active_fixed_plan=self._active_fixed_plan,
                 last_schedule_update=self._last_schedule_update,
             )
+            if self._fixed_plan_base_snapshot is not None:
+                payload["fixed_plan_base"] = [serialize_slots(slots) for slots in self._fixed_plan_base_snapshot]
+                payload["fixed_plan_applied"] = serialize_slots(self._fixed_plan_applied_slots)
             payload["discharge_release_entity"] = self._discharge_release_entity
             try:
                 await self._store.async_save(payload)
@@ -1436,6 +1513,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._blocked_discharging_hours = applied["blocked_discharging_hours"]
         self._fixed_plans = applied["fixed_plans"]
         self._active_fixed_plan = applied["active_fixed_plan"]
+        base = data.get("fixed_plan_base")
+        if isinstance(base, list) and len(base) == 3:
+            self._fixed_plan_base_snapshot = tuple(deserialize_slots(slots) for slots in base)
+            self._fixed_plan_applied_slots = deserialize_slots(data.get("fixed_plan_applied"))
         self._last_schedule_update = applied["last_schedule_update"]
         self._schedule_loaded_from_store = applied["loaded"]
         _LOGGER.info(
@@ -1465,6 +1546,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def calculate_auto_schedule(self) -> None:
         """Calculate optimal charge/discharge hours from EPEX spot prices."""
+        pv_charge = (
+            self._fixed_plan_base_snapshot[2]
+            if self._fixed_plan_base_snapshot is not None else self._pv_charge_hours
+        )
         result = planning_calculate_auto_schedule(
             self.hass,
             epex_spot_entity=self._epex_spot_entity,
@@ -1475,7 +1560,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             discharge_price_threshold=self.discharge_price_threshold,
             blocked_charging_hours=self._blocked_charging_hours,
             blocked_discharging_hours=self._blocked_discharging_hours,
-            pv_charge_hours=self._pv_charge_hours,
+            pv_charge_hours=pv_charge,
             now=dt_util.now(),
         )
         if result is None:
@@ -1484,6 +1569,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._charge_hours = charge_slots
         self._discharge_hours = discharge_slots
         if self._active_fixed_plan is not None:
+            self._pv_charge_hours = list(pv_charge)
+            # Fresh auto slots are the new base, even where the previous overlay acted.
+            self._fixed_plan_applied_slots = []
             # Merge the active fixed plan on top of the fresh auto plan.
             self._apply_fixed_plan(reset_base=True)
         self._last_schedule_update = dt_util.now()
@@ -1768,11 +1856,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if self.control_mode == MODE_FORCE_CHARGE:
             return entity
         now = dt_util.now()
-        slot = (now.strftime("%Y-%m-%d"), now.hour)
         if (
             self.control_mode in (MODE_AUTO, MODE_MANUAL)
-            and slot in self._charge_hours
-            and slot not in self._pv_charge_hours
+            and active_slot(self._charge_hours, now)
+            and not active_slot(self._pv_charge_hours, now)
         ):
             return entity
         return None
@@ -2212,45 +2299,19 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             "unknown",
         ):
             try:
-                current_price = float(epex_state.state)
+                value = float(epex_state.state)
+                current_price = value if math.isfinite(value) else None
             except (ValueError, TypeError):
                 pass
             epex_attributes = dict(epex_state.attributes)
             current_price_eur_per_kwh = self._normalize_price_eur_per_kwh(
                 epex_state.state, epex_attributes
             )
-            raw_data = self._find_epex_data(epex_state.attributes)
-            if raw_data:
-                now = dt_util.now()
-                today_str = now.strftime("%Y-%m-%d")
-                tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-                for item in raw_data:
-                    st = item.get(EPEX_KEY_START_TIME)
-                    if st is None:
-                        continue
-                    if isinstance(st, str):
-                        try:
-                            sdt = dt_util.parse_datetime(st)
-                            if sdt is not None:
-                                sdt = dt_util.as_local(sdt)
-                        except (ValueError, TypeError):
-                            continue
-                    elif isinstance(st, datetime):
-                        sdt = dt_util.as_local(st)
-                    else:
-                        continue
-                    if sdt is not None:
-                        date_str = sdt.strftime("%Y-%m-%d")
-                        price = self._extract_price_ct(item)
-                        if price is not None:
-                            entry = {"hour": sdt.hour, "price": price}
-                            if date_str == today_str:
-                                prices_today.append(entry)
-                            elif date_str == tomorrow_str:
-                                prices_tomorrow.append(entry)
-                prices_today.sort(key=lambda x: x["hour"])
-                prices_tomorrow.sort(key=lambda x: x["hour"])
-
+        intervals = normalize_price_intervals(epex_attributes)
+        now = dt_util.now()
+        schedule = self._charge_hours + self._discharge_hours + self._pv_charge_hours
+        prices_today = price_timeline(intervals, now.date().isoformat(), schedule)
+        prices_tomorrow = price_timeline(intervals, (now + timedelta(days=1)).date().isoformat(), schedule)
         return EpexPriceView(
             current_price=current_price,
             eur_per_kwh=current_price_eur_per_kwh,
@@ -2270,6 +2331,19 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         calculation: dict[str, float] | None = None,
     ) -> ChargeControlData:
         """Assemble the per-tick ``ChargeControlData`` returned to entities."""
+        boundaries = sorted({
+            parse_epex_start_time(period[key])
+            for period in price_view.prices_today + price_view.prices_tomorrow
+            for key in ("start_time", "end_time")
+        })
+
+        def public_slots(slots: list[ScheduleSlot]) -> list[dict[str, Any]]:
+            result = []
+            for start, end in slots:
+                splits = [start, *(point for point in boundaries if start < point < end), end]
+                result.extend(slot_attributes(slot) for slot in zip(splits, splits[1:]))
+            return result
+
         return ChargeControlData(
             desired_action=action,
             target_setpoint=setpoint,
@@ -2278,9 +2352,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 and all(math.isfinite(value) for value in calculation.values())
                 else None
             ),
-            charge_hours=[{"date": d, "hour": h} for d, h in self._charge_hours],
-            discharge_hours=[{"date": d, "hour": h} for d, h in self._discharge_hours],
-            pv_charge_hours=[{"date": d, "hour": h} for d, h in self._pv_charge_hours],
+            charge_hours=public_slots(self._charge_hours),
+            discharge_hours=public_slots(self._discharge_hours),
+            pv_charge_hours=public_slots(self._pv_charge_hours),
             blocked_charging_hours=list(self._blocked_charging_hours),
             blocked_discharging_hours=list(self._blocked_discharging_hours),
             fixed_plans={

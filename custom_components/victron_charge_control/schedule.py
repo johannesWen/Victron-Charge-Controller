@@ -1,226 +1,168 @@
-"""Schedule slot operations.
-
-Pure functions that operate on schedule state. Extracted from
-``coordinator.py`` so the coordinator's public mutators become thin
-wrappers that combine the slot update with the save-and-refresh
-side effects.
-"""
+"""UTC interval schedules and local-hour compatibility operations."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from homeassistant.util import dt as dt_util
 
 from .const import ACTION_BLOCKED, ACTION_CHARGE, ACTION_DISCHARGE, ACTION_PV_CHARGE
 
-ScheduleSlot = tuple[str, int]
+ScheduleSlot = tuple[datetime, datetime]
 
 
 def sort_slots(slots: list[ScheduleSlot]) -> list[ScheduleSlot]:
-    """Sort and deduplicate schedule slots by (date, hour)."""
+    """Sort and deduplicate intervals by their actual instants."""
     return sorted(set(slots))
 
 
 def valid_slot(date_str: str, hour: int) -> bool:
-    """Validate a (date_str, hour) tuple."""
-    if not (0 <= hour <= 23):
+    """Validate an external local-hour input."""
+    if not isinstance(hour, int) or isinstance(hour, bool) or not 0 <= hour <= 23:
         return False
     try:
-        datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
+        return datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d") == date_str
+    except (ValueError, TypeError):
         return False
-    return True
 
 
 def today_str(now: datetime | None = None) -> str:
-    """Return today's date as ISO string."""
-    if now is None:
-        from homeassistant.util import dt as dt_util
-
-        now = dt_util.now()
-    return now.strftime("%Y-%m-%d")
+    """Return the date in HA local time."""
+    return (now or dt_util.now()).strftime("%Y-%m-%d")
 
 
-def clean_expired_slots(
-    charge: list[ScheduleSlot],
-    discharge: list[ScheduleSlot],
-    pv_charge: list[ScheduleSlot],
-    now: datetime | None = None,
-) -> tuple[list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot]]:
-    """Remove schedule slots that are in the past.
-
-    Returns a new tuple of (charge, discharge, pv_charge) with only
-    future slots remaining. The input lists are not mutated.
-    """
-    current = now if now is not None else _now()
-    current_date = current.strftime("%Y-%m-%d")
-    current_hour = current.hour
-
-    def is_future(slot: ScheduleSlot) -> bool:
-        d, h = slot
-        if d > current_date:
-            return True
-        if d == current_date and h >= current_hour:
-            return True
-        return False
-
-    return (
-        [s for s in charge if is_future(s)],
-        [s for s in discharge if is_future(s)],
-        [s for s in pv_charge if is_future(s)],
-    )
+def local_hour_slots(date_str: str, hour: int) -> list[ScheduleSlot]:
+    """Expand a local hour to both fall-back occurrences, or none in spring."""
+    if not valid_slot(date_str, hour):
+        return []
+    naive = datetime.strptime(date_str, "%Y-%m-%d").replace(hour=hour)
+    starts = set()
+    for fold in (0, 1):
+        local = naive.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE, fold=fold)
+        utc = local.astimezone(timezone.utc)
+        if dt_util.as_local(utc).replace(tzinfo=None) == naive:
+            starts.add(utc)
+    return [(start, start + timedelta(hours=1)) for start in sorted(starts)]
 
 
-def set_charge_slots(slots: list[ScheduleSlot]) -> list[ScheduleSlot]:
-    """Validate, sort and deduplicate the supplied charge slots."""
-    return sort_slots([s for s in slots if valid_slot(s[0], s[1])])
+def slot_attributes(slot: ScheduleSlot) -> dict[str, Any]:
+    start, end = slot
+    local = dt_util.as_local(start)
+    return {"start_time": start.isoformat(), "end_time": end.isoformat(),
+            "date": local.date().isoformat(), "hour": local.hour, "minute": local.minute}
 
 
-def set_discharge_slots(slots: list[ScheduleSlot]) -> list[ScheduleSlot]:
-    """Validate, sort and deduplicate the supplied discharge slots."""
-    return sort_slots([s for s in slots if valid_slot(s[0], s[1])])
+def active_slot(slots: list[ScheduleSlot], now: datetime) -> bool:
+    """Test half-open coverage by actual instant, including repeated local hours."""
+    instant = now.astimezone(timezone.utc)
+    return any(start <= instant < end for start, end in slots)
+
+
+def overlaps(left: ScheduleSlot, right: ScheduleSlot) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def subtract_slots(slots: list[ScheduleSlot], removed: list[ScheduleSlot]) -> list[ScheduleSlot]:
+    """Remove coverage, retaining untouched parts of a migrated hourly slot."""
+    result = list(slots)
+    for begin, end in removed:
+        remaining = []
+        for start, stop in result:
+            if stop <= begin or start >= end:
+                remaining.append((start, stop))
+            else:
+                if start < begin:
+                    remaining.append((start, begin))
+                if stop > end:
+                    remaining.append((end, stop))
+        result = remaining
+    return sort_slots(result)
+
+
+def clean_expired_slots(charge, discharge, pv_charge, now=None):
+    instant = (now or dt_util.now()).astimezone(timezone.utc)
+    return tuple([slot for slot in slots if slot[1] > instant] for slots in (charge, discharge, pv_charge))
+
+
+def set_charge_slots(slots) -> list[ScheduleSlot]:
+    """Accept legacy local-hour inputs at the public coordinator boundary."""
+    result = []
+    for start, end in slots:
+        if isinstance(start, str) and isinstance(end, int):
+            result.extend(local_hour_slots(start, end))
+        elif (isinstance(start, datetime) and isinstance(end, datetime)
+              and start.tzinfo is not None and end.tzinfo is not None and start < end):
+            result.append((start.astimezone(timezone.utc), end.astimezone(timezone.utc)))
+    return sort_slots(result)
+
+
+set_discharge_slots = set_charge_slots
 
 
 def normalize_blocked_hours(hours: list[int]) -> list[int]:
-    """Filter, deduplicate and sort a list of hour-of-day values."""
     return sorted(set(h for h in hours if 0 <= h <= 23))
 
 
-def toggle_hour(
-    hour: int,
-    date_str: str | None,
-    charge: list[ScheduleSlot],
-    discharge: list[ScheduleSlot],
-    pv_charge: list[ScheduleSlot],
-    blocked_charging: list[int],
-    blocked_discharging: list[int],
-) -> tuple[
-    list[ScheduleSlot],
-    list[ScheduleSlot],
-    list[ScheduleSlot],
-    list[int],
-    list[int],
-    bool,
-]:
-    """Cycle an hour through idle → charge → pv_charge → discharge → blocked → idle.
+def hour_intervals(date_str: str, hour: int, source: list[ScheduleSlot]) -> list[ScheduleSlot]:
+    """Partition a whole local hour at source boundaries without losing gaps."""
+    result = []
+    for start, end in local_hour_slots(date_str, hour):
+        boundaries = {start, end}
+        for begin, stop in source:
+            if start < begin < end:
+                boundaries.add(begin)
+            if start < stop < end:
+                boundaries.add(stop)
+        ordered = sorted(boundaries)
+        result.extend(zip(ordered, ordered[1:]))
+    return result
 
-    Returns the new lists and a bool indicating whether the call was a
-    no-op (invalid hour, invalid date) so the caller can skip the
-    save-and-refresh side effects.
-    """
-    if hour < 0 or hour > 23:
-        return charge, discharge, pv_charge, blocked_charging, blocked_discharging, True
-    if date_str is None:
-        date_str = today_str()
+
+def set_hour_action(hour, action, date_str, charge, discharge, pv_charge,
+                    blocked_charging, blocked_discharging, source=()):
+    date_str = date_str or today_str()
     if not valid_slot(date_str, hour):
         return charge, discharge, pv_charge, blocked_charging, blocked_discharging, True
-
-    slot: ScheduleSlot = (date_str, hour)
-
-    if slot in charge:
-        # charge → pv_charge
-        new_charge = [s for s in charge if s != slot]
-        if slot not in pv_charge:
-            new_pv_charge = sort_slots(pv_charge + [slot])
-        else:
-            new_pv_charge = pv_charge
-        return new_charge, discharge, new_pv_charge, blocked_charging, blocked_discharging, False
-
-    if slot in pv_charge:
-        # pv_charge → discharge
-        new_pv_charge = [s for s in pv_charge if s != slot]
-        if slot not in discharge:
-            new_discharge = sort_slots(discharge + [slot])
-        else:
-            new_discharge = discharge
-        return charge, new_discharge, new_pv_charge, blocked_charging, blocked_discharging, False
-
-    if slot in discharge:
-        # discharge → blocked (both, recurring)
-        new_discharge = [s for s in discharge if s != slot]
-        new_blocked_charging = (
-            sorted(blocked_charging + [hour]) if hour not in blocked_charging else blocked_charging
-        )
-        new_blocked_discharging = (
-            sorted(blocked_discharging + [hour])
-            if hour not in blocked_discharging
-            else blocked_discharging
-        )
-        return charge, new_discharge, pv_charge, new_blocked_charging, new_blocked_discharging, False
-
-    if hour in blocked_charging or hour in blocked_discharging:
-        # blocked → idle
-        new_blocked_charging = [h for h in blocked_charging if h != hour]
-        new_blocked_discharging = [h for h in blocked_discharging if h != hour]
-        return charge, discharge, pv_charge, new_blocked_charging, new_blocked_discharging, False
-
-    # idle → charge
-    return sort_slots(charge + [slot]), discharge, pv_charge, blocked_charging, blocked_discharging, False
-
-
-def set_hour_action(
-    hour: int,
-    action: str,
-    date_str: str | None,
-    charge: list[ScheduleSlot],
-    discharge: list[ScheduleSlot],
-    pv_charge: list[ScheduleSlot],
-    blocked_charging: list[int],
-    blocked_discharging: list[int],
-) -> tuple[
-    list[ScheduleSlot],
-    list[ScheduleSlot],
-    list[ScheduleSlot],
-    list[int],
-    list[int],
-    bool,
-]:
-    """Set a specific (date, hour) to one of the supported actions.
-
-    The recurring ``blocked_charging_hours`` / ``blocked_discharging_hours``
-    lists are preserved across non-BLOCKED actions so that a per-day
-    override (e.g. picked from the plan card for a blocked bar) only
-    applies to ``(date_str, hour)`` while the same hour on future days
-    stays blocked. Returns the new lists and a no-op flag.
-    """
-    if hour < 0 or hour > 23:
-        return charge, discharge, pv_charge, blocked_charging, blocked_discharging, True
-    if date_str is None:
-        date_str = today_str()
-    if not valid_slot(date_str, hour):
-        return charge, discharge, pv_charge, blocked_charging, blocked_discharging, True
-
-    slot: ScheduleSlot = (date_str, hour)
-
-    # Remove from date-specific lists.
-    new_charge = [s for s in charge if s != slot]
-    new_discharge = [s for s in discharge if s != slot]
-    new_pv_charge = [s for s in pv_charge if s != slot]
-
-    # Add to the right list.
+    targets = hour_intervals(date_str, hour, list(source))
+    charge, discharge, pv_charge = (subtract_slots(slots, targets) for slots in (charge, discharge, pv_charge))
     if action == ACTION_CHARGE:
-        new_charge = sort_slots(new_charge + [slot])
+        charge = sort_slots(charge + targets)
     elif action == ACTION_PV_CHARGE:
-        new_pv_charge = sort_slots(new_pv_charge + [slot])
+        pv_charge = sort_slots(pv_charge + targets)
     elif action == ACTION_DISCHARGE:
-        new_discharge = sort_slots(new_discharge + [slot])
+        discharge = sort_slots(discharge + targets)
     elif action == ACTION_BLOCKED:
-        if hour not in blocked_charging:
-            blocked_charging = sorted(blocked_charging + [hour])
-        if hour not in blocked_discharging:
-            blocked_discharging = sorted(blocked_discharging + [hour])
-
-    return new_charge, new_discharge, new_pv_charge, blocked_charging, blocked_discharging, False
+        blocked_charging = sorted(set(blocked_charging + [hour]))
+        blocked_discharging = sorted(set(blocked_discharging + [hour]))
+    return charge, discharge, pv_charge, blocked_charging, blocked_discharging, False
 
 
-def clear_all() -> tuple[
-    list[ScheduleSlot],
-    list[ScheduleSlot],
-    list[ScheduleSlot],
-    list[int],
-    list[int],
-]:
-    """Return empty lists for every schedule slot and blocked hour bucket."""
+def toggle_hour(hour, date_str, charge, discharge, pv_charge,
+                blocked_charging, blocked_discharging, source=()):
+    date_str = date_str or today_str()
+    targets = local_hour_slots(date_str, hour)
+    if not targets:
+        return charge, discharge, pv_charge, blocked_charging, blocked_discharging, True
+    def contains(slots):
+        return any(overlaps(slot, target) for slot in slots for target in targets)
+    if contains(charge):
+        action = ACTION_PV_CHARGE
+    elif contains(pv_charge):
+        action = ACTION_DISCHARGE
+    elif contains(discharge):
+        action = ACTION_BLOCKED
+    elif hour in blocked_charging or hour in blocked_discharging:
+        action = "idle"
+        blocked_charging = [h for h in blocked_charging if h != hour]
+        blocked_discharging = [h for h in blocked_discharging if h != hour]
+    else:
+        action = ACTION_CHARGE
+    return set_hour_action(hour, action, date_str, charge, discharge, pv_charge,
+                           blocked_charging, blocked_discharging, source)
+
+
+def clear_all():
     return [], [], [], [], []
 
 
@@ -266,53 +208,16 @@ def normalize_fixed_plan(plan: Any) -> dict[str, Any]:
     return normalized
 
 
-def apply_fixed_plan(
-    charge: list[ScheduleSlot],
-    discharge: list[ScheduleSlot],
-    pv_charge: list[ScheduleSlot],
-    fixed_plan: dict[str, Any] | None,
-    dates: list[str],
-) -> tuple[list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot], list[ScheduleSlot]]:
-    """Merge fixed-plan hours on top of existing slot lists (fixed wins).
-
-    A fixed plan holds recurring hour-of-day values per action bucket.
-    Each bucket is expanded to ``(date, hour)`` slots for every date in
-    ``dates`` and merged into the matching list, where the fixed plan
-    wins: the hour is removed from the other two lists first (extend +
-    overwrite semantics). When the same hour appears in several buckets
-    of the fixed plan itself, precedence is pv_charge > charge >
-    discharge (matching the plan display and decision engine).
-
-    Returns ``(charge, discharge, pv_charge, applied)`` where ``applied``
-    is the sorted list of every ``(date, hour)`` slot written by this
-    call — the caller keeps it to retract the merge cleanly later.
-    """
+def apply_fixed_plan(charge, discharge, pv_charge, fixed_plan, dates, source=()):
+    """Overlay recurring local hours on source intervals; preserve PV precedence."""
     normalized = normalize_fixed_plan(fixed_plan)
-
-    # One action per hour within the plan: build an action map so later
-    # (higher-precedence) buckets overwrite earlier ones.
-    action_map: dict[ScheduleSlot, str] = {}
+    applied = []
     for date_str in dates:
-        for hour in normalized["discharge_hours"]:
-            action_map[(date_str, hour)] = ACTION_DISCHARGE
-        for hour in normalized["charge_hours"]:
-            action_map[(date_str, hour)] = ACTION_CHARGE
-        for hour in normalized["pv_charge_hours"]:
-            action_map[(date_str, hour)] = ACTION_PV_CHARGE
-
-    applied = sorted(action_map)
-    applied_set = set(applied)
-    expanded_charge = sorted(s for s, a in action_map.items() if a == ACTION_CHARGE)
-    expanded_discharge = sorted(s for s, a in action_map.items() if a == ACTION_DISCHARGE)
-    expanded_pv = sorted(s for s, a in action_map.items() if a == ACTION_PV_CHARGE)
-
-    new_charge = sort_slots([s for s in charge if s not in applied_set] + expanded_charge)
-    new_discharge = sort_slots([s for s in discharge if s not in applied_set] + expanded_discharge)
-    new_pv_charge = sort_slots([s for s in pv_charge if s not in applied_set] + expanded_pv)
-    return new_charge, new_discharge, new_pv_charge, applied
-
-
-def _now() -> datetime:
-    from homeassistant.util import dt as dt_util
-
-    return dt_util.now()
+        for bucket, action in (("discharge_hours", ACTION_DISCHARGE),
+                               ("charge_hours", ACTION_CHARGE),
+                               ("pv_charge_hours", ACTION_PV_CHARGE)):
+            for hour in normalized[bucket]:
+                charge, discharge, pv_charge, _, _, _ = set_hour_action(
+                    hour, action, date_str, charge, discharge, pv_charge, [], [], source)
+                applied.extend(hour_intervals(date_str, hour, list(source)))
+    return charge, discharge, pv_charge, sort_slots(applied)

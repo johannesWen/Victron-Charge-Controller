@@ -9,6 +9,7 @@ from homeassistant.components.number import NumberEntity, NumberEntityDescriptio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfPower
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -35,6 +36,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import VictronChargeControlCoordinator
+from .planning import valid_duration
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -154,7 +156,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:clock-fast",
         native_min_value=0,
         native_max_value=12,
-        native_step=1,
+        native_step=0.25,
         coordinator_attr="cheapest_hours",
         default_value=DEFAULT_CHEAPEST_HOURS,
     ),
@@ -164,7 +166,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:clock-alert",
         native_min_value=0,
         native_max_value=12,
-        native_step=1,
+        native_step=0.25,
         coordinator_attr="expensive_hours",
         default_value=DEFAULT_EXPENSIVE_HOURS,
     ),
@@ -282,11 +284,9 @@ class VictronCCNumber(CoordinatorEntity[VictronChargeControlCoordinator], Number
     async def async_set_native_value(self, value: float) -> None:
         """Update the coordinator attribute and trigger refresh."""
         attr = self.entity_description.coordinator_attr
-        # Use int for hour counts
-        if attr in ("cheapest_hours", "expensive_hours"):
-            setattr(self.coordinator, attr, int(value))
-        else:
-            setattr(self.coordinator, attr, value)
+        if attr in ("cheapest_hours", "expensive_hours") and not valid_duration(value):
+            raise ServiceValidationError("Duration must be finite, between 0 and 12 hours, in 0.25-hour increments")
+        setattr(self.coordinator, attr, value)
 
         # Recalculate schedule if auto-mode params changed
         if attr in (
@@ -308,9 +308,8 @@ class VictronCCNumber(CoordinatorEntity[VictronChargeControlCoordinator], Number
             try:
                 value = float(last_state.state)
                 attr = self.entity_description.coordinator_attr
-                if attr in ("cheapest_hours", "expensive_hours"):
-                    setattr(self.coordinator, attr, int(value))
-                else:
-                    setattr(self.coordinator, attr, value)
+                if attr in ("cheapest_hours", "expensive_hours") and not valid_duration(value):
+                    return
+                setattr(self.coordinator, attr, value)
             except (ValueError, TypeError):
                 pass

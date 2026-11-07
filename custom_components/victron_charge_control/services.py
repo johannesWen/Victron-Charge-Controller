@@ -23,6 +23,7 @@ from .coordinator import VictronChargeControlCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_TOGGLE_HOUR = "toggle_hour"
+SERVICE_SET_SLOT_ACTION = "set_slot_action"
 SERVICE_SET_HOUR_ACTION = "set_hour_action"
 SERVICE_SET_BLOCKED_CHARGING_HOURS = "set_blocked_charging_hours"
 SERVICE_SET_BLOCKED_DISCHARGING_HOURS = "set_blocked_discharging_hours"
@@ -45,6 +46,13 @@ SCHEMA_SET_HOUR_ACTION = vol.Schema(
         vol.Required("hour"): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
         vol.Required("action"): vol.In([ACTION_IDLE, ACTION_CHARGE, ACTION_PV_CHARGE, ACTION_DISCHARGE, ACTION_BLOCKED]),
         vol.Optional("date"): cv.string,
+    }
+)
+
+SCHEMA_SET_SLOT_ACTION = vol.Schema(
+    {
+        vol.Required("start_time"): cv.string,
+        vol.Required("action"): vol.In([ACTION_IDLE, ACTION_CHARGE, ACTION_PV_CHARGE, ACTION_DISCHARGE]),
     }
 )
 
@@ -112,6 +120,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             return
         coordinator.set_hour_action(call.data["hour"], call.data["action"], call.data.get("date"))
 
+    async def handle_set_slot_action(call: ServiceCall) -> None:
+        from homeassistant.exceptions import ServiceValidationError
+
+        coordinator = _get_coordinator(hass)
+        if coordinator is None:
+            raise ServiceValidationError("No Victron Charge Control instance found")
+        coordinator.set_slot_action(call.data["start_time"], call.data["action"])
+
     async def handle_set_blocked_charging_hours(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass)
         if coordinator is None:
@@ -172,6 +188,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         coordinator.clear_schedule()
 
     hass.services.async_register(
+        DOMAIN, SERVICE_SET_SLOT_ACTION, handle_set_slot_action, schema=SCHEMA_SET_SLOT_ACTION
+    )
+    hass.services.async_register(
         DOMAIN, SERVICE_TOGGLE_HOUR, handle_toggle_hour, schema=SCHEMA_TOGGLE_HOUR
     )
     hass.services.async_register(
@@ -223,6 +242,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
 async def async_unload_services(hass: HomeAssistant) -> None:
     """Unload services."""
+    hass.services.async_remove(DOMAIN, SERVICE_SET_SLOT_ACTION)
     hass.services.async_remove(DOMAIN, SERVICE_TOGGLE_HOUR)
     hass.services.async_remove(DOMAIN, SERVICE_SET_HOUR_ACTION)
     hass.services.async_remove(DOMAIN, SERVICE_SET_BLOCKED_CHARGING_HOURS)
