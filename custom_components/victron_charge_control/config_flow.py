@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import voluptuous as vol
@@ -25,11 +26,15 @@ from .const import (
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
+    CONF_IDLE_SETPOINT_LIMIT,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_MAX_DISCHARGE_POWER_ENTITY,
+    CONF_POWER_LIMIT,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_USE_SOLCAST_FORECAST,
+    DEFAULT_IDLE_SETPOINT_LIMIT,
+    DEFAULT_POWER_LIMIT,
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
 )
@@ -230,12 +235,34 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
         if user_input is not None:
             errors = _validate_entities(self.hass, user_input)
 
+            limits = {}
+            for key, default, minimum in (
+                (CONF_POWER_LIMIT, DEFAULT_POWER_LIMIT, 1),
+                (CONF_IDLE_SETPOINT_LIMIT, DEFAULT_IDLE_SETPOINT_LIMIT, 0),
+            ):
+                raw_value = user_input.get(key, self._config_entry.options.get(key, default))
+                try:
+                    value = float(raw_value)
+                    if (
+                        isinstance(raw_value, bool)
+                        or not math.isfinite(value)
+                        or not value.is_integer()
+                        or value < minimum
+                    ):
+                        raise ValueError
+                    limits[key] = int(value)
+                except (ValueError, TypeError, OverflowError):
+                    errors[key] = f"invalid_{key}"
+
             if not errors:
                 # Keep user options separate from entity references.
                 data_update = {
                     key: value
                     for key, value in user_input.items()
-                    if key not in (CONF_SAFETY_STARTUP_GRACE_SECONDS, CONF_USE_SOLCAST_FORECAST)
+                    if key not in (
+                        CONF_SAFETY_STARTUP_GRACE_SECONDS, CONF_USE_SOLCAST_FORECAST,
+                        CONF_POWER_LIMIT, CONF_IDLE_SETPOINT_LIMIT,
+                    )
                 }
                 # Cleared optional selectors are omitted from the submitted form.
                 current_data = {
@@ -245,6 +272,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 }
                 options = {
                     **self._config_entry.options,
+                    **limits,
                     CONF_USE_SOLCAST_FORECAST: user_input.get(
                         CONF_USE_SOLCAST_FORECAST,
                         self._config_entry.options.get(CONF_USE_SOLCAST_FORECAST, True),
@@ -344,6 +372,24 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     description={"suggested_value": current.get(CONF_DC_COUPLED_PV_FEED_IN_ENTITY)},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="switch"),
+                ),
+                vol.Optional(
+                    CONF_POWER_LIMIT,
+                    default=current_options.get(CONF_POWER_LIMIT, DEFAULT_POWER_LIMIT),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, step=1, unit_of_measurement="W",
+                        mode=selector.NumberSelectorMode.BOX,
+                    ),
+                ),
+                vol.Optional(
+                    CONF_IDLE_SETPOINT_LIMIT,
+                    default=current_options.get(CONF_IDLE_SETPOINT_LIMIT, DEFAULT_IDLE_SETPOINT_LIMIT),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, step=1, unit_of_measurement="W",
+                        mode=selector.NumberSelectorMode.BOX,
+                    ),
                 ),
                 vol.Optional(
                     CONF_USE_SOLCAST_FORECAST,

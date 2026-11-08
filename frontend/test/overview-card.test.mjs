@@ -789,3 +789,33 @@ for (const mode of ['on', 'off']) for (const type of ['charge', 'discharge']) {
     assert.equal(calls.length, 0);
   });
 }
+
+test('configured power and idle ranges reach Settings sliders and their help after reload', () => {
+  const { card, templates, states, prefix } = setup();
+  card.setConfig({ ...card.config, view: 'settings' });
+  states[`switch.${prefix}_grid_feed_in_control`] = { state: 'on', attributes: {} };
+  const settings = [
+    ['charge_power', 'Charge Power'], ['discharge_power', 'Discharge Power'],
+    ['min_grid_setpoint', 'Min Grid Setpoint'], ['max_grid_setpoint', 'Max Grid Setpoint'],
+    ['default_max_grid_feed_in', 'Default Max Feed-in'],
+    ['reduced_max_grid_feed_in', 'Reduced Max Feed-in'], ['idle_setpoint', 'Idle Setpoint'],
+  ];
+  for (const [power, idle] of [[27000, 1700], [1201, 0]]) {
+    for (const [key, label] of settings) {
+      const min = key === 'idle_setpoint' ? -idle : key === 'min_grid_setpoint' ? -power : 0;
+      const max = key === 'idle_setpoint' ? idle : key === 'min_grid_setpoint' ? 0 : power;
+      const step = key === 'idle_setpoint' ? 10 : 100;
+      states[`number.${prefix}_${key}`] = { state: '0', attributes: { min, max, step } };
+      templates.length = 0;
+      card.render();
+      const slider = ranges(templates).find(node => binding(node, 'aria-label') === label);
+      for (const [name, value] of Object.entries({ min, max, step })) assert.equal(binding(slider, name), value);
+      card._helpOpen = true;
+      card._helpTopic = { key, label, unit: ' W' };
+      const help = card._renderHelpDialog('settings', 'Settings');
+      for (const [name, value] of [['Minimum', min], ['Maximum', max], ['Step', step]]) {
+        assert.ok(help.includes(`<dt>${name}</dt><dd>${value} W</dd>`), `${key} ${name}`);
+      }
+    }
+  }
+});

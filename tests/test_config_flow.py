@@ -27,10 +27,14 @@ from custom_components.victron_charge_control.const import (
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
+    CONF_IDLE_SETPOINT_LIMIT,
     CONF_MAX_GRID_FEED_IN_ENTITY,
+    CONF_POWER_LIMIT,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_USE_SOLCAST_FORECAST,
+    DEFAULT_IDLE_SETPOINT_LIMIT,
+    DEFAULT_POWER_LIMIT,
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
 )
@@ -84,6 +88,8 @@ async def test_ram_recovery_reloads_once_after_saving(flow_hass, mock_store, rou
     hass, coordinator = flow_hass
     data = {**MOCK_CONFIG_DATA, "custom_setting": 123}
     options = {
+        CONF_POWER_LIMIT: 27000,
+        CONF_IDLE_SETPOINT_LIMIT: 1250,
         CONF_USE_SOLCAST_FORECAST: True,
         CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
         "custom_option": "preserved",
@@ -115,7 +121,11 @@ async def test_ram_recovery_reloads_once_after_saving(flow_hass, mock_store, rou
         hass.states.async_set("sensor.new_soc", "50")
     if route == "options":
         submitted[CONF_SAFETY_STARTUP_GRACE_SECONDS] = 90 if scenario == "loaded" else 45
+        if scenario == "loaded":
+            submitted.update({CONF_POWER_LIMIT: 1200, CONF_IDLE_SETPOINT_LIMIT: 0})
         saved_options |= {
+            CONF_POWER_LIMIT: submitted.get(CONF_POWER_LIMIT, saved_options.get(CONF_POWER_LIMIT, DEFAULT_POWER_LIMIT)),
+            CONF_IDLE_SETPOINT_LIMIT: submitted.get(CONF_IDLE_SETPOINT_LIMIT, saved_options.get(CONF_IDLE_SETPOINT_LIMIT, DEFAULT_IDLE_SETPOINT_LIMIT)),
             CONF_USE_SOLCAST_FORECAST: True,
             CONF_SAFETY_STARTUP_GRACE_SECONDS: submitted[CONF_SAFETY_STARTUP_GRACE_SECONDS],
         }
@@ -156,6 +166,31 @@ async def test_ram_recovery_reloads_once_after_saving(flow_hass, mock_store, rou
     assert observed == [(expected_data, saved_options)]
     assert mock_store._data == {"charge_hours": [{"date": "2026-10-30", "hour": 12}]}
     assert not mock_store.save_calls
+
+
+@pytest.mark.parametrize("key", [CONF_POWER_LIMIT, CONF_IDLE_SETPOINT_LIMIT])
+@pytest.mark.parametrize("value", [1.5, float("nan"), float("inf")])
+async def test_power_limit_validation_in_real_options_flow(flow_hass, key, value):
+    hass, _coordinator = flow_hass
+    entry = ConfigEntry(
+        domain=DOMAIN, title="Victron Charge Control", data=MOCK_CONFIG_DATA,
+        options={CONF_POWER_LIMIT: 27000, CONF_IDLE_SETPOINT_LIMIT: 1700},
+        version=1, minor_version=1, source="user", unique_id=DOMAIN,
+        discovery_keys=MappingProxyType({}), subentries_data=None,
+    )
+    await hass.config_entries.async_add(entry)
+    manager = hass.config_entries.options
+    result = await manager.async_init(entry.entry_id)
+    with patch.object(hass.config_entries, "async_reload", wraps=hass.config_entries.async_reload) as reload:
+        result = await manager.async_configure(
+            result["flow_id"], {**MOCK_CONFIG_DATA, key: value},
+        )
+        assert result["type"] == "form"
+        assert result["errors"] == {key: f"invalid_{key}"}
+        assert entry.options == {CONF_POWER_LIMIT: 27000, CONF_IDLE_SETPOINT_LIMIT: 1700}
+        assert entry.data == MOCK_CONFIG_DATA
+        await hass.async_block_till_done()
+        reload.assert_not_called()
 
 
 class TestConfigFlow:
@@ -423,6 +458,8 @@ class TestOptionsFlow:
         }
         assert saved == {**expected, "unrelated_setting": "preserved"}
         assert options_flow.async_create_entry.call_args.kwargs["data"] == {
+            CONF_POWER_LIMIT: DEFAULT_POWER_LIMIT,
+            CONF_IDLE_SETPOINT_LIMIT: DEFAULT_IDLE_SETPOINT_LIMIT,
             CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
             CONF_USE_SOLCAST_FORECAST: True,
         }
@@ -457,6 +494,8 @@ class TestOptionsFlow:
 
         assert options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"] == MOCK_CONFIG_DATA
         assert options_flow.async_create_entry.call_args.kwargs["data"] == {
+            CONF_POWER_LIMIT: DEFAULT_POWER_LIMIT,
+            CONF_IDLE_SETPOINT_LIMIT: DEFAULT_IDLE_SETPOINT_LIMIT,
             CONF_SAFETY_STARTUP_GRACE_SECONDS: 45,
             CONF_USE_SOLCAST_FORECAST: enabled,
             "unrelated_option": "preserved",
@@ -471,6 +510,63 @@ class TestOptionsFlow:
         await options_flow.async_step_init({**MOCK_CONFIG_DATA, CONF_USE_SOLCAST_FORECAST: False})
         schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
         assert schema(MOCK_CONFIG_DATA)[CONF_USE_SOLCAST_FORECAST] is False
+
+    @pytest.mark.parametrize("power,idle", [(1, 0), (1201, 7), (15000, 500), (27000, 1250), (1000000, 1000001)])
+    async def test_power_limit_options(self, options_flow, power, idle):
+        options_flow._config_entry.options = {
+            CONF_POWER_LIMIT: power, CONF_IDLE_SETPOINT_LIMIT: idle,
+            "unrelated_option": "preserved",
+        }
+        await options_flow.async_step_init()
+        schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        prefilled = schema(MOCK_CONFIG_DATA)
+        assert prefilled[CONF_POWER_LIMIT] == power
+        assert prefilled[CONF_IDLE_SETPOINT_LIMIT] == idle
+        for key in (CONF_POWER_LIMIT, CONF_IDLE_SETPOINT_LIMIT):
+            assert schema.schema[key].config["step"] == 1
+            assert schema.schema[key].config.get("max") is None
+
+        await options_flow.async_step_init(prefilled)
+        saved = options_flow.hass.config_entries.async_update_entry.call_args.kwargs
+        assert saved["data"] == MOCK_CONFIG_DATA
+        assert saved["options"][CONF_POWER_LIMIT] == power
+        assert saved["options"][CONF_IDLE_SETPOINT_LIMIT] == idle
+        assert saved["options"]["unrelated_option"] == "preserved"
+        options_flow.hass.config_entries.async_schedule_reload.assert_called_once()
+
+    async def test_power_limit_defaults_and_error_redisplay(self, options_flow):
+        await options_flow.async_step_init()
+        schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        assert schema(MOCK_CONFIG_DATA)[CONF_POWER_LIMIT] == DEFAULT_POWER_LIMIT
+        assert schema(MOCK_CONFIG_DATA)[CONF_IDLE_SETPOINT_LIMIT] == DEFAULT_IDLE_SETPOINT_LIMIT
+        options_flow.hass.states.get.return_value = None
+        await options_flow.async_step_init({
+            **MOCK_CONFIG_DATA, CONF_POWER_LIMIT: 27000, CONF_IDLE_SETPOINT_LIMIT: 1250,
+        })
+        schema = options_flow.async_show_form.call_args.kwargs["data_schema"]
+        assert schema(MOCK_CONFIG_DATA)[CONF_POWER_LIMIT] == 27000
+        assert schema(MOCK_CONFIG_DATA)[CONF_IDLE_SETPOINT_LIMIT] == 1250
+        options_flow.hass.config_entries.async_update_entry.assert_not_called()
+        options_flow.hass.config_entries.async_schedule_reload.assert_not_called()
+
+    @pytest.mark.parametrize("key", [CONF_POWER_LIMIT, CONF_IDLE_SETPOINT_LIMIT])
+    @pytest.mark.parametrize("value", [-1, 1.5, "nan", "inf", "-inf", "bad", None, True])
+    async def test_invalid_power_limit(self, options_flow, key, value):
+        await options_flow.async_step_init({**MOCK_CONFIG_DATA, key: value})
+        form = options_flow.async_show_form.call_args.kwargs
+        assert form["errors"] == {key: f"invalid_{key}"}
+        field = next(field for field in form["data_schema"].schema if field == key)
+        assert field.default() == value
+        options_flow.hass.config_entries.async_update_entry.assert_not_called()
+        options_flow.hass.config_entries.async_schedule_reload.assert_not_called()
+        options_flow.async_create_entry.assert_not_called()
+
+    async def test_zero_power_limit_rejected(self, options_flow):
+        await options_flow.async_step_init({**MOCK_CONFIG_DATA, CONF_POWER_LIMIT: 0})
+        assert options_flow.async_show_form.call_args.kwargs["errors"] == {
+            CONF_POWER_LIMIT: "invalid_power_limit",
+        }
+        options_flow.hass.config_entries.async_update_entry.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
