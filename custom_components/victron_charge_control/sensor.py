@@ -640,12 +640,17 @@ class ChargePlanSensor(VictronCCBaseSensor):
         data: ChargeControlData | None = self.coordinator.data
         if data is None:
             self._attr_native_value = "unknown"
-            self._attr_extra_state_attributes = {"plan": [], "time_zone": self.coordinator.hass.config.time_zone}
+            self._attr_extra_state_attributes = {
+                "plan": [], "time_zone": self.coordinator.hass.config.time_zone,
+                "price_reference_min": None, "price_reference_max": None,
+            }
         else:
             self._attr_native_value = self._plan_summary(data)
             self._attr_extra_state_attributes = {
                 "plan": self._build_plan(data),
                 "time_zone": self.coordinator.hass.config.time_zone,
+                "price_reference_min": data.price_reference_min,
+                "price_reference_max": data.price_reference_max,
                 "charge_hours": data.charge_hours,
                 "discharge_hours": data.discharge_hours,
                 "pv_charge_hours": data.pv_charge_hours,

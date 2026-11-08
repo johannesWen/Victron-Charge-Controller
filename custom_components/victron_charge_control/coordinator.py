@@ -91,6 +91,7 @@ from .epex import (
     normalize_price_eur_per_kwh,
     normalize_price_intervals,
     parse_epex_start_time,
+    price_reference_bounds,
     price_timeline,
 )
 from .schedule import (
@@ -160,6 +161,8 @@ class EpexPriceView:
     attributes: dict[str, Any]
     prices_today: list[dict[str, Any]]
     prices_tomorrow: list[dict[str, Any]]
+    price_reference_min: float | None = None
+    price_reference_max: float | None = None
 
 
 @dataclass
@@ -177,6 +180,8 @@ class ChargeControlData:
     fixed_plans: dict[int, dict[str, Any]] = field(default_factory=dict)
     active_fixed_plan: int | None = None
     current_price: float | None = None
+    price_reference_min: float | None = None
+    price_reference_max: float | None = None
     epex_attributes: dict[str, Any] = field(default_factory=dict)
     prices_today: list[dict[str, Any]] = field(default_factory=list)
     prices_tomorrow: list[dict[str, Any]] = field(default_factory=list)
@@ -295,6 +300,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self.expensive_hours: float = DEFAULT_EXPENSIVE_HOURS
         self.charge_price_threshold: float = DEFAULT_CHARGE_PRICE_THRESHOLD
         self.discharge_price_threshold: float = DEFAULT_DISCHARGE_PRICE_THRESHOLD
+        self.relative_auto_mode: bool = False
         self.setpoint_deadband: float = DEFAULT_DEADBAND
         self.pv_charge_share: float = DEFAULT_PV_CHARGE_SHARE
 
@@ -1558,6 +1564,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             expensive_hours=self.expensive_hours,
             charge_price_threshold=self.charge_price_threshold,
             discharge_price_threshold=self.discharge_price_threshold,
+            relative_auto_mode=self.relative_auto_mode,
             blocked_charging_hours=self._blocked_charging_hours,
             blocked_discharging_hours=self._blocked_discharging_hours,
             pv_charge_hours=pv_charge,
@@ -2309,6 +2316,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             )
         intervals = normalize_price_intervals(epex_attributes)
         now = dt_util.now()
+        reference_min, reference_max = price_reference_bounds(intervals, now)
         schedule = self._charge_hours + self._discharge_hours + self._pv_charge_hours
         prices_today = price_timeline(intervals, now.date().isoformat(), schedule)
         prices_tomorrow = price_timeline(intervals, (now + timedelta(days=1)).date().isoformat(), schedule)
@@ -2318,6 +2326,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             attributes=epex_attributes,
             prices_today=prices_today,
             prices_tomorrow=prices_tomorrow,
+            price_reference_min=reference_min,
+            price_reference_max=reference_max,
         )
 
     def _build_snapshot(
@@ -2362,6 +2372,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             },
             active_fixed_plan=self._active_fixed_plan,
             current_price=price_view.current_price,
+            price_reference_min=price_view.price_reference_min,
+            price_reference_max=price_view.price_reference_max,
             epex_attributes=price_view.attributes,
             prices_today=price_view.prices_today,
             prices_tomorrow=price_view.prices_tomorrow,

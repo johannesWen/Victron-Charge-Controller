@@ -600,7 +600,7 @@ class TestVictronCCSwitch:
     """Tests for the toggle switch entities."""
 
     def test_switch_descriptions_count(self):
-        assert len(SWITCHES) == 7
+        assert len(SWITCHES) == 8
 
     def test_is_on(self, coordinator):
         entry = MockConfigEntry()
@@ -608,6 +608,40 @@ class TestVictronCCSwitch:
         switch = VictronCCSwitch(coordinator, entry, desc)
         coordinator.charge_allowed = True
         assert switch.is_on is True
+
+    @pytest.mark.parametrize("mode", CONTROL_MODES)
+    @pytest.mark.parametrize("enabled", [False, True])
+    async def test_relative_toggle_replans_before_refresh_only_in_auto(self, coordinator, mode, enabled):
+        desc = next(item for item in SWITCHES if item.key == "relative_auto_mode")
+        switch = VictronCCSwitch(coordinator, MockConfigEntry(), desc)
+        assert not switch.is_on
+        assert not desc.default_value
+        assert desc.translation_key == "relative_auto_mode"
+        assert switch.unique_id.endswith("_relative_auto_mode")
+        coordinator.control_mode = mode
+        coordinator.relative_auto_mode = not enabled
+        calls = []
+        coordinator.calculate_auto_schedule = MagicMock(side_effect=lambda: calls.append(("plan", switch.is_on)))
+        coordinator.async_request_refresh = AsyncMock(side_effect=lambda: calls.append(("refresh", switch.is_on)))
+        switch.async_write_ha_state = MagicMock()
+        await (switch.async_turn_on() if enabled else switch.async_turn_off())
+        expected = [("plan", enabled)] if mode == MODE_AUTO else []
+        assert calls == expected + [("refresh", enabled)]
+        assert switch.is_on == enabled
+
+    @pytest.mark.parametrize("state,expected", [("on", True), ("off", False), ("unavailable", False), (None, False)])
+    async def test_relative_restore_never_replans_or_refreshes(self, coordinator, state, expected):
+        desc = next(item for item in SWITCHES if item.key == "relative_auto_mode")
+        switch = VictronCCSwitch(coordinator, MockConfigEntry(), desc)
+        switch.async_get_last_state = AsyncMock(return_value=SimpleNamespace(state=state) if state else None)
+        coordinator.control_mode = MODE_AUTO
+        coordinator.calculate_auto_schedule = MagicMock()
+        coordinator.async_request_refresh = AsyncMock()
+        with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", new=AsyncMock()):
+            await switch.async_added_to_hass()
+        assert switch.is_on == expected
+        coordinator.calculate_auto_schedule.assert_not_called()
+        coordinator.async_request_refresh.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_turn_on(self, coordinator):

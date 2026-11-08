@@ -2969,8 +2969,9 @@ class TestAsyncSetupNoReplan:
     """async_setup must NOT auto-replan on restart."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("relative", [False, True])
     async def test_setup_does_not_replan_in_auto_mode(
-        self, mock_hass, mock_config_entry, mock_store
+        self, mock_hass, mock_config_entry, mock_store, relative
     ):
         """The previous auto-replan block must be gone: a restart in
         auto mode does not call calculate_auto_schedule, and the
@@ -2992,8 +2993,14 @@ class TestAsyncSetupNoReplan:
 
         coord = VictronChargeControlCoordinator(mock_hass, mock_config_entry)
         coord.control_mode = MODE_AUTO  # restored by RestoreEntity
+        from custom_components.victron_charge_control.switch import SWITCHES, VictronCCSwitch
+        desc = next(item for item in SWITCHES if item.key == "relative_auto_mode")
+        switch = VictronCCSwitch(coord, mock_config_entry, desc)
+        switch.async_get_last_state = AsyncMock(return_value=MockState("on" if relative else "off"))
         coord.calculate_auto_schedule = MagicMock()
         coord.async_request_refresh = AsyncMock()
+        with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", new=AsyncMock()):
+            await switch.async_added_to_hass()
 
         # Stub the time/state listeners so async_setup can run cleanly
         with patch(
@@ -3005,6 +3012,8 @@ class TestAsyncSetupNoReplan:
 
         # The auto-replan must NOT have been called
         coord.calculate_auto_schedule.assert_not_called()
+        assert coord.relative_auto_mode == relative
+        assert mock_store.save_calls == []
 
         # The Store was loaded and applied
         mock_store.async_load.assert_awaited()
