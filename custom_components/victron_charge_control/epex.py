@@ -156,6 +156,14 @@ class PriceInterval:
         return self.start, self.end
 
 
+def price_reference_bounds(
+    intervals: list[PriceInterval], now: datetime,
+) -> tuple[float | None, float | None]:
+    """Return ct/kWh extrema across all current/future normalized source periods."""
+    prices = [item.price for item in intervals if item.end > now.astimezone(timezone.utc)]
+    return min(prices, default=None), max(prices, default=None)
+
+
 def normalize_price_intervals(attributes: dict[str, Any]) -> list[PriceInterval]:
     """Validate source periods without averaging prices or bridging missing data."""
     entries: list[tuple[datetime, datetime | None, float | None]] = []

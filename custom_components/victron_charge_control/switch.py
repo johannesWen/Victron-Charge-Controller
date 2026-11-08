@@ -14,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, MODE_AUTO
 from .coordinator import VictronChargeControlCoordinator
 
 
@@ -74,6 +74,13 @@ SWITCHES: tuple[VictronCCSwitchDescription, ...] = (
         translation_key="battery_power_control_enabled",
         icon="mdi:battery-sync",
         coordinator_attr="battery_power_control_enabled",
+        default_value=False,
+    ),
+    VictronCCSwitchDescription(
+        key="relative_auto_mode",
+        translation_key="relative_auto_mode",
+        icon="mdi:chart-bell-curve",
+        coordinator_attr="relative_auto_mode",
         default_value=False,
     ),
 )
@@ -159,12 +166,16 @@ class VictronCCSwitch(CoordinatorEntity[VictronChargeControlCoordinator], Switch
         ):
             raise ServiceValidationError("Configure a Max discharge power number entity first")
         setattr(self.coordinator, self.entity_description.coordinator_attr, True)
+        if self.entity_description.key == "relative_auto_mode" and self.coordinator.control_mode == MODE_AUTO:
+            self.coordinator.calculate_auto_schedule()
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable."""
         setattr(self.coordinator, self.entity_description.coordinator_attr, False)
+        if self.entity_description.key == "relative_auto_mode" and self.coordinator.control_mode == MODE_AUTO:
+            self.coordinator.calculate_auto_schedule()
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
 

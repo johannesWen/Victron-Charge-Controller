@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from datetime import timedelta, timezone
-from math import isfinite
+from math import isclose, isfinite
 from typing import Any
 
 from homeassistant.util import dt as dt_util
 
 from .const import MODE_AUTO
-from .epex import normalize_price_intervals
+from .epex import normalize_price_intervals, price_reference_bounds
 from .schedule import ScheduleSlot, overlaps, sort_slots
 
 
@@ -34,8 +34,9 @@ def calculate_auto_schedule(
     blocked_discharging_hours: list[int],
     pv_charge_hours: list[ScheduleSlot],
     now: Any,
+    relative_auto_mode: bool = False,
 ) -> tuple[list[ScheduleSlot], list[ScheduleSlot]] | None:
-    """Count full interval durations, including the current partial interval."""
+    """Select source periods by absolute budgets or relative price differences."""
     if control_mode != MODE_AUTO:
         return None
     state = hass.states.get(epex_spot_entity)
@@ -45,11 +46,15 @@ def calculate_auto_schedule(
               if item.end > now.astimezone(timezone.utc)]
     if not prices:
         return None
+    if relative_auto_mode:
+        minimum, maximum = price_reference_bounds(prices, now)
+        charge_price_threshold = maximum - charge_price_threshold
+        discharge_price_threshold = minimum + discharge_price_threshold
 
     def select(hours, blocked, threshold, discharge=False):
-        if not valid_duration(hours):
+        if not relative_auto_mode and not valid_duration(hours):
             return []
-        remaining = hours * 3600
+        remaining = float("inf") if relative_auto_mode else hours * 3600
         selected = []
         # Earliest instant breaks ties in either price direction.
         for item in sorted(prices, key=lambda item: (-item.price if discharge else item.price, item.start)):
@@ -61,7 +66,10 @@ def calculate_auto_schedule(
                 continue
             if any(overlaps(item.slot, pv) for pv in pv_charge_hours):
                 continue
-            if (item.price < threshold if discharge else item.price > threshold):
+            # Relative cutoff arithmetic can round an inclusive decimal boundary away.
+            if (item.price < threshold if discharge else item.price > threshold) and not (
+                relative_auto_mode and isclose(item.price, threshold, rel_tol=0, abs_tol=1e-9)
+            ):
                 continue
             selected.append(item.slot)
             remaining -= duration
@@ -69,4 +77,6 @@ def calculate_auto_schedule(
 
     charge = select(cheapest_hours, blocked_charging_hours, charge_price_threshold)
     discharge = select(expensive_hours, blocked_discharging_hours, discharge_price_threshold, True)
+    if relative_auto_mode:
+        return sort_slots(charge), sort_slots([slot for slot in discharge if slot not in charge])
     return sort_slots([slot for slot in charge if slot not in discharge]), sort_slots(discharge)

@@ -290,6 +290,9 @@
       },
       "battery_power_control_enabled": {
         "name": "Battery Power Control"
+      },
+      "relative_auto_mode": {
+        "name": "Relative Auto Mode"
       }
     },
     "text": {

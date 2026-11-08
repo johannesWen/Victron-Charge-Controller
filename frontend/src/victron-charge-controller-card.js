@@ -46,27 +46,24 @@ const HELP_TEXT = {
     ] },
   ],
   settings: [
-    { heading: 'Help for each input',
-      items: [
-        'Click a light-blue slider or switch name to read what it does and how it affects the controller. Slider help also shows its minimum, maximum and step size.',
-        'The question mark beside Mode explains all five modes. The question mark beside the action buttons explains Recalculate and Clear Schedule.',
-        'Click Charging, Discharging or Recalculation Hours above the hour chips for help with that group.',
-      ] },
-    { heading: 'Mode',
-      items: [
-        'Pick a control mode: Off, Auto, Manual, Force Charge or Force Discharge.',
-        'In Auto mode the controller decides based on price, PV surplus and SOC.',
-      ] },
-    { heading: 'Tuning',
-      items: [
-        'Adjust charge / discharge power, battery limits, grid setpoints and price thresholds.',
-        'Hold a slider knob to unlock continuous adjustment.',
-      ] },
-    { heading: 'Blocked hours',
-      items: [
-        'Tap an hour chip to toggle it on or off.',
-        'Changes apply every day until you clear them.',
-      ] },
+    { heading: 'Find help', items: [
+      'Click any underlined setting name to read what it does and see an example. The question marks beside Mode and the schedule buttons explain those choices.',
+      'Example: click Relative beside the switch to learn how a price difference changes the times Auto selects.',
+    ] },
+    { heading: 'Change a setting', items: [
+      'Press and hold a slider knob to unlock it, then move it to the value you want. Its help dialog shows the smallest value, largest value and step size.',
+      'Example: Charge Duration moves in 0.25-hour steps. A value of 1.5 h means 1 hour and 30 minutes.',
+      'Choose a mode to decide when the controller runs. Auto chooses times by price; Manual follows your choices in the Plan card. Battery level limits and permission switches still apply.',
+    ] },
+    { heading: 'Understand the numbers', items: [
+      'SOC means battery level: 50% is half full. PV means solar power. W and kW measure power; 1000 W is 1 kW. Prices are in cents per kilowatt-hour, written ct/kWh.',
+      'For grid power targets, positive numbers mean import and negative numbers mean export. Example: −1000 W asks to send 1 kW to the grid. A target is what the controller asks for; actual power can differ.',
+    ] },
+    { heading: 'Choose daily hours', items: [
+      'Click an hour to select it, or click it again to remove it. These choices repeat each day in the Home Assistant time zone.',
+      'Example: selecting 18 under blocked Charging hours stops Auto from choosing grid charging between 18:00 and 19:00. A manual choice, fixed plan or Force Charge can still use that hour.',
+      'Recalculation Hours choose when the plan is refreshed. In Manual mode, those updates clear your Charge and Discharge choices and apply any active fixed plan again.',
+    ] },
   ],
   plan: [
     { heading: 'Reading the chart',
@@ -75,6 +72,11 @@ const HELP_TEXT = {
         'Tap a Price bar to see price details for that period. The full day fits the card width. Hour blocks contain one hourly bar or four separate 15-minute columns.',
         'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
       ] },
+    { heading: 'Price cutoffs', items: [
+      'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charging wins overlaps and duration budgets are ignored, including zero; permissions and SOC protection still apply.',
+      'Both days use the same current/future reference prices from Charge Plan, including tomorrow or later and prices excluded by blocks or PV Charge. Lines are hidden when their reference is unavailable or outside the chart scale. Hold a line to drag its cutoff; this edits the corresponding delta in relative mode.',
+      'Lines reflect current selection cutoffs. Reference prices can refresh without changing the saved schedule; Recalculate and the existing Auto-setting and Recalculation Hours triggers apply the new selection. Switching Relative Auto Mode recalculates only in Auto; restoring it after restart preserves schedules.',
+    ] },
     { heading: 'PV forecast requirements',
       items: [
         'Install and configure the Solcast PV Solar Forecast integration in Home Assistant with your Solcast API key and rooftop sites. It must be loaded and have downloaded forecast data.',
@@ -115,7 +117,7 @@ const HELP_TEXT = {
       items: [
         [
           { text: 'Tap an hour', bold: true },
-          { text: ' in Price or PV forecast to open the action picker; right-click and hold also work. Keyboard users can focus an hour and press Enter or Space.' },
+          { text: ' in Price or PV forecast to show its information. Press and hold or right-click to open the action picker. Keyboard users can focus an hour and press Enter or Space.' },
         ],
         'All available intervals in that hour start selected. Deselect any quarters, then choose Idle, Charge, Discharge or PV Charge to override only the selection. Past intervals and missing prices are disabled. Hourly feeds retain one whole-hour choice.',
         'Use the Recalculate button to restore the automatic plan.',
@@ -144,135 +146,205 @@ const HELP_TEXT = {
   ],
 };
 
-// Settings help uses the UI entity keys, including their friendly-name suffixes.
+// Settings help uses UI entity keys, with separate topics for the two Auto modes.
 // Numeric limits are read from the same live entity attributes as the sliders.
 const SETTINGS_HELP = {
   control_mode: [
-    { heading: 'Off', items: ['Requests Idle and resets the grid target to the configured Idle Setpoint. It does not switch off the Victron system or prevent battery flows managed by Victron.'] },
-    { heading: 'Auto', items: ['Builds a price-based schedule from available current and future EPEX periods using the duration budgets, price thresholds and recurring blocks. An active fixed plan and individual period overrides can change that schedule. Permission switches and SOC protection still apply.'] },
-    { heading: 'Manual', items: ['Follows the hours you choose in the Plan card and any active fixed plan instead of selecting hours by price. Unscheduled hours use Idle. Permission switches and SOC protection still apply; selected Recalculation Hours reset manual charge/discharge slots.'] },
-    { heading: 'Force Charge', items: ['Requests grid charging at Charge Power without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Charge Allowed and obeys Max SOC, hysteresis and grid setpoint limits.'] },
-    { heading: 'Force Discharge', items: ['Requests discharge without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Discharge Allowed and obeys SOC protection, discharge stages and export limits.'] },
+    { heading: 'Off', items: ['Uses Idle Setpoint as the grid power target. It does not turn off your Victron system or stop battery use controlled by Victron.', 'Example: with Idle Setpoint at 0 W, the controller asks for no net grid import or export. This is a target, not a guarantee.'] },
+    { heading: 'Auto', items: ['Chooses charging and discharging times from the available electricity prices. Absolute mode uses your price limits and durations. Relative mode uses price differences and has no duration limit.', 'Example: set Charge Price Threshold to 10 ct/kWh and Charge Duration to 2 h. Auto chooses up to 2 hours of the cheapest available times at 10 ct/kWh or less.', 'Blocked hours are skipped. Your fixed plan or changes in the Plan card can replace the automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.'] },
+    { heading: 'Manual', items: ['Uses the times you choose in the Plan card and any active fixed plan. It does not choose times by price. Outside those times, it uses Idle Setpoint.', 'Example: choose Charge from 01:00 to 02:00 in the Plan card. Manual follows that choice if charging is allowed and the battery is below its limit.', 'Recalculation Hours clear your manual Charge and Discharge times and apply the active fixed plan again. Battery level limits and permission switches still apply.'] },
+    { heading: 'Force Charge', items: ['Requests charging now at Charge Power, without waiting for the schedule or a low price.', 'Example: use this when you want to charge before a trip, even if the current hour is blocked for automatic charging.', 'Charge Allowed must be on. Max SOC, the restart buffer and grid power limits still apply. Force Charge stays selected until you change the mode.'] },
+    { heading: 'Force Discharge', items: ['Requests discharging now, without waiting for the schedule or a high price.', 'Example: use this to request discharge during an hour that Auto did not select.', 'Discharge Allowed must be on. Battery level limits, the restart buffer and export limits still apply. At Min SOC, only spare solar power may be exported if a solar surplus sensor is configured. Force Discharge stays selected until you change the mode.'] },
+  ],
+  absolute_auto_mode: [
+    'Absolute is the default Auto setting, with the switch to the left. You set fixed price limits and how much time Auto may choose for charging and discharging.',
+    'Example: set Charge Price Threshold to 10 ct/kWh and Charge Duration to 2 h. Auto chooses up to 2 hours of the cheapest available periods at 10 ct/kWh or less. A price of exactly 10 is included.',
+    'For discharge, Auto chooses the highest prices at or above Discharge Price Threshold, up to Discharge Duration. Example: a threshold of 20 ct/kWh and duration of 1 h allows up to 1 hour at 20 ct/kWh or more.',
+    'Auto uses available prices from now onward, which can include more than one day. It selects whole price periods without going over each duration. A duration of 0 h selects no periods for that action. If both rules select the same period, discharge wins.',
+    'Blocked hours and PV Charge periods are skipped. Your fixed plan and choices in the Plan card can replace automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.',
+    'Returning from Relative restores your saved duration limits. The saved price values now mean fixed limits, so check them after switching. Changing the switch rebuilds the schedule only in Auto. After a restart, the saved mode and schedule return without rebuilding the schedule.',
+  ],
+  relative_auto_mode: [
+    'Relative is the Auto setting with the switch to the right. It compares each price with the highest and lowest available prices. You set a price delta, meaning a price difference in ct/kWh, instead of a fixed price limit.',
+    'Example: the highest price is 30 ct/kWh and Charge Price Delta is 10. Auto can charge at 20 ct/kWh or less: 30 − 10 = 20. If the lowest price is 5 and Discharge Price Delta is 10, it can discharge at 15 or more: 5 + 10 = 15.',
+    'Relative mode uses all available prices from now onward, including tomorrow or later. It finds the highest and lowest prices before skipping blocked hours and PV Charge times. If a time matches both rules, charging wins.',
+    'A delta can be zero or negative. With a highest price of 30, a charge delta of −5 allows prices up to 35. The same saved price values are used in both modes, so check them after switching.',
+    'Duration limits do not apply in Relative mode, even if they are 0 h. Their saved values return when you choose Absolute. Permission switches, battery level limits, blocked hours, PV Charge times and your fixed plan still matter.',
+    'You can change this switch in any mode, but it only rebuilds the schedule in Auto. After a restart, the saved mode and schedule return without rebuilding the schedule. New prices can move the chart lines without changing the plan. Use Recalculate, Recalculation Hours or an Auto setting change to rebuild it.',
   ],
   grid_consumer: [
-    'When battery feedback is active for Charge or full Discharge, it already accounts for this load and replaces this offset. Otherwise, it subtracts the current solar surplus from the measured consumer load and adds only the remaining shortfall to the raw grid target in Auto, Manual, Force Charge and Force Discharge, including Idle and PV Charge actions, before grid and reduced feed-in limits. Off keeps the configured Idle Setpoint unchanged.',
-    'Without solar surplus, Charge 3000 W + EV 3000 W = 6000 W, capped to the default Max Grid Setpoint of 5000 W. Discharge −2000 W + consumer 3000 W = 1000 W before limits. With a 3000 W consumer and 2000 W solar surplus, only 1000 W is added. Surplus equal to or above the load adds zero. Missing or invalid solar readings use the full consumer load.',
-    'The first shortfall change starts a fixed five-second window. The latest consumer and solar readings are applied when it expires; further changes do not restart it. Initial enable, restart restore and recovery also wait five seconds. The existing setpoint watt deadband still applies. Disabling, Off or an invalid source clears the offset without delay.',
-    'This adjusts the target, not the energy origin: intentional battery discharge remains possible. The source must measure a load already included in ESS consumption. For multiple loads, select an existing aggregate power sensor.',
-    'Choose the optional Grid consumer power sensor (W or kW) in Settings → Devices & Services → Victron Charge Control → Configure, then enable this switch. It defaults off and is restored after restart. Invalid or unavailable consumer readings use zero offset; the configured switch can still be turned off.',
+    'Adds power for a measured load, such as an EV charger, to the grid power target. Spare solar power is used first; only the part not covered by solar is added.',
+    'Example: your EV uses 3000 W and there is 2000 W of spare solar power. The controller adds 1000 W to the grid target. Without spare solar, it adds all 3000 W. A 3000 W charge target would then become 6000 W, or 5000 W if Max Grid Setpoint is 5000 W.',
+    'It works in Auto, Manual, Force Charge and Force Discharge, including times when the action is Idle or PV Charge. Off uses Idle Setpoint without this extra power. Grid and reduced feed-in limits still apply. Active Battery Power Control already accounts for this load, so the extra power is not added twice.',
+    'This does not guarantee that the load uses only grid or solar power. The battery can still discharge. For example, a −2000 W discharge target plus a 3000 W load gives a +1000 W grid target before limits.',
+    'Choose Grid consumer power sensor in Settings → Devices & services → Victron Charge Control → Configure. It must measure a load already included in the consumption measured by your Victron system, in W or kW. For several loads, use one sensor that adds their power together. The switch starts off and keeps your choice after a restart.',
+    'After the first change, the controller waits 5 seconds and then uses the latest readings. More changes do not restart that wait. This also applies when enabling the switch, restarting or recovering from missing data. Very small target changes can still be ignored by the normal power-change limit.',
+    'Turning this switch off, choosing Off mode or losing the load reading removes the extra power without the 5-second wait. A missing load reading adds nothing; a missing solar reading means the full load is added. You can still turn the switch off when its sensor is unavailable.',
   ],
   battery_power_control: [
-    'Uses measured battery power to target Charge Power during regular Charge and Discharge Power during full Discharge, including force modes. PV Charge, solar-only discharge at Min SOC, Idle and Off keep their existing control.',
-    'Choose the optional Battery power sensor in integration setup, Configure or Reconfigure. It must report W or kW, positive when charging and negative when discharging. This switch defaults off and is restored after restart.',
-    'The grid target is applied grid watts + desired signed battery watts − measured battery watts. For example, 3000 W applied grid + 3000 W desired battery − 2000 W measured battery requests 4000 W grid. Household, solar and consumer effects are already reflected, so active feedback replaces the solar-surplus and Grid Consumer offsets for eligible actions.',
-    'Startup uses legacy grid-only control until feedback is ready. The controller uses each new battery reading once and waits five seconds after changing the grid target before adjusting again. Readings older than 120 seconds, invalid values or an unavailable sensor use grid-only control with the existing offsets until feedback recovers. You can still turn this switch off during a sensor outage.',
-    'Use a sensor that reports current battery power promptly. Repeated reports of old measurements cannot be detected by the freshness check, and delayed measurements can make the grid target oscillate. SOC protection, grid limits, reduced feed-in limits and device limits still apply. The requested battery target is not guaranteed actual battery power.',
+    'Uses the measured battery power to adjust the grid target. Charge Power becomes the power you want going into the battery. Discharge Power becomes the power you want coming out of it. It also works in Force modes.',
+    'Example: Charge Power is 3000 W, the grid target is 3000 W, but only 2000 W reaches the battery. The controller asks for 1000 W more from the grid, making the new target 4000 W. Grid and device limits can reduce that request.',
+    'Choose Battery power sensor during integration setup, Configure or Reconfigure. It must report W or kW: positive when charging and negative when discharging. 1000 W is 1 kW. The switch starts off and keeps your choice after a restart.',
+    'Household loads and solar power are already included in the measured result. While this control is active, it replaces the separate solar surplus and Grid Consumer adjustments. PV Charge, solar-only discharge near Min SOC, Idle and Off keep their usual behavior.',
+    'At startup, the controller uses the normal grid target until battery readings are ready. It uses each new reading once and waits 5 seconds after changing the grid target before adjusting again. If a reading is invalid, unavailable or older than 120 seconds, it returns to normal grid control, including the usual solar and Grid Consumer adjustments.',
+    'Use a sensor that updates promptly. A sensor that repeatedly sends an old measurement can look fresh. Delayed readings can make the requested power rise and fall repeatedly. You can turn the switch off during a sensor outage. Battery level limits, grid limits and reduced feed-in limits still apply; the battery may not reach the requested power.',
   ],
   charge_allowed: [
-    'Allows grid charging in scheduled and Force Charge operation. Turning it off stops those requests; Grid Consumer can still add import to Idle or PV Charge. It does not erase the schedule.',
-    'PV Charge is independent of this switch because it allocates solar surplus. Max SOC protection still applies to both charging actions.',
+    'Allows the controller to request grid charging, both in the schedule and in Force Charge. Turning it off keeps the schedule but stops those charging requests.',
+    'Example: a Charge period is planned for 02:00. With Charge Allowed off, the controller uses Idle instead. Turn it on again to allow planned charging.',
+    'PV Charge can still use spare solar power, and Grid Consumer can still request grid import during Idle or PV Charge. Max SOC still limits both grid charging and PV Charge.',
   ],
   discharge_allowed: [
-    'Allows scheduled discharge and Force Discharge. Turning it off makes those requests fall back to Idle without erasing the schedule.',
-    'This also gates surplus-only discharge at Min SOC. It does not disable solar export during PV Charge or other battery flows managed by Victron.',
+    'Allows scheduled discharge and Force Discharge. Turning it off keeps the schedule but makes those requests use Idle instead.',
+    'Example: a Discharge period is planned for 18:00. Turn this off to stop the controller from requesting that discharge without deleting the plan.',
+    'It also stops the solar-only part of discharge near Min SOC. It does not stop export during PV Charge or battery use controlled separately by Victron.',
   ],
   disable_discharge: [
-    'Writes 0 W to the configured Maximum discharge power entity every 5 seconds throughout regular Charge slots and Force Charge, even at Max SOC, with zero Charge Power or with Charge Allowed off. PV Charge is excluded.',
-    'Leaving the charging window, turning this switch off, selecting Off mode or a watchdog stop releases the limit with −1 W (unlimited). The previous numerical limit is not restored.',
-    'Choose the optional Maximum discharge power entity (a writable number in W) in the integration configuration first. This switch defaults off and is restored after restart. Without a configured entity it cannot be enabled; an external entity outage still allows turning it off.',
-    'Missing entities and failed writes are logged and retried while other controls continue. Pending release survives restart and reconfiguration; orderly shutdown attempts release. A Home Assistant crash or outage can leave the device limit in place until communication resumes and cleanup succeeds.',
+    'Stops battery discharge through the linked Maximum discharge power setting during regular Charge periods and Force Charge. The controller writes a limit of 0 W every 5 seconds. PV Charge is not included.',
+    'Example: 01:00–02:00 is a Charge period. The 0 W discharge limit stays in place for that period even if the battery reaches Max SOC, Charge Power is 0 W or Charge Allowed is off.',
+    'When the charging period ends, you turn this switch off, you choose Off mode, or the watchdog safety check stops control, the controller releases the limit by writing −1 W, meaning unlimited. It does not put back the previous limit.',
+    'First select a writable Maximum discharge power number, in W, in the integration configuration. This switch starts off and keeps your choice after a restart. It cannot be enabled without that setting, but you can turn it off if the external device becomes unavailable.',
+    'Failed writes are logged and retried while the other controls continue. An unfinished release is remembered after a restart or configuration change. A normal shutdown tries to release the limit. A crash or outage can leave the 0 W limit on the device until communication returns and the release succeeds.',
   ],
   charge_power: [
-    'Sets the positive grid power target used during grid charging, in watts. A larger value requests more grid import, subject to Max Grid Setpoint and the Victron system’s own limits.',
-    'With Battery Power Control active, this is the desired battery charging power instead; measured feedback replaces solar and Grid Consumer offsets. Grid-only control resumes on feedback fallback or when Battery Power Control is off. Household loads, solar production and device limits affect actual power. Charge Allowed and SOC protection must permit charging.',
+    'Sets the grid import target during Charge, in watts. With Battery Power Control active, it sets the desired battery charging power instead. 1000 W is 1 kW.',
+    'Example: without Battery Power Control or Grid Consumer, a 3000 W setting requests 3000 W from the grid. If your home uses 1000 W and there is no solar power, about 2000 W may be left for the battery.',
+    'With Battery Power Control, a 3000 W setting asks for 3000 W into the battery and adjusts the grid request to try to reach it. If battery readings fail, normal grid control returns. Max Grid Setpoint and device limits can reduce power. Charge Allowed and battery level limits must allow charging.',
   ],
   discharge_power: [
-    'Sets the battery-power component of the discharge request, in watts. During full discharge the controller requests export equal to this value plus the optional solar surplus sensor’s 15-minute average.',
-    'With Battery Power Control active during full discharge, this is the desired battery discharge power; feedback replaces the solar-surplus and Grid Consumer offsets. Grid-only control resumes on feedback fallback or when Battery Power Control is off. Solar-only discharge at Min SOC keeps its existing control.',
-    'The negative grid target is clamped by Min Grid Setpoint and, during reduced feed-in, Reduced Max Feed-in. At Min SOC the battery-power component is removed; without a surplus sensor discharge stops.',
+    'Sets the battery part of the discharge request, in watts. Normally, the controller adds spare solar power, averaged over 15 minutes, to work out the requested grid export.',
+    'Example: Discharge Power is 2000 W and average spare solar power is 1000 W. The controller requests 3000 W of export, shown as a −3000 W grid target, before other adjustments and limits.',
+    'With Battery Power Control active, 2000 W means the desired power coming out of the battery. Battery readings replace the separate solar and Grid Consumer adjustments. If readings fail, normal grid control returns.',
+    'Min Grid Setpoint and Reduced Max Feed-in can limit export. At Min SOC, the battery part of the request is removed and only spare solar power may be exported. Without a solar surplus sensor, discharge stops at Min SOC. Battery Power Control does not change this solar-only behavior.',
   ],
   pv_charging_battery_share: [
-    'Controls how solar surplus is split during a PV Charge hour. At 0% the target exports the averaged surplus; at 100% it uses Idle Setpoint, normally retaining surplus for the battery. Intermediate values blend those two targets.',
-    'Requires the optional solar surplus sensor and a PV Charge slot. Higher values favor battery charging. Max SOC and grid/export limits still apply; Charge Allowed and blocked charging hours do not prevent PV Charge.',
+    'Chooses how much spare solar power to keep for the battery during a PV Charge period. At 0%, the target exports the average spare solar power. At 100%, it uses Idle Setpoint, normally 0 W, to keep the power for the battery.',
+    'Example: with 2000 W of average spare solar power, Idle Setpoint at 0 W and no Grid Consumer adjustment, 50% requests 1000 W of export and leaves about 1000 W for charging.',
+    'You need a solar surplus sensor and a PV Charge period in the plan. This setting works even with Charge Allowed off or the hour blocked for grid charging. Max SOC and grid/export limits still apply. A different Idle Setpoint changes the split; actual battery power also depends on your system.',
   ],
   min_soc: [
-    'Sets the lower battery state-of-charge boundary for full discharge. With a solar surplus sensor, reaching this value changes full discharge to export of averaged solar surplus only.',
-    'Surplus-only discharge stops at Min SOC minus SOC Hysteresis, with a floor of 0%, and resumes at Min SOC. Full discharge resumes strictly above Min SOC plus SOC Hysteresis. Averaged surplus can temporarily draw battery power when actual solar output falls.',
-    'Without a surplus sensor, discharge stops at Min SOC and resumes strictly above the upper threshold. Stopping applies Idle Setpoint; it does not disable other Victron battery flows.',
+    'SOC means battery level, as a percentage. Min SOC is where the controller stops requesting full battery discharge. With a solar surplus sensor, it can continue exporting spare solar power.',
+    'Example: Min SOC is 20% and SOC Hysteresis is 2 percentage points. Full discharge changes to solar-only export at 20%. That export stops at 18% and can return at 20%. Full discharge can return only above 22%, not at 22%.',
+    'Without a solar surplus sensor, discharge stops at 20% and can return only above 22% in this example. With a zero buffer, discharge stops at or below Min SOC and can run fully above it. The lower stop level is never below 0%.',
+    'Spare solar power uses a 15-minute average. If sunlight drops, the battery may briefly supply some of that export. Stopping means using Idle Setpoint; it does not stop battery use controlled separately by Victron. See SOC Hysteresis for behavior after a restart.',
   ],
   max_soc: [
-    'Sets the upper battery state-of-charge boundary for grid charging and PV Charge. At or above this value the controller requests Idle instead of charging.',
-    'Charging can resume once SOC falls strictly below Max SOC minus SOC Hysteresis. This protection also applies to Force Charge. Other charging managed by Victron can still occur.',
+    'SOC means battery level, as a percentage. At Max SOC or above, the controller stops requesting grid charging and PV Charge and uses Idle Setpoint instead. This also applies to Force Charge.',
+    'Example: Max SOC is 90% and SOC Hysteresis is 2 percentage points. Charging stops at 90%. It can start again only below 88%, not at 88%.',
+    'Other charging controlled by Victron can still happen. This setting limits this controller’s requests; it is not a guaranteed maximum battery level.',
   ],
   soc_hysteresis: [
-    'Sets a buffer in SOC percentage points to avoid repeatedly switching actions near a battery limit. Charging stops at Max SOC and resumes strictly below Max SOC minus this buffer.',
-    'Full discharge changes to surplus-only at Min SOC and resumes strictly above Min SOC plus this buffer. With a surplus sensor, surplus-only stops at max(0%, Min SOC minus the buffer) and resumes at Min SOC. Without that sensor, discharge stops at Min SOC until the upper threshold is exceeded.',
-    'After restart, discharge starts stopped below Min SOC, surplus-only through the upper threshold, and full above it. Without a surplus sensor it stays stopped through that threshold. With a zero buffer, discharge stops at or below Min SOC and can run fully above it.',
+    'Adds a buffer around the battery level limits so charging and discharging do not keep switching on and off. The value is in percentage points of battery level.',
+    'Example: Max SOC is 90% and the buffer is 2. Charging stops at 90% and can restart only below 88%. With Min SOC at 20%, full discharge changes to solar-only export at 20% and can restart only above 22%.',
+    'With a solar surplus sensor, solar-only export stops at Min SOC minus the buffer, never below 0%. It can restart at Min SOC. In the example, it stops at 18% and restarts at 20%. Without that sensor, discharge stops at 20% and waits until the level is above 22%.',
+    'After a restart, discharge starts stopped below Min SOC. With a solar surplus sensor, it starts in solar-only mode from Min SOC through Min SOC plus the buffer, including the upper value. Full discharge starts only above that upper value. Without the sensor, it stays stopped until above the upper value.',
+    'With a buffer of 0, discharge stops at or below Min SOC and can run fully above it. Charging stops at Max SOC and can restart below Max SOC. These rules still need the relevant permission switch and a planned or forced action.',
   ],
   idle_setpoint: [
-    'Sets the grid power target when the controller is Idle, including Off, unscheduled hours and SOC-blocked actions. Positive values request grid import; negative values request export; zero targets balanced grid power.',
-    'During active control, an enabled Grid Consumer adds the consumer shortfall after solar surplus before the target is clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. It is also the target at 100% PV Charging Battery Share, so changing it affects PV Charge allocation. Idle does not mean the battery is disconnected.',
+    'Sets the grid power target when the controller is Idle: for example, outside planned times, at a battery level limit, or in Off mode. Positive watts mean grid import; negative watts mean export. Zero aims for no net grid flow.',
+    'Example: 100 W asks to import 100 W from the grid while Idle. A value of −100 W asks to export 100 W. This does not disconnect the battery.',
+    'In active modes, Grid Consumer can add power for a load, and Min / Max Grid Setpoint limit the result. Off uses Idle Setpoint directly. It is also the target used at 100% PV Charging Battery Share, so changing it affects PV Charge.',
   ],
   min_grid_setpoint: [
-    'Sets the lowest grid power target the controller may request. Negative values represent export: a more negative limit permits more export, while zero prevents the controller from requesting a negative target.',
-    'During active control, all computed setpoints are clamped to this limit; Off resets directly to Idle Setpoint. During reduced feed-in, Reduced Max Feed-in can further restrict discharge and PV Charge export. This is a requested target, not a measurement of actual grid power.',
+    'Sets the lowest grid power target during active control. A negative number allows export. A more negative number allows more export.',
+    'Example: −3000 W allows a target of up to 3000 W of export. A request for −4000 W is limited to −3000 W. Setting 0 W prevents this controller from requesting a negative grid target.',
+    'Reduced Max Feed-in can further limit export during reduced feed-in. Off uses Idle Setpoint directly. This is a limit on the requested target, not a guarantee of the power measured at the grid.',
   ],
   max_grid_setpoint: [
-    'Sets the highest grid power target the controller may request. Positive values represent import, so reducing this limit can cap the Charge Power request.',
-    'During active control, all computed setpoints, including Idle and PV Charge, are clamped between Min and Max Grid Setpoint; Off resets directly to Idle Setpoint. Actual grid power also depends on the Victron system and connected loads.',
+    'Sets the highest grid power target during active control. A positive number allows import. This limit also applies during Idle and PV Charge in active modes.',
+    'Example: Charge Power requests 5000 W, but Max Grid Setpoint is 3000 W. The grid target is limited to 3000 W, even if Grid Consumer asks for more.',
+    'The controller keeps active targets between Min and Max Grid Setpoint. Off uses Idle Setpoint directly. Actual grid power also depends on the Victron system, solar power and household loads.',
   ],
   cheapest_hours_auto_charge: [
-    'Sets the grid-charge duration budget in hours, in 0.25-hour steps, across available current and future prices. Whole price intervals are selected without exceeding the budget; hourly feeds keep whole hours.',
-    'Only periods at or below Charge Price Threshold qualify. Recurring blocked charging hours and PV Charge slots are skipped; conflicts with selected discharge hours favor discharge. Zero selects no automatic grid-charge periods. Changing this value in Auto recalculates the schedule.',
+    'In Absolute mode, sets the total time Auto may choose for grid charging. It chooses the cheapest available periods at or below Charge Price Threshold, from now onward. Those periods can be on different days.',
+    'Example: 1 h can select four 15-minute periods. A setting of 0.25 h means 15 minutes. If your price feed has only whole-hour periods, 0.25 h cannot select any of them. The controller never splits a price period to fit.',
+    'A value of 0 h selects no automatic grid charging. Blocked charging hours and PV Charge periods are skipped. In Absolute mode, discharge wins if both rules select the same period, so the final charging time may be shorter. Changing this setting in Auto rebuilds the schedule.',
   ],
   expensive_hours_auto_discharge: [
-    'Sets the discharge duration budget in hours, in 0.25-hour steps, across available current and future prices. Whole price intervals are selected without exceeding the budget; hourly feeds keep whole hours.',
-    'Only periods at or above Discharge Price Threshold qualify. Recurring blocked discharging hours and PV Charge slots are skipped. Zero selects no automatic discharge periods. Changing this value in Auto recalculates the schedule; actual discharge still requires permission and sufficient SOC.',
+    'In Absolute mode, sets the total time Auto may choose for discharging. It chooses the most expensive available periods at or above Discharge Price Threshold, from now onward. Those periods can be on different days.',
+    'Example: 1.5 h can select six 15-minute periods. With whole-hour prices, it can select only one hour, because it never splits a price period to fit the remaining 30 minutes.',
+    'A value of 0 h selects no automatic discharge. Blocked discharging hours and PV Charge periods are skipped. Changing this setting in Auto rebuilds the schedule. Discharge Allowed and battery level limits still decide whether discharge can run.',
   ],
   charge_price_threshold: [
-    'Sets the highest EPEX spot price, in ct/kWh, eligible for automatic grid charging. A price equal to the threshold qualifies. Raising it allows more hours to qualify; Charge Duration caps the total selected duration.',
-    'Changing it in Auto recalculates the schedule. It does not gate Force Charge or explicitly chosen manual/fixed-plan hours. This is the spot-price comparison, not a total electricity bill calculation.',
+    'In Absolute mode, sets the highest spot price Auto may choose for grid charging, in cents per kWh (ct/kWh). A price exactly at the limit is included.',
+    'Example: at 10 ct/kWh, prices of 8 and 10 can be selected; 12 cannot. Auto picks the cheapest matching periods, up to Charge Duration. Raising this limit allows more periods to match.',
+    'Changing it in Auto rebuilds the schedule. Force Charge and times you choose manually or through a fixed plan do not use this price test. The comparison uses the spot price, not your full electricity bill including taxes and fees.',
   ],
   discharge_price_threshold: [
-    'Sets the lowest EPEX spot price, in ct/kWh, eligible for automatic discharge. A price equal to the threshold qualifies. Raising it restricts selection to higher-priced hours; Discharge Duration caps their total duration.',
-    'Changing it in Auto recalculates the schedule. It does not gate Force Discharge or explicitly chosen manual/fixed-plan hours. Permission switches and SOC limits still govern execution.',
+    'In Absolute mode, sets the lowest spot price Auto may choose for discharge, in cents per kWh (ct/kWh). A price exactly at the limit is included.',
+    'Example: at 20 ct/kWh, prices of 20 and 25 can be selected; 18 cannot. Auto picks the highest matching prices, up to Discharge Duration. Raising this limit makes fewer periods match.',
+    'Changing it in Auto rebuilds the schedule. Force Discharge and times you choose manually or through a fixed plan do not use this price test. Discharge Allowed and battery level limits still apply.',
   ],
   grid_feed_in_control: [
-    'Enables price-based control of the linked Victron maximum grid feed-in setting. Prices strictly below Price Threshold use Reduced Max Feed-in; prices at or above it use Default Max Feed-in.',
-    'While reduced mode is active, discharge and PV Charge export targets are also capped by the reduced limit. When this feature is disabled after applying a reduced limit, the controller restores the configured default limit when the linked entity is available.',
-    'Requires the configured writable maximum feed-in entity and current price data. If the price is unavailable, no new feed-in limit is written.',
+    'Changes the linked Victron export limit based on the current spot price. Below Price Threshold it uses Reduced Max Feed-in. At the threshold or above, it uses Default Max Feed-in.',
+    'Example: set Price Threshold to 0 ct/kWh, Default Max Feed-in to 5000 W and Reduced Max Feed-in to 0 W. A price of −1 uses the 0 W limit. A price of exactly 0 uses the 5000 W limit.',
+    'During reduced feed-in, this also limits the controller’s Discharge and PV Charge export targets, and export requested by active Battery Power Control. If you turn Feed-in Control off after a reduced limit was applied, the configured default limit is restored when the linked setting is available.',
+    'You need a writable maximum feed-in setting and current price data. If the price is unavailable, the controller does not send a new feed-in limit. A limit is not a request to export that amount.',
   ],
   control_dc_coupled_feed_in: [
-    'Allows the controller to operate the linked Victron DC-coupled feed-in switch: on at normal prices, off while reduced feed-in is active.',
-    'Requires Feed-in Control to be enabled, a configured and available external DC feed-in switch, and a control mode other than Off. Disabling this option stops controlling that switch; it does not automatically restore its previous state.',
+    'Controls the linked Victron switch that allows DC-connected solar power to feed into the grid. It turns that switch on at normal prices and off during reduced feed-in.',
+    'Example: with Price Threshold at 0 ct/kWh, a price of −1 turns the linked switch off. A price of 0 or more turns it on.',
+    'Feed-in Control must be on, the linked switch must be configured and available, and the control mode must not be Off. Turning this option off stops changing the linked switch; it does not put the switch back to its previous state.',
   ],
   grid_feed_in_price_threshold: [
-    'Sets the EPEX spot-price boundary, in ct/kWh, for reduced feed-in. Prices strictly below this value select Reduced Max Feed-in. At exactly the threshold or above it, Default Max Feed-in applies.',
-    'Only affects price-based feed-in control when Feed-in Control is enabled. It also determines the DC-coupled feed-in switch state when that optional control is enabled.',
+    'Sets the spot price at which Feed-in Control changes between the normal and reduced export limits. Prices below this value use Reduced Max Feed-in. Prices equal to or above it use Default Max Feed-in.',
+    'Example: with a threshold of 2 ct/kWh, a price of 1.9 uses the reduced limit. A price of exactly 2 uses the default limit.',
+    'This only works while Feed-in Control is on. It also decides when the optional DC-coupled feed-in switch is turned on or off.',
   ],
   default_max_grid_feed_in: [
-    'Sets the normal maximum grid feed-in limit written to the linked Victron entity when Feed-in Control is enabled and price is at or above its threshold.',
-    'This is an export ceiling in watts, not a command to export that amount. It is also the limit restored when disabling feed-in control after a reduced limit was applied.',
+    'Sets the normal export limit, in watts, sent to Victron while Feed-in Control is on and the price is at or above Price Threshold.',
+    'Example: 5000 W allows up to 5 kW of export through this limit. It does not tell the system to export 5 kW if that power is not available.',
+    'This is also the limit restored when you turn Feed-in Control off after it applied the reduced limit.',
   ],
   reduced_max_grid_feed_in: [
-    'Sets the maximum grid feed-in limit used when Feed-in Control is enabled and price is strictly below its threshold. Zero requests no feed-in through this limit.',
-    'In reduced mode it also caps discharge and PV Charge export targets. Min Grid Setpoint may impose a tighter limit. This setting limits export; it does not itself schedule charging or discharging.',
+    'Sets the export limit used when Feed-in Control is on and the price is below Price Threshold. A value of 0 W requests no export through this limit.',
+    'Example: with this limit at 1000 W, a Discharge or PV Charge target of −3000 W is reduced to −1000 W during low-price periods, before any tighter grid limit.',
+    'Min Grid Setpoint can restrict export further. This limit also applies to export requested by active Battery Power Control. It does not choose charging or discharging times.',
   ],
   blocked_charging_hours: [
-    'Select hour chips to exclude those hours from automatic grid-charge selection every day. Each chip covers the hour beginning at the displayed time, using Home Assistant’s local time. Click a selected chip again to remove the recurring block.',
-    'Explicit per-day overrides and active fixed plans can still schedule the hour. Force Charge bypasses recurring blocks, and PV Charge is independent of charging blocks. Charge Allowed and SOC limits still apply to grid charging.',
+    'Choose hours that Auto should skip when selecting grid charging times. A selected hour is blocked every day, using the Home Assistant time zone. Click it again to remove the block.',
+    'Example: select 18 to stop Auto from choosing grid charging between 18:00 and 19:00 each day.',
+    'A time you choose yourself in the Plan card or an active fixed plan can still use that hour. Force Charge ignores these blocks, and PV Charge is not blocked by them. Charge Allowed and battery level limits still apply.',
   ],
   blocked_discharging_hours: [
-    'Select hour chips to exclude those hours from automatic discharge selection every day. Each chip covers the hour beginning at the displayed time, using Home Assistant’s local time. Click a selected chip again to remove the recurring block.',
-    'Explicit per-day overrides and active fixed plans can still schedule the hour. Force Discharge bypasses recurring blocks. Discharge Allowed and SOC protection still govern discharge.',
+    'Choose hours that Auto should skip when selecting discharge times. A selected hour is blocked every day, using the Home Assistant time zone. Click it again to remove the block.',
+    'Example: select 07 and 08 to stop Auto from choosing discharge between 07:00 and 09:00 each day.',
+    'A time you choose yourself in the Plan card or an active fixed plan can still use those hours. Force Discharge ignores these blocks. Discharge Allowed and battery level limits still apply.',
   ],
   replan_hours: [
-    'Select the local hours at which the daily replan runs, at minute 00. In Auto it rebuilds the price-based schedule; in Manual it clears manually chosen charge/discharge slots and reapplies any active fixed plan.',
-    'Expired slots are cleaned up during replanning. With no hours selected, these timed replans are disabled; the Recalculate button and automatic recalculation caused by Auto-setting changes remain available.',
+    'Choose when the schedule is refreshed each day, using the Home Assistant time zone. The update runs at the start of each selected hour.',
+    'Example: select 00 and 13 to refresh at 00:00 and 13:00. In Auto, the controller builds a new plan from the available prices.',
+    'In Manual, these updates clear your chosen Charge and Discharge times, keep unexpired PV Charge times, and apply the active fixed plan again. Expired periods are removed.',
+    'If no hours are selected, these timed updates are off. You can still use Recalculate in Auto. Changing Auto settings can also rebuild the schedule.',
   ],
   schedule_actions: [
-    { heading: 'Recalculate', items: ['Rebuilds the automatic charge/discharge schedule from the available current and future EPEX prices, using hour counts, price thresholds and recurring blocks. Requires Auto mode and usable price data.', 'Replaces individual charge/discharge selections with the calculated plan, preserves PV Charge slots, and reapplies any active fixed plan. It does not change the control mode.'] },
-    { heading: 'Clear Schedule', items: ['Clears scheduled charge, discharge and PV Charge hours and both recurring blocked-hour lists. Saved fixed plans are retained; any active fixed plan is immediately reapplied, so the resulting schedule may not be empty.', 'Does not change the control mode, permission switches or Recalculation Hours. Force modes can continue operating, and later Auto recalculation can populate the schedule again.'] },
+    { heading: 'Recalculate', items: ['Builds a new Auto schedule from the available prices from now onward. Absolute mode uses price limits and durations. Relative mode uses price differences with no duration limit. Auto mode and usable price data are required.', 'Example: tomorrow’s prices have arrived. Press Recalculate to include them in the plan.', 'It replaces your individual Charge and Discharge choices, keeps PV Charge periods, skips recurring blocked hours when choosing automatic times, and applies the active fixed plan again. It does not change the control mode.'] },
+    { heading: 'Clear Schedule', items: ['Removes planned Charge, Discharge and PV Charge times. It also clears both lists of recurring blocked hours.', 'Example: use it to remove your current plan and daily blocks. Saved fixed plans are kept. If one is active, its times are immediately added back, so the plan may not be empty.', 'It does not change the mode, permission switches or Recalculation Hours. Force Charge or Force Discharge can keep running. A later Auto update can fill the plan again. Use Off if you want this controller to stop following charging and discharging plans; Victron can still control battery power.'] },
+  ],
+};
+
+const RELATIVE_SETTINGS_HELP = {
+  cheapest_hours_auto_charge: [
+    'Charge Duration is not used in Relative mode. Auto can select every period that meets the charge price rule, even if the saved duration is 0 h.',
+    'Example: your saved duration is 1 h, but 3 hours meet the price rule. Relative mode can select all 3 hours. The 1 h limit is used again when you return to Absolute.',
+    'The saved duration is kept. Charge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply.',
+  ],
+  expensive_hours_auto_discharge: [
+    'Discharge Duration is not used in Relative mode. Auto can select every period that meets the discharge price rule, even if the saved duration is 0 h.',
+    'Example: your saved duration is 2 h, but 4 hours meet the price rule. Relative mode can select all 4 hours, unless charging has also been selected for some of them. The 2 h limit returns in Absolute mode.',
+    'The saved duration is kept. Discharge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply.',
+  ],
+  charge_price_threshold: [
+    'In Relative mode, Charge Price Delta is a price difference, in ct/kWh. Subtract it from the highest available price to find the highest price Auto may choose for charging. Prices exactly at that result are included.',
+    'Example: highest price 30, delta 10: 30 − 10 = 20 ct/kWh. Prices of 20 or less match. A delta of 0 allows prices up to 30. A negative delta of −5 allows prices up to 35.',
+    'The highest price comes from all available current and future periods, including tomorrow or later, before blocked hours and PV Charge times are skipped. There is no duration limit, even with Charge Duration at 0 h. Charging wins if both price rules match the same period.',
+    'Changing the delta in Auto rebuilds the schedule. Charge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply. Force Charge and times chosen manually do not use this price test.',
+  ],
+  discharge_price_threshold: [
+    'In Relative mode, Discharge Price Delta is a price difference, in ct/kWh. Add it to the lowest available price to find the lowest price Auto may choose for discharge. Prices exactly at that result are included.',
+    'Example: lowest price 5, delta 10: 5 + 10 = 15 ct/kWh. Prices of 15 or more match. A delta of 0 allows prices from 5 upward. A negative delta of −5 allows prices from 0 upward.',
+    'The lowest price comes from all available current and future periods, including tomorrow or later, before blocked hours and PV Charge times are skipped. There is no duration limit, even with Discharge Duration at 0 h. Charging wins if both price rules match the same period.',
+    'Changing the delta in Auto rebuilds the schedule. Discharge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply. Force Discharge and times chosen manually do not use this price test.',
   ],
 };
 
@@ -314,6 +386,7 @@ class VictronChargeControllerCard extends LitElement {
     this._onThresholdTouchMoveBound = this._onThresholdTouchMove.bind(this);
     // Pending threshold overrides (until HA entity catches up)
     this._pendingThresholds = {};
+    this._lastThresholdContext = null;
     this._costRange = 'day';
     this._costRangeOffsets = { day: 0, week: 0, month: 0, year: 0 };
     this._costMode = 'cost';
@@ -991,7 +1064,7 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _renderBatteryPowerControl() {
+  _renderBatteryPowerControl(showDisableDischarge = true) {
     const state = this._state('switch', 'battery_power_control');
     const configured = Boolean(state?.attributes?.source_entity);
     const disabled = !configured || !['on', 'off'].includes(state?.state);
@@ -1007,11 +1080,11 @@ class VictronChargeControllerCard extends LitElement {
         }[state.attributes.feedback_status] || '') : '';
     return this._renderTogglePair([
       { label: 'Battery Power Control', key: 'battery_power_control', disabled, tooltip: message },
-      {
+      ...(showDisableDischarge ? [{
         label: 'Disable Discharge', key: 'disable_discharge',
         tooltip: ['on', 'off'].includes(this._val('switch', 'disable_discharge')) ? ''
           : 'Configure a Maximum discharge power entity in the integration options to enable Disable Discharge.',
-      },
+      }] : []),
     ]);
   }
 
@@ -1068,7 +1141,7 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _renderSlider(label, numberKey, unit = '') {
+  _renderSlider(label, numberKey, unit = '', disabled = false) {
     const obj = this._state('number', numberKey);
     if (!obj) return nothing;
     const value = parseFloat(obj.state);
@@ -1082,6 +1155,7 @@ class VictronChargeControllerCard extends LitElement {
               aria-label=${label}
               min=${min} max=${max} step=${step}
               .value=${String(value)}
+              .disabled=${disabled}
               @input=${(e) => this._onSliderInput(e, unit)}
               @change=${(e) => this._onSliderChange(e, numberKey)}
               @pointerdown=${(e) => this._onSliderPointerDown(e)}
@@ -1098,6 +1172,7 @@ class VictronChargeControllerCard extends LitElement {
 
   _onSliderPointerDown(e) {
     const input = e.target;
+    if (input.disabled) return;
     // Store the original value to restore if not unlocked
     input.dataset.lockedValue = input.value;
     // Prevent the slider from moving until held long enough
@@ -1105,6 +1180,7 @@ class VictronChargeControllerCard extends LitElement {
       const progress = input.parentElement.querySelector('.slider-hold-progress');
       progress.classList.add('active');
       this._sliderHoldTimers.set(input, setTimeout(() => {
+        if (input.disabled) return;
         this._sliderUnlocked.add(input);
         input.classList.add('unlocked');
         progress.classList.remove('active');
@@ -1137,8 +1213,8 @@ class VictronChargeControllerCard extends LitElement {
 
   _onSliderInput(e, unit) {
     const input = e.target;
-    // If not unlocked, revert to locked value
-    if (!this._sliderUnlocked.has(input)) {
+    // If disabled or not unlocked, revert to the saved value.
+    if (input.disabled || !this._sliderUnlocked.has(input)) {
       if (input.dataset.lockedValue !== undefined) {
         input.value = input.dataset.lockedValue;
       }
@@ -1158,17 +1234,60 @@ class VictronChargeControllerCard extends LitElement {
     const input = e.target;
     const tooltip = input.parentElement.querySelector('.slider-tooltip');
     tooltip.style.display = 'none';
-    // Commit if the slider was unlocked, then re-lock
+    const disabled = input.disabled || (this._relativeAutoMode()
+      && ['cheapest_hours_auto_charge', 'expensive_hours_auto_discharge'].includes(numberKey));
+    // Commit if the slider was unlocked, then re-lock.
     if (this._sliderUnlocked.has(input)) {
-      this._setNumber(numberKey, input.value);
+      if (!disabled) this._setNumber(numberKey, input.value);
       this._sliderUnlocked.delete(input);
       input.classList.remove('unlocked');
     } else if (input.dataset.lockedValue !== undefined) {
       input.value = input.dataset.lockedValue;
     }
+    if (disabled) input.value = this._val('number', numberKey);
   }
 
   // ── Threshold drag handlers ─────────────────────────────
+
+  _relativeAutoMode() {
+    return this._val('switch', 'relative_auto_mode') === 'on';
+  }
+
+  _priceThresholdLabel(type) {
+    return `${type === 'charge' ? 'Charge' : 'Discharge'} Price ${this._relativeAutoMode() ? 'Delta' : 'Threshold'}`;
+  }
+
+  _priceThresholdContext() {
+    const plan = this._state('sensor', 'charge_plan');
+    const attrs = ['unknown', 'unavailable'].includes(plan?.state) ? null : plan?.attributes;
+    return {
+      relative: this._relativeAutoMode(),
+      min: Number.isFinite(attrs?.price_reference_min) ? attrs.price_reference_min : null,
+      max: Number.isFinite(attrs?.price_reference_max) ? attrs.price_reference_max : null,
+    };
+  }
+
+  _thresholdContextMatches(context, type) {
+    const current = this._priceThresholdContext();
+    return context && context.relative === current.relative && context.min === current.min && context.max === current.max
+      && context.value === this._val('number', `${type}_price_threshold`);
+  }
+
+  _syncThresholdContext() {
+    const context = this._priceThresholdContext();
+    if (this._lastThresholdContext && context.relative !== this._lastThresholdContext.relative) this._pendingThresholds = {};
+    if (this._thresholdDrag && !this._thresholdContextMatches(this._thresholdDrag.context, this._thresholdDrag.type)) this._finishThresholdDrag(false);
+    this._lastThresholdContext = context;
+    return context;
+  }
+
+  _thresholdCutoff(type, value, context) {
+    if (!Number.isFinite(value)) return null;
+    if (!context.relative) return value;
+    const reference = type === 'charge' ? context.max : context.min;
+    if (reference === null) return null;
+    return type === 'charge' ? reference - value : reference + value;
+  }
 
   _svgYToPrice(svgY, scale) {
     const { scaleMin, scaleRange, padT, plotH } = scale;
@@ -1208,7 +1327,7 @@ class VictronChargeControllerCard extends LitElement {
     }
 
     if (!this._thresholdDrag) return;
-    const { type, unlocked, price, group, pointerId } = this._thresholdDrag;
+    const { type, unlocked, value, group, pointerId, context } = this._thresholdDrag;
     group.classList.remove('threshold-holding', 'threshold-unlocked');
     this.classList.remove('threshold-drag-active');
 
@@ -1220,13 +1339,15 @@ class VictronChargeControllerCard extends LitElement {
       }
     }
 
-    if (commit && unlocked && price !== null) {
+    if (commit && unlocked && value != null && this._thresholdContextMatches(context, type)) {
       const key = type === 'charge' ? 'charge_price_threshold' : 'discharge_price_threshold';
-      const rounded = Math.round(price * 100) / 100;
+      const rounded = context.relative ? value : Math.round(value * 100) / 100;
       this._setNumber(key, rounded);
       // Store pending value so both charts update immediately
       this._pendingThresholds[type] = rounded;
       this.requestUpdate();
+    } else {
+      this._thresholdDrag.restore?.();
     }
 
     this._thresholdDrag = null;
@@ -1236,14 +1357,27 @@ class VictronChargeControllerCard extends LitElement {
     e.preventDefault();
     e.stopPropagation();
     if (this._thresholdDrag) this._finishThresholdDrag(false);
+    const context = { ...this._syncThresholdContext(), value: this._val('number', `${type}_price_threshold`) };
+    if (context.relative && (type === 'charge' ? context.max : context.min) === null) return;
 
     const group = e.currentTarget;
     const svgEl = group.closest('svg');
     const pointerId = e.pointerId;
+    const lines = Array.from(group.querySelectorAll('line'), line => [line, line.getAttribute('y1'), line.getAttribute('y2')]);
+    const label = group.querySelector('text');
+    const labelY = label?.getAttribute('y');
+    const text = label?.lastChild?.nodeType === 3 ? label.lastChild : null;
+    const labelText = text?.nodeValue;
+    // Lit caches bindings, so rerendering alone cannot undo direct SVG edits.
+    const restore = () => {
+      lines.forEach(([line, y1, y2]) => { line.setAttribute('y1', y1); line.setAttribute('y2', y2); });
+      if (label) label.setAttribute('y', labelY);
+      if (text) text.nodeValue = labelText;
+    };
 
     // Start hold timer
     if (this._thresholdHoldTimer) clearTimeout(this._thresholdHoldTimer);
-    this._thresholdDrag = { type, scale, group, svgEl, pointerId, unlocked: false, price: null };
+    this._thresholdDrag = { type, scale, group, svgEl, pointerId, context, restore, unlocked: false, price: null, value: null };
     group.classList.add('threshold-holding');
     this.classList.add('threshold-drag-active');
     this._addThresholdDragListeners();
@@ -1265,19 +1399,30 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _onThresholdPointerMove(e) {
+    this._syncThresholdContext();
     if (!this._thresholdDrag) return;
     if (this._thresholdDrag.pointerId !== undefined && e.pointerId !== this._thresholdDrag.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
     if (!this._thresholdDrag.unlocked) return;
 
-    const { scale, group, svgEl } = this._thresholdDrag;
+    const { type, context, scale, group, svgEl } = this._thresholdDrag;
     const svgY = this._clientToSvgY(e.clientY, svgEl);
     let price = this._svgYToPrice(svgY, scale);
-    // Snap to step
-    price = Math.round(price / scale.step) * scale.step;
-    price = Math.max(scale.scaleMin, Math.min(scale.scaleMax, price));
+    let value;
+    if (context.relative) {
+      const { min, max, step } = this._sliderLimits(`${type}_price_threshold`);
+      const delta = type === 'charge' ? context.max - price : price - context.min;
+      value = Math.max(min, Math.min(max, min + Math.round((delta - min) / step) * step));
+      value = Math.round(value * 1e10) / 1e10;
+      price = this._thresholdCutoff(type, value, context);
+    } else {
+      price = Math.round(price / scale.step) * scale.step;
+      price = Math.max(scale.scaleMin, Math.min(scale.scaleMax, price));
+      value = price;
+    }
     this._thresholdDrag.price = price;
+    this._thresholdDrag.value = value;
 
     // Update line and label position in DOM
     const yPos = scale.padT + scale.plotH - ((price - scale.scaleMin) / scale.scaleRange) * scale.plotH;
@@ -1302,7 +1447,7 @@ class VictronChargeControllerCard extends LitElement {
     if (this._thresholdDrag.pointerId !== undefined && e.pointerId !== this._thresholdDrag.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
-    this._finishThresholdDrag(true);
+    this._finishThresholdDrag(e.type !== 'pointercancel');
   }
 
   _renderHourChips({ key, selected, activeClass = 'blocked', onClick }) {
@@ -1406,12 +1551,17 @@ class VictronChargeControllerCard extends LitElement {
           { label: 'Charge Allowed', key: 'charge_allowed' },
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
         ])}
-        ${this._renderGridConsumer()}
+        <div class="overview-toggle-row">
+          ${this._renderBatteryPowerControl(false)}
+          <div>${this._renderGridConsumer()}</div>
+        </div>
       `)}`;
   }
 
   _renderControlsView() {
     const feedIn = this._val('switch', 'grid_feed_in_control') === 'on';
+    const relative = this._relativeAutoMode();
+    const relativeUnavailable = !['on', 'off'].includes(this._val('switch', 'relative_auto_mode'));
     return html`
       ${this._renderModeSection()}
 
@@ -1422,6 +1572,7 @@ class VictronChargeControllerCard extends LitElement {
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
         ])}
         ${this._renderBatteryPowerControl()}
+        ${this._renderGridConsumer()}
         ${this._renderSlider('Charge Power', 'charge_power', ' W')}
         ${this._renderSlider('Discharge Power', 'discharge_power', ' W')}
         ${this._renderSlider('PV Charging Battery Share', 'pv_charging_battery_share', ' %')}
@@ -1443,11 +1594,27 @@ class VictronChargeControllerCard extends LitElement {
 
       <!-- Keep automatic scheduling settings available in every control mode. -->
       ${this._renderSection('Auto Mode', 'mdi:auto-fix', html`
-        ${this._renderGridConsumer()}
-        ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h')}
-        ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h')}
-        ${this._renderSlider('Charge Price Threshold', 'charge_price_threshold', ' ct/kWh')}
-        ${this._renderSlider('Discharge Price Threshold', 'discharge_price_threshold', ' ct/kWh')}
+        <div class="auto-mode-toggles">
+          <div class="control-row toggle-row relative-mode-toggle">
+            ${this._renderHelpLabel('Absolute', 'absolute_auto_mode')}
+            <span class="toggle-tooltip"
+              title=${relativeUnavailable ? 'Relative Auto Mode switch is unavailable; absolute price settings are shown.' : nothing}
+              tabindex=${relativeUnavailable ? '0' : nothing}
+              role=${relativeUnavailable ? 'group' : nothing}
+              aria-label=${relativeUnavailable ? 'Relative Auto Mode switch is unavailable; absolute price settings are shown.' : nothing}>
+              <ha-switch aria-label="Relative Auto Mode"
+                .checked=${relative}
+                .disabled=${relativeUnavailable}
+                @change=${() => { if (!relativeUnavailable) this._toggleSwitch('relative_auto_mode'); }}
+              ></ha-switch>
+            </span>
+            ${this._renderHelpLabel('Relative', 'relative_auto_mode')}
+          </div>
+        </div>
+        ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h', relative)}
+        ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h', relative)}
+        ${this._renderSlider(this._priceThresholdLabel('charge'), 'charge_price_threshold', ' ct/kWh')}
+        ${this._renderSlider(this._priceThresholdLabel('discharge'), 'discharge_price_threshold', ' ct/kWh')}
       `)}
 
       <!-- Grid Feed-in -->
@@ -1796,7 +1963,7 @@ class VictronChargeControllerCard extends LitElement {
     const editable = group.entries.some(entry => this._editablePeriod(entry, group));
     return svg`<g class="plan-bar-group" tabindex="0" role=${editable ? 'button' : 'img'}
       data-past=${group.end <= Date.now() ? 'true' : 'false'} data-readonly=${String(!editable)}
-      aria-label=${`${this._periodLabel(group)} · ${editable ? 'Choose hour intervals and action' : 'No editable price intervals'} · ${detailLabel}`}
+      aria-label=${`${this._periodLabel(group)} · ${editable ? 'Click for information; hold, right-click or press Enter or Space to choose intervals and action' : 'No editable price intervals'} · ${detailLabel}`}
       @mouseenter=${show} @focus=${show} @mouseleave=${hide} @blur=${hide}
       @keydown=${e => this._onBarKeyDown(e, chartId, group.index)}
       @click=${e => this._onBarClick(e, chartId, group.index)}
@@ -1805,7 +1972,7 @@ class VictronChargeControllerCard extends LitElement {
       @pointermove=${e => this._onBarPointerMove(e)} @pointerup=${e => this._onBarPointerUp(e)}
       @pointercancel=${e => this._onBarPointerUp(e)} @pointerleave=${e => this._onBarPointerUp(e)}>
       <rect class="plan-bar-hit" x=${x} y=${top} width=${width} height=${height} fill="transparent" pointer-events="all" />
-      <title>${this._periodLabel(group)} · ${detailLabel}${editable ? ' · Open to choose intervals and action' : ''}</title>
+      <title>${this._periodLabel(group)} · ${detailLabel}${editable ? ' · Click for information; hold or right-click to choose intervals and action' : ''}</title>
     </g>`;
   }
 
@@ -1868,12 +2035,11 @@ class VictronChargeControllerCard extends LitElement {
     const selected = picker.rows.filter(row => picker.selected.has(this._periodIdentity(row)) && this._currentPickerPeriod(row)).length;
     return html`<div class="vcc-help-overlay" role="presentation"
       @click=${e => { if (e.target === e.currentTarget) this._closePicker(); }}>
-      <div class="vcc-help-dialog plan-picker" role="dialog" aria-modal="true" aria-labelledby="plan-picker-title" aria-describedby="plan-picker-description">
+      <div class="vcc-help-dialog plan-picker" role="dialog" aria-modal="true" aria-labelledby="plan-picker-title">
         <div class="vcc-help-header">
           <span class="vcc-help-title" id="plan-picker-title">${this._periodLabel(picker.group)}</span>
           <button type="button" class="vcc-help-close" aria-label="Close hour picker" @click=${() => this._closePicker()}>✕</button>
         </div>
-        <p id="plan-picker-description">Available intervals selected. Tap to deselect.</p>
         <div class="plan-picker-periods" aria-label="Intervals to change">
           ${picker.rows.map(row => {
             const entry = this._currentPickerPeriod(row), available = !!entry;
@@ -1889,7 +2055,7 @@ class VictronChargeControllerCard extends LitElement {
           ${['charge', 'pv_charge', 'discharge', 'idle'].map(action => html`<button type="button" class="plan-picker-btn"
             data-action=${action} ?disabled=${!selected || this._pickerApplying} @click=${() => this._applyPickerAction(action)}>${ACTION_META[action].label}</button>`)}
         </div>
-        <div role="status" aria-live="polite">${this._pickerApplying ? 'Applying selected intervals…' : picker.result || `${selected} selected`}</div>
+        ${this._pickerApplying || picker.result ? html`<div role="status" aria-live="polite">${this._pickerApplying ? 'Applying selected intervals…' : picker.result}</div>` : nothing}
         ${this._lastServiceError ? html`<div class="warning">Service call failed: ${this._lastServiceError.message}</div>` : nothing}
       </div>
     </div>`;
@@ -1919,10 +2085,6 @@ class VictronChargeControllerCard extends LitElement {
       this._barLongPressFired = false;
       e.preventDefault();
       e.stopPropagation();
-      return;
-    }
-    if (chartId !== 'history') {
-      this._openPicker(chartId, index, e.currentTarget);
       return;
     }
     if (chartId === 'history' && this._tooltipBar?.chartId === chartId && this._tooltipBar?.index === index) {
@@ -2884,6 +3046,7 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _renderAutoPlanContent() {
+    const thresholdContext = this._syncThresholdContext();
     const planEntity = this._state('sensor', 'charge_plan');
     const plan = planEntity?.attributes?.plan;
 
@@ -2914,8 +3077,8 @@ class VictronChargeControllerCard extends LitElement {
     const chargeThreshold = parseFloat(this._val('number', 'charge_price_threshold'));
     const dischargeThreshold = parseFloat(this._val('number', 'discharge_price_threshold'));
     // Use pending overrides until HA entity catches up
-    const ctCharge = this._pendingThresholds.charge ?? (isNaN(chargeThreshold) ? null : chargeThreshold);
-    const ctDischarge = this._pendingThresholds.discharge ?? (isNaN(dischargeThreshold) ? null : dischargeThreshold);
+    const ctCharge = this._thresholdCutoff('charge', this._pendingThresholds.charge ?? chargeThreshold, thresholdContext);
+    const ctDischarge = this._thresholdCutoff('discharge', this._pendingThresholds.discharge ?? dischargeThreshold, thresholdContext);
     // Clear pending values once entity state matches
     if (this._pendingThresholds.charge !== undefined && !isNaN(chargeThreshold) && Math.abs(chargeThreshold - this._pendingThresholds.charge) < 0.001) {
       delete this._pendingThresholds.charge;
@@ -3007,13 +3170,13 @@ class VictronChargeControllerCard extends LitElement {
           ${ctCharge !== null ? html`
             <div class="plan-legend-item">
               <span class="plan-legend-line" style="border-color: var(--vcc-success)"></span>
-              <span>Charge Threshold</span>
+              <span>${thresholdContext.relative ? 'Charge Cutoff' : 'Charge Threshold'}</span>
             </div>
           ` : nothing}
           ${ctDischarge !== null ? html`
             <div class="plan-legend-item">
               <span class="plan-legend-line" style="border-color: var(--vcc-warning)"></span>
-              <span>Discharge Threshold</span>
+              <span>${thresholdContext.relative ? 'Discharge Cutoff' : 'Discharge Threshold'}</span>
             </div>
           ` : nothing}
         </div>
@@ -3024,6 +3187,7 @@ class VictronChargeControllerCard extends LitElement {
 
   render() {
     if (!this.hass || !this.config) return nothing;
+    this._syncThresholdContext();
     this._clearStalePendings();
 
     const modeEntity = this._state('select', 'control_mode');
@@ -3098,11 +3262,12 @@ class VictronChargeControllerCard extends LitElement {
   _renderHelpDialog(view, viewTitle) {
     if (!this._helpOpen) return nothing;
     const topic = this._helpTopic;
-    const content = topic ? SETTINGS_HELP[topic.key] : null;
+    const content = topic ? (this._relativeAutoMode() && RELATIVE_SETTINGS_HELP[topic.key]) || SETTINGS_HELP[topic.key] : null;
     const sections = content
       ? (typeof content[0] === 'string' ? [{ heading: 'How it works', items: content }] : content)
       : HELP_TEXT[view];
-    const title = topic ? topic.label : `Help – ${viewTitle}`;
+    const title = topic ? (['charge_price_threshold', 'discharge_price_threshold'].includes(topic.key)
+      ? this._priceThresholdLabel(topic.key.split('_')[0]) : topic.label) : `Help – ${viewTitle}`;
     const limits = topic?.unit != null ? this._sliderLimits(topic.key) : null;
     return html`
       <div
@@ -3356,6 +3521,9 @@ class VictronChargeControllerCard extends LitElement {
       .control-row.toggle-pair {
         gap: 16px;
       }
+      .overview-toggle-row {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+      }
       .toggle-pair-item {
         display: flex; align-items: center; gap: 8px;
         flex: 1 1 0; min-width: 0;
@@ -3363,6 +3531,12 @@ class VictronChargeControllerCard extends LitElement {
       .toggle-pair-item > .control-label {
         flex: 1; width: auto; text-align: right;
       }
+      .auto-mode-toggles {
+        display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 16px;
+      }
+      .auto-mode-toggles > div { flex: 1 1 auto; }
+      .relative-mode-toggle { justify-content: flex-end; gap: 8px; }
+      .control-row.relative-mode-toggle > .control-label { flex: 0; }
 
       /* ── Mode selector ─────────────────────────── */
       .mode-group {
@@ -3468,6 +3642,15 @@ class VictronChargeControllerCard extends LitElement {
       }
       .slider-container input[type="range"].unlocked::-moz-range-thumb {
         opacity: 1; transform: scale(1.3);
+      }
+      .slider-container input[type="range"]:disabled {
+        background: var(--vcc-disabled); cursor: not-allowed;
+      }
+      .slider-container input[type="range"]:disabled::-webkit-slider-thumb {
+        background: var(--vcc-disabled); cursor: not-allowed;
+      }
+      .slider-container input[type="range"]:disabled::-moz-range-thumb {
+        background: var(--vcc-disabled); cursor: not-allowed;
       }
       .slider-hold-progress {
         position: absolute; bottom: -3px; left: 0; right: 0;
@@ -3735,21 +3918,21 @@ class VictronChargeControllerCard extends LitElement {
       }
       .plan-hour-tooltip { pointer-events: none; }
       .plan-hour-details {
-        box-sizing: border-box; padding: 8px 10px;
+        box-sizing: border-box; width: max-content; max-width: 100%; padding: 5px 8px;
         background: var(--vcc-bg, #fff); color: var(--vcc-text, #212121);
         border: 1px solid var(--vcc-border, #ddd); border-radius: 5px;
-        font-size: 14px; line-height: 1.25;
-        display: flex; flex-direction: column; gap: 6px;
+        font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums;
+        display: flex; flex-direction: column; gap: 2px;
       }
-      .vcc-help-dialog.plan-picker { width: min(360px, calc(100vw - 24px)); padding: 10px; gap: 8px; }
-      .plan-picker p, .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
-      .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+      .vcc-help-dialog.plan-picker { width: min(340px, calc(100vw - 24px)); padding: 8px; gap: 4px; }
+      .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
+      .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
       .plan-picker-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .plan-picker button { min-height: 44px; font: inherit; font-size: .85em; cursor: pointer; }
       .plan-picker .vcc-help-close { min-width: 44px; flex-shrink: 0; }
       .plan-picker-period, .plan-picker-btn {
         border: 1px solid var(--vcc-border); border-radius: 6px;
-        background: var(--vcc-card-bg, var(--card-background-color, #fff)); color: var(--vcc-text); padding: 6px;
+        background: var(--vcc-card-bg, var(--card-background-color, #fff)); color: var(--vcc-text); padding: 4px;
       }
       .plan-picker-period { display: flex; flex-direction: column; justify-content: center; gap: 2px; text-align: left; }
       .plan-picker-period span { font-size: .85em; line-height: 1.3; }

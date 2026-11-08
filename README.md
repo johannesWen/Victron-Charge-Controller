@@ -200,7 +200,7 @@ It uses the Home Assistant time zone even when your browser uses a different zon
 
 To view or edit an hour:
 
-- Tap or click an hour in Price or PV forecast to open its interval picker. Right-click, hold, or focus the hour and press Enter or Space also work.
+- Tap or click an hour in Price or PV forecast to show its information. Press and hold or right-click to open its interval picker, or focus the hour and press Enter or Space.
 - All available quarters start selected. Deselect any quarters you want to leave unchanged, then choose Charge, PV, Discharge, or Idle to apply only to the selection.
 - Past intervals and missing prices are shown disabled; the current partially elapsed quarter stays editable. Reopening the picker selects all available intervals again.
 - Hourly feeds show one whole-hour choice. Mixed feeds retain their actual interval bounds. Times include UTC offsets so repeated DST hours can be edited separately.
@@ -219,12 +219,40 @@ If Solcast data becomes unusable, the card returns to Price.
 | :---: | :---: |
 | ![Settings card screenshot](assets/screenshots/settings_card.png) | ![Overview card screenshot](assets/screenshots/overview_card.png) |
 
+## Relative Auto Mode
+
+Settings → Auto Mode contains **Relative Auto Mode**, available in every control mode.
+It defaults off, preserving absolute price thresholds and duration budgets.
+When enabled, the existing price threshold numbers become **Charge Price Delta** and **Discharge Price Delta**, in ct/kWh, with the same entity IDs, values, ranges and steps.
+Deltas are signed and may be negative:
+
+- Charge when `price <= price_reference_max - Charge Price Delta`.
+- Discharge when `price >= price_reference_min + Discharge Price Delta`.
+- Charging wins if both comparisons qualify.
+
+The references are the minimum and maximum of all normalized current and future price intervals, including tomorrow or later, before blocked-hour and PV Charge exclusions.
+A negative charge delta places its cutoff above the maximum; a negative discharge delta places its cutoff below the minimum.
+Relative selection has no duration cap: Charge Duration and Discharge Duration are disabled in the card, but their saved values remain displayed and are used again when relative mode is off.
+Even zero duration permits relative selection; use Charge Allowed and Discharge Allowed to prevent the corresponding action.
+Permission switches, SOC protection, recurring blocks, PV Charge exclusions and fixed-plan overrides still apply.
+
+In the Price chart, both days show the same calculated absolute cutoffs using `sensor.<entity_prefix>_charge_plan` attributes `price_reference_min` and `price_reference_max`, in ct/kWh.
+Lines are hidden when the corresponding reference is unavailable or the cutoff is outside the chart scale.
+Hold and drag a cutoff line to edit its delta; the delta is limited to the existing number entity's range and step before the displayed cutoff is calculated.
+Changing relative mode or its reference prices cancels an active drag without saving it.
+
+Reference prices and chart lines can refresh without recalculating the saved schedule: the lines show the current selection cutoffs.
+Recalculate, existing Auto-setting changes and configured Recalculation Hours update the schedule; this adds no new recalculation cadence.
+Changing Relative Auto Mode recalculates only while the control mode is Auto.
+The switch (`switch.<entity_prefix>_relative_auto_mode`), saved duration values and existing schedules survive restart; restoring the switch does not replan.
+Cards connected to older installations without this switch show absolute settings and a disabled toggle.
+
 ## Battery Power Control
 
 Select the optional **Battery power sensor** (`battery_power_entity`) during integration setup,
 or in Settings → Devices & Services → Victron Charge Control → Configure or Reconfigure.
 The sensor must report W or kW, with **positive power for charging and negative power for discharging**.
-Enable **Battery Power Control** beside the power sliders in Settings → Charge / Discharge.
+Enable **Battery Power Control** in Overview → Settings or beside the power sliders in Settings → Charge / Discharge.
 It defaults off and restores its on/off state after restart. No extra tuning parameters are needed.
 The switch exposes `source_entity`, normalized `power_w`, and `feedback_status` attributes
 (`disabled`, `inactive`, `waiting`, `active`, or `fallback`).
@@ -269,7 +297,7 @@ To enable it:
 
 1. Open the integration configuration.
 2. Select Grid consumer power sensor.
-3. Turn on Grid Consumer under Settings → Auto Mode in the card.
+3. Turn on Grid Consumer under Settings → Charge / Discharge in the card, below Disable Discharge.
 
 Grid Consumer defaults to off and remembers its state after a restart.
 It works in Auto, Manual, Force Charge, and Force Discharge, including Idle and PV Charge actions.
@@ -350,6 +378,7 @@ Existing settings and schedules remain saved.
 | Discharge Allowed | Switch | Allow discharging. |
 | Disable Discharge | Switch | Prevent battery discharge during Charge slots and Force Charge. See [Disable Discharge](#disable-discharge). |
 | Battery Power Control | Switch | Target measured battery watts during Charge and full Discharge; defaults off and restores after restart. See [Battery Power Control](#battery-power-control). |
+| Relative Auto Mode | Switch | Use signed price deltas without duration caps; defaults off and restores without replanning. See [Relative Auto Mode](#relative-auto-mode). |
 | Grid Consumer | Switch | Enable the load adjustment described in [Grid Consumer](#grid-consumer). |
 | Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
 | Min SOC | Number | Minimum battery charge level. |
@@ -362,10 +391,10 @@ Existing settings and schedules remain saved.
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
 | Max Grid Setpoint | Number | Highest allowed grid setpoint. |
 | Setpoint Deadband | Number | Minimum change in watts for normal power updates. Set to `0` to disable. |
-| Cheapest Hours (Charge Duration in the card) | Number | Auto-charge duration budget in hours, adjustable in 0.25-hour steps. |
-| Expensive Hours (Discharge Duration in the card) | Number | Auto-discharge duration budget in hours, adjustable in 0.25-hour steps. |
-| Charge Price Threshold | Number | Maximum price for automatic charging. |
-| Discharge Price Threshold | Number | Minimum price for automatic discharging. |
+| Cheapest Hours (Charge Duration in the card) | Number | Absolute Auto charge duration budget in hours, adjustable in 0.25-hour steps; retained but ignored in Relative Auto Mode. |
+| Expensive Hours (Discharge Duration in the card) | Number | Absolute Auto discharge duration budget in hours, adjustable in 0.25-hour steps; retained but ignored in Relative Auto Mode. |
+| Charge Price Threshold | Number | Absolute maximum charging price, or signed Charge Price Delta below the reference maximum in Relative Auto Mode (ct/kWh). |
+| Discharge Price Threshold | Number | Absolute minimum discharging price, or signed Discharge Price Delta above the reference minimum in Relative Auto Mode (ct/kWh). |
 | Grid Feed-in Price Threshold | Number | Reduce feed-in when the price falls below this value. |
 | Default Max Grid Feed-in | Number | Normal feed-in limit. |
 | Reduced Max Grid Feed-in | Number | Export limit when prices are low. Also limits PV Charge and Discharge targets. |
@@ -381,7 +410,7 @@ Existing settings and schedules remain saved.
 | PV Charge Hours | Sensor | Scheduled solar charging slots, with dates. |
 | Blocked Charging Hours | Sensor | Active charging block list. |
 | Blocked Discharging Hours | Sensor | Active discharging block list. |
-| Charge Plan | Sensor | Full hour-by-hour plan for today and tomorrow. |
+| Charge Plan | Sensor | Plan for today and tomorrow; nullable `price_reference_min` and `price_reference_max` attributes hold current/future price extrema in ct/kWh before block/PV exclusions. |
 | Fixed Plans | Sensor | Number of saved plans. Attributes contain the plans and active plan number. |
 | Last Schedule Update | Sensor | Timestamp of the last schedule calculation. |
 | Grid Feed-in Status | Sensor | Current feed-in mode: default or reduced. |
@@ -408,7 +437,7 @@ Existing settings and schedules remain saved.
 | `victron_charge_control.calculate_schedule` | Recalculate the automatic schedule from EPEX Spot prices. |
 | `victron_charge_control.clear_schedule` | Clear scheduled and blocked hours. An active fixed plan still applies. |
 
-Automatic selection takes whole eligible price intervals without exceeding the duration budget. For example, 1.25 hours can select five quarters from a 15-minute feed; an hourly feed selects one whole hour. The budget spans the available current and future data, rather than guaranteeing a duration each day. Existing entity IDs and saved duration values remain valid.
+With Relative Auto Mode off, automatic selection takes whole eligible price intervals without exceeding the duration budget. For example, 1.25 hours can select five quarters from a 15-minute feed; an hourly feed selects one whole hour. The budget spans the available current and future data, rather than guaranteeing a duration each day. Existing entity IDs and saved duration values remain valid.
 
 ## Defaults
 
@@ -425,6 +454,7 @@ Change these values through the dashboard or Home Assistant entities.
 | Min Grid Setpoint | -5000 W |
 | Max Grid Setpoint | 5000 W |
 | Setpoint Deadband | 200 W |
+| Relative Auto Mode | Off |
 | Cheapest Hours | 4 |
 | Expensive Hours | 4 |
 | Charge Price Threshold | 10 ct/kWh |

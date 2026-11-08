@@ -269,12 +269,12 @@ test('Grid Consumer accepts a valid zero reading without a warning', () => {
   assert.doesNotMatch(instance._renderGridConsumer(), /zero offset|invalid or unavailable/);
 });
 
-for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge']) test(`Grid Consumer stays under Auto Mode in ${mode}`, () => {
+for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge']) test(`Grid Consumer stays under Charge / Discharge in ${mode}`, () => {
   const instance = gridConsumerCard({ state: 'off', attributes: { source_entity: 'sensor.ev', power_w: 0 } }, [], mode);
   const rendered = instance._renderControlsView();
   assert.match(rendered, /Grid Consumer/);
-  assert.ok(rendered.indexOf('Auto Mode') < rendered.indexOf('aria-label=Grid Consumer'));
-  assert.ok(rendered.indexOf('aria-label=Grid Consumer') < rendered.indexOf('Grid Feed-in'));
+  assert.ok(rendered.indexOf('Charge / Discharge') < rendered.indexOf('aria-label=Grid Consumer'));
+  assert.ok(rendered.indexOf('aria-label=Grid Consumer') < rendered.indexOf('Battery Limits'));
 });
 
 test('Grid Consumer help label opens its accessible topic with limits, timing and energy caveats', () => {
@@ -293,10 +293,11 @@ test('Grid Consumer help label opens its accessible topic with limits, timing an
   assert.equal(instance._helpTrigger, trigger);
   const rendered = instance._renderHelpDialog('controls', 'Settings');
   assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Grid Consumer/);
-  for (const text of ['Auto, Manual, Force Charge and Force Discharge', 'before grid and reduced feed-in limits',
-    '5000 W', '1000 W before limits', 'five-second window', 'further changes do not restart',
-    'Initial enable, restart restore and recovery', 'watt deadband', 'clears the offset without delay',
-    'intentional battery discharge', 'included in ESS consumption', 'aggregate power sensor']) {
+  for (const text of ['Auto, Manual, Force Charge and Force Discharge', 'Grid and reduced feed-in limits still apply',
+    '5000 W', '+1000 W grid target before limits', 'waits 5 seconds', 'More changes do not restart',
+    'enabling the switch, restarting or recovering', 'Very small target changes', 'without the 5-second wait',
+    'battery can still discharge', 'included in the consumption measured by your Victron system',
+    'one sensor that adds their power together', 'Example:']) {
     assert.ok(rendered.includes(text), text);
   }
 });
@@ -490,12 +491,16 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   instance._removeThresholdDragListeners = () => {};
   instance._clientToSvgY = y => y;
   const marker = { nodeType: 8, nodeValue: '?lit$marker$' }, textNode = { nodeType: 3, nodeValue: '10' };
-  const positions = {}, label = {
+  const positions = { y: '193' }, label = {
     childNodes: [marker, textNode], lastChild: textNode,
+    getAttribute: key => positions[key],
     setAttribute: (key, value) => { positions[key] = value; },
     set textContent(_) { assert.fail('Replacing label content removes the Lit marker needed for the next render'); },
   };
-  const lines = [{ setAttribute() {} }, { setAttribute() {} }];
+  const lines = [0, 1].map(() => ({ attributes: { y1: '189.5', y2: '189.5' },
+    getAttribute(key) { return this.attributes[key]; },
+    setAttribute(key, value) { this.attributes[key] = String(value); },
+  }));
   const group = { classList: { add() {}, remove() {} }, closest: () => ({}), querySelectorAll: () => lines, querySelector: () => label };
   const scale = { scaleMin: 0, scaleMax: 40, scaleRange: 40, padT: 38, plotH: 202, step: .25 };
   instance._onThresholdPointerDown(event({}, { currentTarget: group }), 'charge', scale);
@@ -513,6 +518,13 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   assert.equal(instance._thresholdDrag, null);
   assert.equal(JSON.stringify(calls), JSON.stringify(commit ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: 24 }]] : []));
   assert.equal(instance._pendingThresholds.charge, commit ? 24 : undefined);
+  assert.equal(textNode.nodeValue, commit ? '24' : '10');
+  assert.ok(Math.abs(Number(positions.y) - (commit ? 122.3 : 193)) < 1e-7);
+  for (const line of lines) for (const key of ['y1', 'y2']) {
+    assert.ok(Math.abs(Number(line.attributes[key]) - (commit ? 118.8 : 189.5)) < 1e-7);
+  }
+  assert.equal(label.childNodes[0], marker);
+  assert.equal(label.childNodes[1], textNode);
 });
 
 
@@ -530,7 +542,64 @@ function openHour(instance, plan = pricedPeriods(), index = 0, view = 'price', t
   return instance._pickerBar;
 }
 
-for (const view of ['price', 'pv']) for (const gesture of ['click', 'contextmenu', 'pointerdown', 'keydown']) {
+for (const view of ['price', 'pv']) for (const pointerType of ['mouse', 'touch']) {
+  test(`${view} ${pointerType} click shows hour details without opening the picker`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const templates = [], instance = card({ templates }), plan = pricedPeriods();
+    openHour(instance, plan, 0, view);
+    instance._closePicker();
+    const target = nodes(templates, 'plan-bar-group').find(node => node.rendered.includes('02:00 GMT+2–02:00 GMT+1'));
+    const press = event({}, { pointerType, button: 0, clientX: 20, clientY: 30 });
+    if (pointerType === 'mouse') handler(target, 'mouseenter')(press);
+    handler(target, 'pointerdown')(press);
+    t.mock.timers.tick(100);
+    handler(target, 'pointerup')(press);
+    handler(target, 'click')(press);
+    assert.equal(instance._pickerBar, null);
+    assert.ok(instance._tooltipBar);
+    const render = () => {
+      if (view === 'price') return instance._renderPriceChart(plan);
+      const charts = chartsFor(plan);
+      return instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+    };
+    assert.match(render(), /class="plan-hour-tooltip"/);
+    assert.equal(Object.keys(instance._pendingPlanActions).length, 0);
+    t.mock.timers.tick(500);
+    assert.equal(instance._pickerBar, null, 'short press cancels the hold');
+    handler(target, 'click')(press);
+    assert.match(render(), /class="plan-hour-tooltip"/, 'repeated clicks keep details visible');
+    t.mock.timers.tick(10000);
+    assert.equal(instance._tooltipBar, null);
+  });
+}
+
+for (const cancel of ['pointerup', 'pointercancel', 'pointerleave', 'pointermove']) {
+  test(`${cancel} cancels a pending hour hold`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const templates = [], instance = card({ templates });
+    openHour(instance);
+    instance._closePicker();
+    const target = nodes(templates, 'plan-bar-group')[0];
+    handler(target, 'pointerdown')(event({}, { button: 0, clientX: 20, clientY: 30 }));
+    t.mock.timers.tick(100);
+    handler(target, cancel)(event({}, { clientX: 30, clientY: 30 }));
+    t.mock.timers.tick(500);
+    assert.equal(instance._pickerBar, null);
+    assert.equal(instance._barHoldTimer, null);
+  });
+}
+
+test('history clicks still toggle information', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const instance = card();
+  instance._onBarClick(event(), 'history', 0);
+  assert.equal(instance._tooltipBar.chartId, 'history');
+  instance._onBarClick(event(), 'history', 0);
+  assert.equal(instance._tooltipBar, null);
+  assert.equal(instance._tooltipHideTimer, null);
+});
+
+for (const view of ['price', 'pv']) for (const gesture of ['contextmenu', 'pointerdown', 'keydown']) {
   test(`${view} ${gesture} selects a whole hour with four available quarters`, t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const templates = [], instance = card({ templates }), plan = pricedPeriods();
@@ -540,11 +609,21 @@ for (const view of ['price', 'pv']) for (const gesture of ['click', 'contextmenu
     const target = view === 'price' ? targets[0] : targets.find(node => node.rendered.includes('02:00 GMT+2–02:00 GMT+1'));
     assert.ok(target);
     handler(target, gesture)(event({}, { key: 'Enter', button: 0, clientX: 20, clientY: 30 }));
-    if (gesture === 'pointerdown') t.mock.timers.tick(500);
+    if (gesture === 'pointerdown') {
+      t.mock.timers.tick(499);
+      assert.equal(instance._pickerBar, null);
+      t.mock.timers.tick(1);
+      const picker = instance._pickerBar;
+      handler(target, 'pointerup')(event());
+      handler(target, 'click')(event());
+      assert.equal(instance._pickerBar, picker, 'release click keeps the same picker open');
+      assert.equal(instance._tooltipBar, null);
+    }
     assert.equal(instance._pickerBar.rows.length, 4);
     assert.equal(instance._pickerBar.selected.size, 4);
     assert.equal(instance._pickerBar.group.start, Date.parse(plan[0].start_time));
-    instance._renderPlanPicker();
+    const pickerHtml = instance._renderPlanPicker();
+    assert.doesNotMatch(pickerHtml, /Available intervals selected|plan-picker-description|4 selected|role="status"/);
     assert.equal(nodes(templates, 'plan-picker-period').length, 4);
     assert.equal(nodes(templates, 'plan-picker-btn').length, 4);
     assert.doesNotMatch(view === 'price' ? instance._renderPriceChart(plan) : '', /role="dialog"/);
@@ -692,12 +771,14 @@ test('partial failure rolls back only failed period, blocks duplicate apply, and
   await instance._applyPickerAction('charge');
   assert.equal(calls.length, 4);
   assert.equal(instance._pickerApplying, true);
+  assert.match(instance._renderPlanPicker(), /role="status" aria-live="polite">Applying selected intervals/);
   settles.forEach((settle, index) => index === 1 ? settle.reject(new Error('One quarter failed')) : settle.resolve());
   await applying;
   assert.equal(instance._pickerApplying, false);
   assert.equal(instance._pendingPlanActions[String(Date.parse(plan[1].start_time))], undefined);
   assert.equal(instance._pendingPlanActions[String(Date.parse(plan[0].start_time))].action, 'discharge');
   assert.match(picker.result, /3 of 4 intervals updated. 0 unavailable; 1 failed/);
+  assert.match(instance._renderPlanPicker(), /role="status" aria-live="polite">3 of 4 intervals updated/);
   assert.equal(picker.selected.size, 0);
   await instance._applyPickerAction('discharge');
   assert.equal(calls.length, 4);
@@ -778,7 +859,8 @@ for (const unavailable of ['past', 'missing']) test(`${unavailable} whole-hour t
 });
 
 for (const view of ['price', 'pv']) for (const unavailable of ['past', 'missing']) {
-  for (const inspect of ['mouseenter', 'focus']) test(`${view} ${inspect} inspects all ${unavailable} hour details without enabling edits`, () => {
+  for (const inspect of ['mouseenter', 'focus', 'click']) test(`${view} ${inspect} inspects all ${unavailable} hour details without enabling edits`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const templates = [], instance = card({ now: unavailable === 'past' ? '2026-10-26T00:00:00Z' : '2026-10-24T00:00:00Z', templates });
     const plan = pricedPeriods();
     if (unavailable === 'missing') plan.slice(0, 4).forEach(entry => { entry.price = null; });
@@ -825,7 +907,7 @@ test('opening an editable hour hides passive details and chart switching clears 
   const target = nodes(templates, 'plan-bar-group')[0];
   handler(target, 'focus')(event());
   assert.match(instance._renderPriceChart(plan), /class="plan-hour-tooltip"/);
-  handler(target, 'click')(event());
+  handler(target, 'contextmenu')(event());
   assert.equal(instance._pickerBar.selected.size, 4);
   assert.doesNotMatch(instance._renderPriceChart(plan), /class="plan-hour-tooltip"/);
   instance._closePicker();

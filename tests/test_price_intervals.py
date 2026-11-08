@@ -143,6 +143,145 @@ def test_selection_thresholds_blocks_pv_conflicts_and_ties(controller):
     assert controller.charge_hours == controller.discharge_hours == []
 
 
+@pytest.mark.parametrize("minutes", [15, 60])
+@pytest.mark.parametrize("values,charge_delta,discharge_delta,charge,discharge", [
+    ([0, 5, 10, 15, 20], 5, 5, [0, 1, 2, 3], [4]),
+    ([0, 5, 10, 15, 20], 20, 20, [0], [4]),
+    ([0, 5, 10, 15, 20], 21, 21, [], []),
+    ([0, 5, 10], 0, 0, [0, 1, 2], []),
+    ([0, 5, 10], -5, 5, [0, 1, 2], []),
+    ([0, 5, 10], 11, -5, [], [0, 1, 2]),
+    ([-20, -15, -10], 5, 5, [0, 1], [2]),
+    ([7, 7, 7], 0, 0, [0, 1, 2], []),
+    ([7, 7, 7], 1, 1, [], []),
+    ([3.6, 4.1], .5, 0, [0], [1]),
+    ([.1, .3], 1, .2, [], [1]),
+    ([3.6 + 2e-9, 4.1], .5, 0, [], [0, 1]),
+    ([.1, .3 - 2e-9], 1, .2, [], []),
+])
+def test_relative_selection(controller, minutes, values, charge_delta, discharge_delta, charge, discharge):
+    entries = [price(START + timedelta(minutes=minutes*i), minutes, value) for i, value in enumerate(values)]
+    publish(controller, entries)
+    controller.relative_auto_mode = True
+    controller.charge_price_threshold = charge_delta
+    controller.discharge_price_threshold = discharge_delta
+    controller.cheapest_hours = controller.expensive_hours = 0
+    controller._blocked_charging_hours = controller._blocked_discharging_hours = []
+    controller.calculate_auto_schedule()
+    slots = [item.slot for item in normalized(entries)]
+    assert controller.charge_hours == [slots[i] for i in charge]
+    assert controller.discharge_hours == [slots[i] for i in discharge]
+
+
+def test_absolute_thresholds_do_not_use_relative_equality_tolerance(controller):
+    publish(controller, [price(value=3.6 + 5e-10),
+                         price(START + timedelta(minutes=15), value=4.1 - 5e-10)])
+    controller.charge_price_threshold = 3.6
+    controller.discharge_price_threshold = 4.1
+    controller.cheapest_hours = controller.expensive_hours = 1
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == controller.discharge_hours == []
+
+
+@pytest.mark.parametrize("duration", [0, -1, None, "bad", float("nan"), float("inf"), .1])
+def test_relative_ignores_invalid_duration_budgets(controller, duration):
+    publish(controller, [price(value=0), price(START + timedelta(minutes=15), value=10)])
+    controller.relative_auto_mode = True
+    controller.cheapest_hours = controller.expensive_hours = duration
+    controller.charge_price_threshold = controller.discharge_price_threshold = 10
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == [utc_slot(DAY, 10, 0, 15)]
+    assert controller.discharge_hours == [utc_slot(DAY, 10, 15, 15)]
+
+
+def test_relative_extrema_include_current_tomorrow_and_later_before_exclusions(controller):
+    entries = [price(START - timedelta(minutes=30), value=-1000),
+               price(START - timedelta(minutes=15), value=1000),
+               price(value=2), price(START + timedelta(minutes=15), value=5),
+               price(START + timedelta(days=1), value=-10),
+               price(START + timedelta(days=2, hours=1), value=30),
+               price(START + timedelta(days=3), value="nan")]
+    data = publish(controller, entries)
+    controller.relative_auto_mode = True
+    controller.charge_price_threshold = controller.discharge_price_threshold = 25
+    controller._pv_charge_hours = [utc_slot("2026-05-03", 10, 0, 15)]
+    controller._blocked_discharging_hours = [11]
+    controller.calculate_auto_schedule()
+    assert (data.price_reference_min, data.price_reference_max) == (-10, 30)
+    assert controller.charge_hours == [utc_slot(DAY, 10, 0, 15), utc_slot(DAY, 10, 15, 15)]
+    assert controller.discharge_hours == []
+    # A charge exclusion still permits discharge of an overlapping candidate.
+    controller._blocked_charging_hours = [10]
+    controller.discharge_price_threshold = 10
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == []
+    assert controller.discharge_hours == [utc_slot(DAY, 10, 0, 15), utc_slot(DAY, 10, 15, 15)]
+
+
+@pytest.mark.parametrize("date,hours", [("2026-03-29", 23), ("2026-10-25", 25)])
+def test_relative_dst_slots_and_blocked_local_hours(controller, monkeypatch, date, hours):
+    zone = ZoneInfo("Europe/Vienna")
+    monkeypatch.setattr(dt_util, "DEFAULT_TIME_ZONE", zone)
+    start = datetime.fromisoformat(date).replace(tzinfo=zone).astimezone(timezone.utc)
+    monkeypatch.setattr(dt_util, "now", lambda: start + timedelta(minutes=5))
+    entries = [price(start + timedelta(minutes=15*i), value=5) for i in range(hours*4)]
+    publish(controller, entries)
+    controller.relative_auto_mode = True
+    controller.charge_price_threshold = controller.discharge_price_threshold = 0
+    controller._blocked_charging_hours = controller._blocked_discharging_hours = [2]
+    controller.calculate_auto_schedule()
+    expected = [item.slot for item in normalized(entries) if item.start.astimezone(zone).hour != 2]
+    assert controller.charge_hours == expected
+    assert len(expected) == 92
+    assert controller.discharge_hours == []
+
+
+@pytest.mark.parametrize("state,entries", [
+    (None, [price()]), ("unavailable", [price()]), ("unknown", [price()]),
+    ("5", []), ("5", [price(value="nan")]),
+    ("5", [price(START-timedelta(minutes=15))]),
+])
+def test_relative_missing_eligible_data_preserves_plan_and_clears_references(controller, state, entries):
+    controller.relative_auto_mode = True
+    controller._charge_hours = [utc_slot(DAY, 12)]
+    controller._discharge_hours = [utc_slot(DAY, 13)]
+    controller._last_schedule_update = START
+    if state is None:
+        controller.hass.states.get.return_value = None
+    else:
+        publish(controller, entries, state=state)
+    view = controller._step_load_epex_view()
+    controller.calculate_auto_schedule()
+    assert (view.price_reference_min, view.price_reference_max) == (None, None)
+    assert controller.charge_hours == [utc_slot(DAY, 12)]
+    assert controller.discharge_hours == [utc_slot(DAY, 13)]
+    assert controller._last_schedule_update == START
+
+
+@pytest.mark.parametrize("mode", ["auto", "manual", "off", "force_charge", "force_discharge"])
+async def test_reference_attributes_refresh_without_replanning(controller, monkeypatch, mode):
+    controller.control_mode = mode
+    controller._charge_hours = [utc_slot(DAY, 12)]
+    publish(controller, [price(value=1), price(START+timedelta(minutes=15), value=10)])
+    controller.calculate_auto_schedule = MagicMock()
+    sensor = ChargePlanSensor(controller, MockConfigEntry())
+    sensor.async_write_ha_state = MagicMock()
+    for now, expected in [(START+timedelta(minutes=5), (1, 10)),
+                          (START+timedelta(minutes=15), (10, 10)),
+                          (START+timedelta(minutes=30), (None, None))]:
+        monkeypatch.setattr(dt_util, "now", lambda: now)
+        controller.data = await controller._async_update_data()
+        sensor._handle_coordinator_update()
+        assert (sensor.extra_state_attributes["price_reference_min"],
+                sensor.extra_state_attributes["price_reference_max"]) == expected
+        assert controller.charge_hours == [utc_slot(DAY, 12)]
+    controller.calculate_auto_schedule.assert_not_called()
+    controller.data = None
+    sensor._handle_coordinator_update()
+    assert sensor.extra_state_attributes["price_reference_min"] is None
+    assert sensor.extra_state_attributes["price_reference_max"] is None
+
+
 def test_unavailable_source_does_not_replan(controller):
     controller._charge_hours = [utc_slot(DAY, 12)]
     data = publish(controller, [price()], state="unavailable")
@@ -318,9 +457,14 @@ async def test_registered_exact_service_routes_without_loss(controller):
     assert controller.charge_hours == [(START, START+timedelta(minutes=15))]
 
 
-def test_recalculation_keeps_new_base_under_fixed_overlay(controller):
+@pytest.mark.parametrize("relative", [False, True])
+def test_recalculation_keeps_new_base_under_fixed_overlay(controller, relative):
     publish(controller, [price(START + timedelta(minutes=15*i), value=i) for i in range(8)])
     controller.cheapest_hours = .25
+    controller.relative_auto_mode = relative
+    if relative:
+        controller.charge_price_threshold = 7
+        controller.discharge_price_threshold = 8
     controller.calculate_auto_schedule()
     assert controller.charge_hours == [utc_slot(DAY, 10, 0, 15)]
     controller.set_fixed_plan_hour(1, 10, "pv_charge")
