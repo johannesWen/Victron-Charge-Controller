@@ -269,12 +269,12 @@ test('Grid Consumer accepts a valid zero reading without a warning', () => {
   assert.doesNotMatch(instance._renderGridConsumer(), /zero offset|invalid or unavailable/);
 });
 
-for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge']) test(`Grid Consumer stays under Auto Mode in ${mode}`, () => {
+for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge']) test(`Grid Consumer stays under Charge / Discharge in ${mode}`, () => {
   const instance = gridConsumerCard({ state: 'off', attributes: { source_entity: 'sensor.ev', power_w: 0 } }, [], mode);
   const rendered = instance._renderControlsView();
   assert.match(rendered, /Grid Consumer/);
-  assert.ok(rendered.indexOf('Auto Mode') < rendered.indexOf('aria-label=Grid Consumer'));
-  assert.ok(rendered.indexOf('aria-label=Grid Consumer') < rendered.indexOf('Grid Feed-in'));
+  assert.ok(rendered.indexOf('Charge / Discharge') < rendered.indexOf('aria-label=Grid Consumer'));
+  assert.ok(rendered.indexOf('aria-label=Grid Consumer') < rendered.indexOf('Battery Limits'));
 });
 
 test('Grid Consumer help label opens its accessible topic with limits, timing and energy caveats', () => {
@@ -622,7 +622,8 @@ for (const view of ['price', 'pv']) for (const gesture of ['contextmenu', 'point
     assert.equal(instance._pickerBar.rows.length, 4);
     assert.equal(instance._pickerBar.selected.size, 4);
     assert.equal(instance._pickerBar.group.start, Date.parse(plan[0].start_time));
-    instance._renderPlanPicker();
+    const pickerHtml = instance._renderPlanPicker();
+    assert.doesNotMatch(pickerHtml, /Available intervals selected|plan-picker-description|4 selected|role="status"/);
     assert.equal(nodes(templates, 'plan-picker-period').length, 4);
     assert.equal(nodes(templates, 'plan-picker-btn').length, 4);
     assert.doesNotMatch(view === 'price' ? instance._renderPriceChart(plan) : '', /role="dialog"/);
@@ -770,12 +771,14 @@ test('partial failure rolls back only failed period, blocks duplicate apply, and
   await instance._applyPickerAction('charge');
   assert.equal(calls.length, 4);
   assert.equal(instance._pickerApplying, true);
+  assert.match(instance._renderPlanPicker(), /role="status" aria-live="polite">Applying selected intervals/);
   settles.forEach((settle, index) => index === 1 ? settle.reject(new Error('One quarter failed')) : settle.resolve());
   await applying;
   assert.equal(instance._pickerApplying, false);
   assert.equal(instance._pendingPlanActions[String(Date.parse(plan[1].start_time))], undefined);
   assert.equal(instance._pendingPlanActions[String(Date.parse(plan[0].start_time))].action, 'discharge');
   assert.match(picker.result, /3 of 4 intervals updated. 0 unavailable; 1 failed/);
+  assert.match(instance._renderPlanPicker(), /role="status" aria-live="polite">3 of 4 intervals updated/);
   assert.equal(picker.selected.size, 0);
   await instance._applyPickerAction('discharge');
   assert.equal(calls.length, 4);

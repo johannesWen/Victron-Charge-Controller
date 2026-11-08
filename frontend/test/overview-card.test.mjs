@@ -68,7 +68,8 @@ for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
     assert.equal((pair.rendered.match(/class="toggle-pair-item"/g) || []).length, 2);
     assert.ok(pair.rendered.indexOf('aria-label=Battery Power Control') < pair.rendered.indexOf('aria-label=Disable Discharge'));
     assert.ok(rendered.indexOf('aria-label=Discharge Allowed') < rendered.indexOf('aria-label=Disable Discharge'));
-    assert.ok(rendered.indexOf('aria-label=Disable Discharge') < rendered.indexOf('Help for Charge Power'));
+    assert.ok(rendered.indexOf('aria-label=Disable Discharge') < rendered.indexOf('Help for Grid Consumer'));
+    assert.ok(rendered.indexOf('Help for Grid Consumer') < rendered.indexOf('Help for Charge Power'));
     assert.equal(calls.length, 0);
     binding(toggle, '@change')();
     assert.deepEqual(JSON.parse(JSON.stringify(calls)), ['on', 'off'].includes(state) ? [[
@@ -398,7 +399,7 @@ for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge'])
     assert.equal(binding(toggle, '.disabled'), false);
     assert.match(toggle.rendered, /Absolute<\/button>[\s\S]*<ha-switch[\s\S]*>Relative<\/button>/);
     const row = templates.find(node => node.strings.join('').includes('class="auto-mode-toggles"'));
-    assert.match(row.rendered, /Grid Consumer[\s\S]*relative-mode-toggle/);
+    assert.doesNotMatch(row.rendered, /Grid Consumer/);
     assert.ok(rendered.indexOf('Auto Mode') < rendered.indexOf('aria-label="Relative Auto Mode"'));
     binding(toggle, '@change')();
     assert.deepEqual(plain(calls), [['switch', 'turn_on', { entity_id: `switch.${prefix}_relative_auto_mode` }]]);
@@ -491,24 +492,35 @@ for (const relative of ['off', 'on']) test(`every Settings help dialog has an ex
       assert.equal((rendered.match(/Example:/g) || []).length, key === 'control_mode' ? 5 : 2);
     }
   }
-  assert.equal(topics.size, 29, 'all Settings help topics are reachable');
+  assert.equal(topics.size, 30, 'all Settings help topics are reachable');
   card._helpTopic = null;
   assert.match(card._renderHelpDialog('settings', 'Settings'), /SOC means battery level/);
   assert.equal(calls.length, 0);
 });
 
-test('Relative label opens the mode help dialog without changing settings', () => {
-  const { card, templates, calls } = relativeSetup();
+for (const relative of ['off', 'on']) test(`Absolute and Relative labels open their own help with Relative mode ${relative}`, () => {
+  const { card, templates, calls } = relativeSetup(relative);
   card.render();
-  const label = templates.find(node => node.rendered.includes('aria-label=Help for Relative'));
-  assert.match(label.rendered, /aria-haspopup="dialog"/);
   card._openHelp = topic => { card._helpOpen = true; card._helpTopic = topic; };
-  binding(label, '@click')({ currentTarget: {} });
-  assert.equal(card._helpTopic.key, 'relative_auto_mode');
-  const rendered = card._renderHelpDialog('settings', 'Settings');
-  assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Relative/);
-  assert.match(rendered, /30 − 10 = 20/);
-  assert.match(rendered, /Duration limits do not apply/);
+  for (const name of ['Absolute', 'Relative']) {
+    const label = templates.find(node => node.rendered.includes(`aria-label=Help for ${name}`));
+    assert.match(label.rendered, /aria-haspopup="dialog"/);
+    binding(label, '@click')({ currentTarget: {} });
+    assert.equal(card._helpTopic.key, `${name.toLowerCase()}_auto_mode`);
+    const rendered = card._renderHelpDialog('settings', 'Settings');
+    assert.ok(rendered.includes(`role="dialog" aria-modal="true" aria-label=${name}`));
+    if (name === 'Absolute') {
+      assert.match(rendered, /up to 2 hours.*10 ct\/kWh or less/);
+      assert.match(rendered, /duration of 0 h selects no periods/);
+      assert.match(rendered, /discharge wins/);
+      assert.doesNotMatch(rendered, /30 − 10 = 20|Duration limits do not apply/);
+    } else {
+      assert.match(rendered, /30 − 10 = 20/);
+      assert.match(rendered, /Duration limits do not apply/);
+      assert.match(rendered, /charging wins/);
+      assert.doesNotMatch(rendered, /up to 2 hours/);
+    }
+  }
   assert.equal(calls.length, 0);
 });
 
@@ -526,7 +538,7 @@ test('relative help follows the active mode, retains numeric ranges, and explain
   assert.match(card._renderHelpDialog('settings', 'Settings'), /not used in Relative mode[\s\S]*even if the saved duration is 0 h[\s\S]*saved duration is kept/);
   card._helpTopic = { key: 'relative_auto_mode', label: 'Relative Auto Mode' };
   rendered = card._renderHelpDialog('settings', 'Settings');
-  for (const text of ['Absolute, the default', 'zero or negative', 'tomorrow or later', 'charging wins',
+  for (const text of ['switch to the right', 'zero or negative', 'tomorrow or later', 'charging wins',
     'Permission switches', 'battery level limits', 'any mode', 'only rebuilds the schedule in Auto',
     'saved mode and schedule return without rebuilding', 'chart lines without changing the plan']) assert.ok(rendered.includes(text), text);
   for (const key of ['control_mode', 'schedule_actions']) {

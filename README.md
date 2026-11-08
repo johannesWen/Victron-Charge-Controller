@@ -297,7 +297,7 @@ To enable it:
 
 1. Open the integration configuration.
 2. Select Grid consumer power sensor.
-3. Turn on Grid Consumer under Settings → Auto Mode in the card.
+3. Turn on Grid Consumer under Settings → Charge / Discharge in the card, below Disable Discharge.
 
 Grid Consumer defaults to off and remembers its state after a restart.
 It works in Auto, Manual, Force Charge, and Force Discharge, including Idle and PV Charge actions.

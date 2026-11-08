@@ -146,7 +146,7 @@ const HELP_TEXT = {
   ],
 };
 
-// Settings help uses the UI entity keys, including their friendly-name suffixes.
+// Settings help uses UI entity keys, with separate topics for the two Auto modes.
 // Numeric limits are read from the same live entity attributes as the sliders.
 const SETTINGS_HELP = {
   control_mode: [
@@ -156,8 +156,16 @@ const SETTINGS_HELP = {
     { heading: 'Force Charge', items: ['Requests charging now at Charge Power, without waiting for the schedule or a low price.', 'Example: use this when you want to charge before a trip, even if the current hour is blocked for automatic charging.', 'Charge Allowed must be on. Max SOC, the restart buffer and grid power limits still apply. Force Charge stays selected until you change the mode.'] },
     { heading: 'Force Discharge', items: ['Requests discharging now, without waiting for the schedule or a high price.', 'Example: use this to request discharge during an hour that Auto did not select.', 'Discharge Allowed must be on. Battery level limits, the restart buffer and export limits still apply. At Min SOC, only spare solar power may be exported if a solar surplus sensor is configured. Force Discharge stays selected until you change the mode.'] },
   ],
+  absolute_auto_mode: [
+    'Absolute is the default Auto setting, with the switch to the left. You set fixed price limits and how much time Auto may choose for charging and discharging.',
+    'Example: set Charge Price Threshold to 10 ct/kWh and Charge Duration to 2 h. Auto chooses up to 2 hours of the cheapest available periods at 10 ct/kWh or less. A price of exactly 10 is included.',
+    'For discharge, Auto chooses the highest prices at or above Discharge Price Threshold, up to Discharge Duration. Example: a threshold of 20 ct/kWh and duration of 1 h allows up to 1 hour at 20 ct/kWh or more.',
+    'Auto uses available prices from now onward, which can include more than one day. It selects whole price periods without going over each duration. A duration of 0 h selects no periods for that action. If both rules select the same period, discharge wins.',
+    'Blocked hours and PV Charge periods are skipped. Your fixed plan and choices in the Plan card can replace automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.',
+    'Returning from Relative restores your saved duration limits. The saved price values now mean fixed limits, so check them after switching. Changing the switch rebuilds the schedule only in Auto. After a restart, the saved mode and schedule return without rebuilding the schedule.',
+  ],
   relative_auto_mode: [
-    'Choose how Auto compares prices. Absolute, the default, uses fixed price limits and Charge / Discharge Duration. Relative compares each price with the highest and lowest available prices. A price delta means a price difference, in ct/kWh.',
+    'Relative is the Auto setting with the switch to the right. It compares each price with the highest and lowest available prices. You set a price delta, meaning a price difference in ct/kWh, instead of a fixed price limit.',
     'Example: the highest price is 30 ct/kWh and Charge Price Delta is 10. Auto can charge at 20 ct/kWh or less: 30 − 10 = 20. If the lowest price is 5 and Discharge Price Delta is 10, it can discharge at 15 or more: 5 + 10 = 15.',
     'Relative mode uses all available prices from now onward, including tomorrow or later. It finds the highest and lowest prices before skipping blocked hours and PV Charge times. If a time matches both rules, charging wins.',
     'A delta can be zero or negative. With a highest price of 30, a charge delta of −5 allows prices up to 35. The same saved price values are used in both modes, so check them after switching.',
@@ -1564,6 +1572,7 @@ class VictronChargeControllerCard extends LitElement {
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
         ])}
         ${this._renderBatteryPowerControl()}
+        ${this._renderGridConsumer()}
         ${this._renderSlider('Charge Power', 'charge_power', ' W')}
         ${this._renderSlider('Discharge Power', 'discharge_power', ' W')}
         ${this._renderSlider('PV Charging Battery Share', 'pv_charging_battery_share', ' %')}
@@ -1586,9 +1595,8 @@ class VictronChargeControllerCard extends LitElement {
       <!-- Keep automatic scheduling settings available in every control mode. -->
       ${this._renderSection('Auto Mode', 'mdi:auto-fix', html`
         <div class="auto-mode-toggles">
-          <div>${this._renderGridConsumer()}</div>
           <div class="control-row toggle-row relative-mode-toggle">
-            ${this._renderHelpLabel('Absolute', 'relative_auto_mode')}
+            ${this._renderHelpLabel('Absolute', 'absolute_auto_mode')}
             <span class="toggle-tooltip"
               title=${relativeUnavailable ? 'Relative Auto Mode switch is unavailable; absolute price settings are shown.' : nothing}
               tabindex=${relativeUnavailable ? '0' : nothing}
@@ -2027,12 +2035,11 @@ class VictronChargeControllerCard extends LitElement {
     const selected = picker.rows.filter(row => picker.selected.has(this._periodIdentity(row)) && this._currentPickerPeriod(row)).length;
     return html`<div class="vcc-help-overlay" role="presentation"
       @click=${e => { if (e.target === e.currentTarget) this._closePicker(); }}>
-      <div class="vcc-help-dialog plan-picker" role="dialog" aria-modal="true" aria-labelledby="plan-picker-title" aria-describedby="plan-picker-description">
+      <div class="vcc-help-dialog plan-picker" role="dialog" aria-modal="true" aria-labelledby="plan-picker-title">
         <div class="vcc-help-header">
           <span class="vcc-help-title" id="plan-picker-title">${this._periodLabel(picker.group)}</span>
           <button type="button" class="vcc-help-close" aria-label="Close hour picker" @click=${() => this._closePicker()}>✕</button>
         </div>
-        <p id="plan-picker-description">Available intervals selected. Tap to deselect.</p>
         <div class="plan-picker-periods" aria-label="Intervals to change">
           ${picker.rows.map(row => {
             const entry = this._currentPickerPeriod(row), available = !!entry;
@@ -2048,7 +2055,7 @@ class VictronChargeControllerCard extends LitElement {
           ${['charge', 'pv_charge', 'discharge', 'idle'].map(action => html`<button type="button" class="plan-picker-btn"
             data-action=${action} ?disabled=${!selected || this._pickerApplying} @click=${() => this._applyPickerAction(action)}>${ACTION_META[action].label}</button>`)}
         </div>
-        <div role="status" aria-live="polite">${this._pickerApplying ? 'Applying selected intervals…' : picker.result || `${selected} selected`}</div>
+        ${this._pickerApplying || picker.result ? html`<div role="status" aria-live="polite">${this._pickerApplying ? 'Applying selected intervals…' : picker.result}</div>` : nothing}
         ${this._lastServiceError ? html`<div class="warning">Service call failed: ${this._lastServiceError.message}</div>` : nothing}
       </div>
     </div>`;
@@ -3917,15 +3924,15 @@ class VictronChargeControllerCard extends LitElement {
         font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums;
         display: flex; flex-direction: column; gap: 2px;
       }
-      .vcc-help-dialog.plan-picker { width: min(360px, calc(100vw - 24px)); padding: 10px; gap: 8px; }
-      .plan-picker p, .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
-      .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+      .vcc-help-dialog.plan-picker { width: min(340px, calc(100vw - 24px)); padding: 8px; gap: 4px; }
+      .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
+      .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
       .plan-picker-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .plan-picker button { min-height: 44px; font: inherit; font-size: .85em; cursor: pointer; }
       .plan-picker .vcc-help-close { min-width: 44px; flex-shrink: 0; }
       .plan-picker-period, .plan-picker-btn {
         border: 1px solid var(--vcc-border); border-radius: 6px;
-        background: var(--vcc-card-bg, var(--card-background-color, #fff)); color: var(--vcc-text); padding: 6px;
+        background: var(--vcc-card-bg, var(--card-background-color, #fff)); color: var(--vcc-text); padding: 4px;
       }
       .plan-picker-period { display: flex; flex-direction: column; justify-content: center; gap: 2px; text-align: left; }
       .plan-picker-period span { font-size: .85em; line-height: 1.3; }
