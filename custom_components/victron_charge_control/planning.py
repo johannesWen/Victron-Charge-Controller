@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta, timezone
-from math import isfinite
+from math import isclose, isfinite
 from typing import Any
 
 from homeassistant.util import dt as dt_util
@@ -66,7 +66,10 @@ def calculate_auto_schedule(
                 continue
             if any(overlaps(item.slot, pv) for pv in pv_charge_hours):
                 continue
-            if (item.price < threshold if discharge else item.price > threshold):
+            # Relative cutoff arithmetic can round an inclusive decimal boundary away.
+            if (item.price < threshold if discharge else item.price > threshold) and not (
+                relative_auto_mode and isclose(item.price, threshold, rel_tol=0, abs_tol=1e-9)
+            ):
                 continue
             selected.append(item.slot)
             remaining -= duration

@@ -154,6 +154,10 @@ def test_selection_thresholds_blocks_pv_conflicts_and_ties(controller):
     ([-20, -15, -10], 5, 5, [0, 1], [2]),
     ([7, 7, 7], 0, 0, [0, 1, 2], []),
     ([7, 7, 7], 1, 1, [], []),
+    ([3.6, 4.1], .5, 0, [0], [1]),
+    ([.1, .3], 1, .2, [], [1]),
+    ([3.6 + 2e-9, 4.1], .5, 0, [], [0, 1]),
+    ([.1, .3 - 2e-9], 1, .2, [], []),
 ])
 def test_relative_selection(controller, minutes, values, charge_delta, discharge_delta, charge, discharge):
     entries = [price(START + timedelta(minutes=minutes*i), minutes, value) for i, value in enumerate(values)]
@@ -167,6 +171,16 @@ def test_relative_selection(controller, minutes, values, charge_delta, discharge
     slots = [item.slot for item in normalized(entries)]
     assert controller.charge_hours == [slots[i] for i in charge]
     assert controller.discharge_hours == [slots[i] for i in discharge]
+
+
+def test_absolute_thresholds_do_not_use_relative_equality_tolerance(controller):
+    publish(controller, [price(value=3.6 + 5e-10),
+                         price(START + timedelta(minutes=15), value=4.1 - 5e-10)])
+    controller.charge_price_threshold = 3.6
+    controller.discharge_price_threshold = 4.1
+    controller.cheapest_hours = controller.expensive_hours = 1
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == controller.discharge_hours == []
 
 
 @pytest.mark.parametrize("duration", [0, -1, None, "bad", float("nan"), float("inf"), .1])
