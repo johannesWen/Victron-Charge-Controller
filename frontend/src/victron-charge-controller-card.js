@@ -75,6 +75,11 @@ const HELP_TEXT = {
         'Tap a Price bar to see price details for that period. The full day fits the card width. Hour blocks contain one hourly bar or four separate 15-minute columns.',
         'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
       ] },
+    { heading: 'Price cutoffs', items: [
+      'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charging wins overlaps and duration budgets are ignored, including zero; permissions and SOC protection still apply.',
+      'Both days use the same current/future reference prices from Charge Plan, including tomorrow or later and prices excluded by blocks or PV Charge. Lines are hidden when their reference is unavailable or outside the chart scale. Hold a line to drag its cutoff; this edits the corresponding delta in relative mode.',
+      'Lines reflect current selection cutoffs. Reference prices can refresh without changing the saved schedule; Recalculate and the existing Auto-setting and Recalculation Hours triggers apply the new selection. Switching Relative Auto Mode recalculates only in Auto; restoring it after restart preserves schedules.',
+    ] },
     { heading: 'PV forecast requirements',
       items: [
         'Install and configure the Solcast PV Solar Forecast integration in Home Assistant with your Solcast API key and rooftop sites. It must be loaded and have downloaded forecast data.',
@@ -149,10 +154,16 @@ const HELP_TEXT = {
 const SETTINGS_HELP = {
   control_mode: [
     { heading: 'Off', items: ['Requests Idle and resets the grid target to the configured Idle Setpoint. It does not switch off the Victron system or prevent battery flows managed by Victron.'] },
-    { heading: 'Auto', items: ['Builds a price-based schedule from available current and future EPEX periods using the duration budgets, price thresholds and recurring blocks. An active fixed plan and individual period overrides can change that schedule. Permission switches and SOC protection still apply.'] },
+    { heading: 'Auto', items: ['Builds a price-based schedule from available current and future EPEX periods using absolute price thresholds and duration budgets by default, or signed price deltas without duration caps when Relative Auto Mode is on. Recurring blocks still apply. An active fixed plan and individual period overrides can change that schedule. Permission switches and SOC protection still apply.'] },
     { heading: 'Manual', items: ['Follows the hours you choose in the Plan card and any active fixed plan instead of selecting hours by price. Unscheduled hours use Idle. Permission switches and SOC protection still apply; selected Recalculation Hours reset manual charge/discharge slots.'] },
     { heading: 'Force Charge', items: ['Requests grid charging at Charge Power without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Charge Allowed and obeys Max SOC, hysteresis and grid setpoint limits.'] },
     { heading: 'Force Discharge', items: ['Requests discharge without waiting for a scheduled hour. It bypasses price selection and recurring blocked hours, but still requires Discharge Allowed and obeys SOC protection, discharge stages and export limits.'] },
+  ],
+  relative_auto_mode: [
+    'Defaults off: automatic selection uses absolute price thresholds and duration budgets. When enabled, Charge Price Delta and Discharge Price Delta reuse the existing threshold values and ranges in ct/kWh; deltas may be negative.',
+    'Charging qualifies at price <= maximum reference price minus Charge Price Delta. Discharging qualifies at price >= minimum reference price plus Discharge Price Delta. The references span all available current and future price intervals, including tomorrow or later, before blocked hours and PV Charge exclusions. Charging wins if both qualify.',
+    'Duration budgets are ignored, even when zero. Their saved values are retained and become editable again when this switch is off. Charge Allowed, Discharge Allowed, SOC protection, recurring blocks, PV Charge exclusions and fixed-plan overrides still apply.',
+    'Available in every control mode; changing it recalculates only in Auto. The switch and existing schedules survive restart without an automatic replan on restore. Reference refreshes update chart cutoffs without replanning; use Recalculate or the existing Auto-setting and Recalculation Hours triggers to update the saved schedule.',
   ],
   grid_consumer: [
     'When battery feedback is active for Charge or full Discharge, it already accounts for this load and replaces this offset. Otherwise, it subtracts the current solar surplus from the measured consumer load and adds only the remaining shortfall to the raw grid target in Auto, Manual, Force Charge and Force Discharge, including Idle and PV Charge actions, before grid and reduced feed-in limits. Off keeps the configured Idle Setpoint unchanged.',
@@ -271,8 +282,21 @@ const SETTINGS_HELP = {
     'Expired slots are cleaned up during replanning. With no hours selected, these timed replans are disabled; the Recalculate button and automatic recalculation caused by Auto-setting changes remain available.',
   ],
   schedule_actions: [
-    { heading: 'Recalculate', items: ['Rebuilds the automatic charge/discharge schedule from the available current and future EPEX prices, using hour counts, price thresholds and recurring blocks. Requires Auto mode and usable price data.', 'Replaces individual charge/discharge selections with the calculated plan, preserves PV Charge slots, and reapplies any active fixed plan. It does not change the control mode.'] },
+    { heading: 'Recalculate', items: ['Rebuilds the automatic charge/discharge schedule from the available current and future EPEX prices, using absolute price thresholds and duration budgets by default, or signed price deltas without duration caps in Relative Auto Mode. Recurring blocks still apply. Requires Auto mode and usable price data.', 'Replaces individual charge/discharge selections with the calculated plan, preserves PV Charge slots, and reapplies any active fixed plan. It does not change the control mode.'] },
     { heading: 'Clear Schedule', items: ['Clears scheduled charge, discharge and PV Charge hours and both recurring blocked-hour lists. Saved fixed plans are retained; any active fixed plan is immediately reapplied, so the resulting schedule may not be empty.', 'Does not change the control mode, permission switches or Recalculation Hours. Force modes can continue operating, and later Auto recalculation can populate the schedule again.'] },
+  ],
+};
+
+const RELATIVE_SETTINGS_HELP = {
+  cheapest_hours_auto_charge: ['Ignored in Relative Auto Mode, even when zero. The saved Charge Duration is retained and used again when relative mode is off. All eligible charging periods can be selected without a duration cap; Charge Allowed and SOC protection still apply.'],
+  expensive_hours_auto_discharge: ['Ignored in Relative Auto Mode, even when zero. The saved Discharge Duration is retained and used again when relative mode is off. All eligible discharge periods can be selected without a duration cap; Discharge Allowed and SOC protection still apply.'],
+  charge_price_threshold: [
+    'Signed delta in ct/kWh below the maximum reference price: charging qualifies at price <= maximum minus Charge Price Delta, including equality. A negative delta puts the cutoff above the maximum. References cover available current and future intervals, including tomorrow or later, before blocked hours and PV Charge exclusions.',
+    'No duration cap applies, even with Charge Duration zero. Charging wins overlaps with discharge. Changing the delta in Auto recalculates the schedule; Charge Allowed, SOC protection and fixed-plan overrides still apply. Force and manually chosen periods do not use this comparison.',
+  ],
+  discharge_price_threshold: [
+    'Signed delta in ct/kWh above the minimum reference price: discharging qualifies at price >= minimum plus Discharge Price Delta, including equality. A negative delta puts the cutoff below the minimum. References cover available current and future intervals, including tomorrow or later, before blocked hours and PV Charge exclusions.',
+    'No duration cap applies, even with Discharge Duration zero. Charging wins overlaps with discharge. Changing the delta in Auto recalculates the schedule; Discharge Allowed, SOC protection and fixed-plan overrides still apply. Force and manually chosen periods do not use this comparison.',
   ],
 };
 
@@ -314,6 +338,7 @@ class VictronChargeControllerCard extends LitElement {
     this._onThresholdTouchMoveBound = this._onThresholdTouchMove.bind(this);
     // Pending threshold overrides (until HA entity catches up)
     this._pendingThresholds = {};
+    this._lastThresholdContext = null;
     this._costRange = 'day';
     this._costRangeOffsets = { day: 0, week: 0, month: 0, year: 0 };
     this._costMode = 'cost';
@@ -1068,7 +1093,7 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _renderSlider(label, numberKey, unit = '') {
+  _renderSlider(label, numberKey, unit = '', disabled = false) {
     const obj = this._state('number', numberKey);
     if (!obj) return nothing;
     const value = parseFloat(obj.state);
@@ -1082,6 +1107,7 @@ class VictronChargeControllerCard extends LitElement {
               aria-label=${label}
               min=${min} max=${max} step=${step}
               .value=${String(value)}
+              .disabled=${disabled}
               @input=${(e) => this._onSliderInput(e, unit)}
               @change=${(e) => this._onSliderChange(e, numberKey)}
               @pointerdown=${(e) => this._onSliderPointerDown(e)}
@@ -1098,6 +1124,7 @@ class VictronChargeControllerCard extends LitElement {
 
   _onSliderPointerDown(e) {
     const input = e.target;
+    if (input.disabled) return;
     // Store the original value to restore if not unlocked
     input.dataset.lockedValue = input.value;
     // Prevent the slider from moving until held long enough
@@ -1105,6 +1132,7 @@ class VictronChargeControllerCard extends LitElement {
       const progress = input.parentElement.querySelector('.slider-hold-progress');
       progress.classList.add('active');
       this._sliderHoldTimers.set(input, setTimeout(() => {
+        if (input.disabled) return;
         this._sliderUnlocked.add(input);
         input.classList.add('unlocked');
         progress.classList.remove('active');
@@ -1137,8 +1165,8 @@ class VictronChargeControllerCard extends LitElement {
 
   _onSliderInput(e, unit) {
     const input = e.target;
-    // If not unlocked, revert to locked value
-    if (!this._sliderUnlocked.has(input)) {
+    // If disabled or not unlocked, revert to the saved value.
+    if (input.disabled || !this._sliderUnlocked.has(input)) {
       if (input.dataset.lockedValue !== undefined) {
         input.value = input.dataset.lockedValue;
       }
@@ -1158,17 +1186,59 @@ class VictronChargeControllerCard extends LitElement {
     const input = e.target;
     const tooltip = input.parentElement.querySelector('.slider-tooltip');
     tooltip.style.display = 'none';
-    // Commit if the slider was unlocked, then re-lock
+    const disabled = input.disabled || (this._relativeAutoMode()
+      && ['cheapest_hours_auto_charge', 'expensive_hours_auto_discharge'].includes(numberKey));
+    // Commit if the slider was unlocked, then re-lock.
     if (this._sliderUnlocked.has(input)) {
-      this._setNumber(numberKey, input.value);
+      if (!disabled) this._setNumber(numberKey, input.value);
       this._sliderUnlocked.delete(input);
       input.classList.remove('unlocked');
     } else if (input.dataset.lockedValue !== undefined) {
       input.value = input.dataset.lockedValue;
     }
+    if (disabled) input.value = this._val('number', numberKey);
   }
 
   // ── Threshold drag handlers ─────────────────────────────
+
+  _relativeAutoMode() {
+    return this._val('switch', 'relative_auto_mode') === 'on';
+  }
+
+  _priceThresholdLabel(type) {
+    return `${type === 'charge' ? 'Charge' : 'Discharge'} Price ${this._relativeAutoMode() ? 'Delta' : 'Threshold'}`;
+  }
+
+  _priceThresholdContext() {
+    const plan = this._state('sensor', 'charge_plan');
+    const attrs = ['unknown', 'unavailable'].includes(plan?.state) ? null : plan?.attributes;
+    return {
+      relative: this._relativeAutoMode(),
+      min: Number.isFinite(attrs?.price_reference_min) ? attrs.price_reference_min : null,
+      max: Number.isFinite(attrs?.price_reference_max) ? attrs.price_reference_max : null,
+    };
+  }
+
+  _thresholdContextMatches(context) {
+    const current = this._priceThresholdContext();
+    return context && context.relative === current.relative && context.min === current.min && context.max === current.max;
+  }
+
+  _syncThresholdContext() {
+    const context = this._priceThresholdContext();
+    if (this._lastThresholdContext && context.relative !== this._lastThresholdContext.relative) this._pendingThresholds = {};
+    if (this._thresholdDrag && !this._thresholdContextMatches(this._thresholdDrag.context)) this._finishThresholdDrag(false);
+    this._lastThresholdContext = context;
+    return context;
+  }
+
+  _thresholdCutoff(type, value, context) {
+    if (!Number.isFinite(value)) return null;
+    if (!context.relative) return value;
+    const reference = type === 'charge' ? context.max : context.min;
+    if (reference === null) return null;
+    return type === 'charge' ? reference - value : reference + value;
+  }
 
   _svgYToPrice(svgY, scale) {
     const { scaleMin, scaleRange, padT, plotH } = scale;
@@ -1208,7 +1278,7 @@ class VictronChargeControllerCard extends LitElement {
     }
 
     if (!this._thresholdDrag) return;
-    const { type, unlocked, price, group, pointerId } = this._thresholdDrag;
+    const { type, unlocked, value, group, pointerId, context } = this._thresholdDrag;
     group.classList.remove('threshold-holding', 'threshold-unlocked');
     this.classList.remove('threshold-drag-active');
 
@@ -1220,9 +1290,9 @@ class VictronChargeControllerCard extends LitElement {
       }
     }
 
-    if (commit && unlocked && price !== null) {
+    if (commit && unlocked && value != null && this._thresholdContextMatches(context)) {
       const key = type === 'charge' ? 'charge_price_threshold' : 'discharge_price_threshold';
-      const rounded = Math.round(price * 100) / 100;
+      const rounded = context.relative ? value : Math.round(value * 100) / 100;
       this._setNumber(key, rounded);
       // Store pending value so both charts update immediately
       this._pendingThresholds[type] = rounded;
@@ -1236,6 +1306,8 @@ class VictronChargeControllerCard extends LitElement {
     e.preventDefault();
     e.stopPropagation();
     if (this._thresholdDrag) this._finishThresholdDrag(false);
+    const context = this._syncThresholdContext();
+    if (context.relative && (type === 'charge' ? context.max : context.min) === null) return;
 
     const group = e.currentTarget;
     const svgEl = group.closest('svg');
@@ -1243,7 +1315,7 @@ class VictronChargeControllerCard extends LitElement {
 
     // Start hold timer
     if (this._thresholdHoldTimer) clearTimeout(this._thresholdHoldTimer);
-    this._thresholdDrag = { type, scale, group, svgEl, pointerId, unlocked: false, price: null };
+    this._thresholdDrag = { type, scale, group, svgEl, pointerId, context, unlocked: false, price: null, value: null };
     group.classList.add('threshold-holding');
     this.classList.add('threshold-drag-active');
     this._addThresholdDragListeners();
@@ -1265,19 +1337,30 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _onThresholdPointerMove(e) {
+    this._syncThresholdContext();
     if (!this._thresholdDrag) return;
     if (this._thresholdDrag.pointerId !== undefined && e.pointerId !== this._thresholdDrag.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
     if (!this._thresholdDrag.unlocked) return;
 
-    const { scale, group, svgEl } = this._thresholdDrag;
+    const { type, context, scale, group, svgEl } = this._thresholdDrag;
     const svgY = this._clientToSvgY(e.clientY, svgEl);
     let price = this._svgYToPrice(svgY, scale);
-    // Snap to step
-    price = Math.round(price / scale.step) * scale.step;
-    price = Math.max(scale.scaleMin, Math.min(scale.scaleMax, price));
+    let value;
+    if (context.relative) {
+      const { min, max, step } = this._sliderLimits(`${type}_price_threshold`);
+      const delta = type === 'charge' ? context.max - price : price - context.min;
+      value = Math.max(min, Math.min(max, min + Math.round((delta - min) / step) * step));
+      value = Math.round(value * 1e10) / 1e10;
+      price = this._thresholdCutoff(type, value, context);
+    } else {
+      price = Math.round(price / scale.step) * scale.step;
+      price = Math.max(scale.scaleMin, Math.min(scale.scaleMax, price));
+      value = price;
+    }
     this._thresholdDrag.price = price;
+    this._thresholdDrag.value = value;
 
     // Update line and label position in DOM
     const yPos = scale.padT + scale.plotH - ((price - scale.scaleMin) / scale.scaleRange) * scale.plotH;
@@ -1302,7 +1385,7 @@ class VictronChargeControllerCard extends LitElement {
     if (this._thresholdDrag.pointerId !== undefined && e.pointerId !== this._thresholdDrag.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
-    this._finishThresholdDrag(true);
+    this._finishThresholdDrag(e.type !== 'pointercancel');
   }
 
   _renderHourChips({ key, selected, activeClass = 'blocked', onClick }) {
@@ -1412,6 +1495,8 @@ class VictronChargeControllerCard extends LitElement {
 
   _renderControlsView() {
     const feedIn = this._val('switch', 'grid_feed_in_control') === 'on';
+    const relative = this._relativeAutoMode();
+    const relativeUnavailable = !['on', 'off'].includes(this._val('switch', 'relative_auto_mode'));
     return html`
       ${this._renderModeSection()}
 
@@ -1444,10 +1529,13 @@ class VictronChargeControllerCard extends LitElement {
       <!-- Keep automatic scheduling settings available in every control mode. -->
       ${this._renderSection('Auto Mode', 'mdi:auto-fix', html`
         ${this._renderGridConsumer()}
-        ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h')}
-        ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h')}
-        ${this._renderSlider('Charge Price Threshold', 'charge_price_threshold', ' ct/kWh')}
-        ${this._renderSlider('Discharge Price Threshold', 'discharge_price_threshold', ' ct/kWh')}
+        ${this._renderToggle('Relative Auto Mode', 'relative_auto_mode', relativeUnavailable,
+          relativeUnavailable ? 'Relative Auto Mode switch is unavailable; absolute price settings are shown.' : '')}
+        ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h', relative)}
+        ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h', relative)}
+        ${relative ? html`<div class="forecast-status" role="status">Duration budgets are ignored in Relative Auto Mode, even when zero. Saved duration values are retained.</div>` : nothing}
+        ${this._renderSlider(this._priceThresholdLabel('charge'), 'charge_price_threshold', ' ct/kWh')}
+        ${this._renderSlider(this._priceThresholdLabel('discharge'), 'discharge_price_threshold', ' ct/kWh')}
       `)}
 
       <!-- Grid Feed-in -->
@@ -2884,6 +2972,7 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _renderAutoPlanContent() {
+    const thresholdContext = this._syncThresholdContext();
     const planEntity = this._state('sensor', 'charge_plan');
     const plan = planEntity?.attributes?.plan;
 
@@ -2914,8 +3003,8 @@ class VictronChargeControllerCard extends LitElement {
     const chargeThreshold = parseFloat(this._val('number', 'charge_price_threshold'));
     const dischargeThreshold = parseFloat(this._val('number', 'discharge_price_threshold'));
     // Use pending overrides until HA entity catches up
-    const ctCharge = this._pendingThresholds.charge ?? (isNaN(chargeThreshold) ? null : chargeThreshold);
-    const ctDischarge = this._pendingThresholds.discharge ?? (isNaN(dischargeThreshold) ? null : dischargeThreshold);
+    const ctCharge = this._thresholdCutoff('charge', this._pendingThresholds.charge ?? chargeThreshold, thresholdContext);
+    const ctDischarge = this._thresholdCutoff('discharge', this._pendingThresholds.discharge ?? dischargeThreshold, thresholdContext);
     // Clear pending values once entity state matches
     if (this._pendingThresholds.charge !== undefined && !isNaN(chargeThreshold) && Math.abs(chargeThreshold - this._pendingThresholds.charge) < 0.001) {
       delete this._pendingThresholds.charge;
@@ -3007,13 +3096,13 @@ class VictronChargeControllerCard extends LitElement {
           ${ctCharge !== null ? html`
             <div class="plan-legend-item">
               <span class="plan-legend-line" style="border-color: var(--vcc-success)"></span>
-              <span>Charge Threshold</span>
+              <span>${thresholdContext.relative ? 'Charge Cutoff' : 'Charge Threshold'}</span>
             </div>
           ` : nothing}
           ${ctDischarge !== null ? html`
             <div class="plan-legend-item">
               <span class="plan-legend-line" style="border-color: var(--vcc-warning)"></span>
-              <span>Discharge Threshold</span>
+              <span>${thresholdContext.relative ? 'Discharge Cutoff' : 'Discharge Threshold'}</span>
             </div>
           ` : nothing}
         </div>
@@ -3024,6 +3113,7 @@ class VictronChargeControllerCard extends LitElement {
 
   render() {
     if (!this.hass || !this.config) return nothing;
+    this._syncThresholdContext();
     this._clearStalePendings();
 
     const modeEntity = this._state('select', 'control_mode');
@@ -3098,11 +3188,12 @@ class VictronChargeControllerCard extends LitElement {
   _renderHelpDialog(view, viewTitle) {
     if (!this._helpOpen) return nothing;
     const topic = this._helpTopic;
-    const content = topic ? SETTINGS_HELP[topic.key] : null;
+    const content = topic ? (this._relativeAutoMode() && RELATIVE_SETTINGS_HELP[topic.key]) || SETTINGS_HELP[topic.key] : null;
     const sections = content
       ? (typeof content[0] === 'string' ? [{ heading: 'How it works', items: content }] : content)
       : HELP_TEXT[view];
-    const title = topic ? topic.label : `Help – ${viewTitle}`;
+    const title = topic ? (['charge_price_threshold', 'discharge_price_threshold'].includes(topic.key)
+      ? this._priceThresholdLabel(topic.key.split('_')[0]) : topic.label) : `Help – ${viewTitle}`;
     const limits = topic?.unit != null ? this._sliderLimits(topic.key) : null;
     return html`
       <div

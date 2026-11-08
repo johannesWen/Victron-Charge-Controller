@@ -364,3 +364,313 @@ test('Battery Power Control help explains configuration, sampling, coexistence a
     assert.ok(rendered.includes(text), text);
   }
 });
+
+function relativeSetup(relative = 'on', mode = 'auto') {
+  const result = setup({ mode });
+  const { card, states, prefix } = result;
+  card.setConfig({ ...card.config, view: 'settings' });
+  if (relative !== null) states[`switch.${prefix}_relative_auto_mode`] = { state: relative, attributes: {} };
+  for (const [key, value] of Object.entries({
+    cheapest_hours_auto_charge: '0', expensive_hours_auto_discharge: '1.25',
+    charge_price_threshold: '4', discharge_price_threshold: '6',
+  })) states[`number.${prefix}_${key}`] = { state: value, attributes: { min: -10, max: 30, step: .25 } };
+  states[`sensor.${prefix}_charge_plan`] = { state: 'ready', attributes: {
+    price_reference_min: -8.13, price_reference_max: 24.13,
+    plan: [
+      { date: '2035-01-01', hour: 12, price: -20, action: 'idle' },
+      { date: '2035-01-02', hour: 12, price: 22, action: 'idle' },
+    ],
+  } };
+  return result;
+}
+const ranges = templates => templates.filter(node => node.strings.join('').includes('<input type="range"'));
+const thresholdLines = templates => templates.filter(node => node.strings.join('').includes('class="threshold-line-group"'));
+const plain = value => JSON.parse(JSON.stringify(value));
+
+for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge']) {
+  test(`Relative Auto Mode binds the configured prefix and remains available in ${mode}`, () => {
+    const { card, templates, calls, prefix } = relativeSetup('off', mode);
+    const rendered = card.render();
+    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"')
+      && node.rendered.includes('Help for Relative Auto Mode'));
+    assert.equal(binding(toggle, '.checked'), false);
+    assert.equal(binding(toggle, '.disabled'), false);
+    assert.ok(rendered.indexOf('Auto Mode') < rendered.indexOf('aria-label=Relative Auto Mode'));
+    binding(toggle, '@change')();
+    assert.deepEqual(plain(calls), [['switch', 'turn_on', { entity_id: `switch.${prefix}_relative_auto_mode` }]]);
+  });
+}
+
+for (const state of [null, 'unknown', 'unavailable', 'off', 'on']) {
+  test(`Relative Auto Mode ${state} safely controls labels and duration availability`, () => {
+    const { card, states, templates, calls, prefix } = relativeSetup(state);
+    const rendered = card.render();
+    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"')
+      && node.rendered.includes('Help for Relative Auto Mode'));
+    assert.equal(binding(toggle, '.checked'), state === 'on');
+    assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
+    const controls = ranges(templates);
+    for (const [label, value] of [['Charge Duration', '0'], ['Discharge Duration', '1.25']]) {
+      const control = controls.find(node => binding(node, 'aria-label') === label);
+      assert.equal(binding(control, '.disabled'), state === 'on');
+      assert.equal(binding(control, '.value'), value);
+    }
+    for (const type of ['Charge', 'Discharge']) {
+      assert.ok(controls.some(node => binding(node, 'aria-label') === `${type} Price ${state === 'on' ? 'Delta' : 'Threshold'}`));
+    }
+    if (state === 'on') assert.match(rendered, /Duration budgets are ignored.*even when zero.*Saved duration values are retained/);
+    if (!['on', 'off'].includes(state)) {
+      assert.match(rendered, /switch is unavailable; absolute price settings are shown/);
+      binding(toggle, '@change')();
+      assert.equal(calls.length, 0);
+    } else {
+      states[`switch.${prefix}_relative_auto_mode`].state = 'unavailable';
+      binding(toggle, '@change')();
+      assert.equal(calls.length, 0, 'handler rechecks current switch availability');
+    }
+  });
+}
+
+test('duration handlers reject disabled changes and resume using retained values after relative mode turns off', () => {
+  const { card, states, templates, calls, prefix } = relativeSetup();
+  card.render();
+  const control = ranges(templates).find(node => binding(node, 'aria-label') === 'Discharge Duration');
+  const input = { disabled: true, value: '10', dataset: { lockedValue: '1.25' }, classList: { remove() {} },
+    parentElement: { querySelector: () => ({ style: {} }) } };
+  card._sliderUnlocked.add(input);
+  binding(control, '@pointerdown')({ target: input });
+  assert.equal(card._sliderHoldTimers.has(input), false);
+  binding(control, '@input')({ target: input });
+  assert.equal(input.value, '1.25');
+  input.value = '10';
+  binding(control, '@change')({ target: input });
+  assert.equal(input.value, '1.25');
+  assert.equal(card._sliderUnlocked.has(input), false);
+  assert.equal(calls.length, 0);
+  input.disabled = false;
+  input.value = '10';
+  card._sliderUnlocked.add(input);
+  binding(control, '@change')({ target: input });
+  assert.equal(calls.length, 0, 'mode-change race before disabled binding updates cannot commit');
+  states[`switch.${prefix}_relative_auto_mode`].state = 'off';
+  templates.length = 0;
+  card.render();
+  const restored = ranges(templates).find(node => binding(node, 'aria-label') === 'Discharge Duration');
+  assert.equal(binding(restored, '.disabled'), false);
+  assert.equal(binding(restored, '.value'), '1.25');
+  input.value = '2.5';
+  card._sliderUnlocked.add(input);
+  binding(restored, '@change')({ target: input });
+  assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_expensive_hours_auto_discharge`, value: 2.5 }]]);
+});
+
+test('relative help follows the active mode, retains numeric ranges, and explains schedule timing', () => {
+  const { card, states, prefix } = relativeSetup();
+  card._helpOpen = true;
+  card._helpTopic = { key: 'charge_price_threshold', label: 'Charge Price Threshold', unit: ' ct/kWh' };
+  let rendered = card._renderHelpDialog('settings', 'Settings');
+  for (const text of ['aria-label=Charge Price Delta', 'Signed delta', 'negative delta', 'including equality',
+    'maximum minus', 'before blocked hours and PV Charge', 'Charging wins', 'Charge Duration zero',
+    'Minimum', '-10 ct/kWh', '30 ct/kWh', '0.25 ct/kWh']) assert.ok(rendered.includes(text), text);
+  card._helpTopic = { key: 'discharge_price_threshold', label: 'Discharge Price Delta' };
+  assert.match(card._renderHelpDialog('settings', 'Settings'), /minimum plus Discharge Price Delta/);
+  card._helpTopic = { key: 'cheapest_hours_auto_charge', label: 'Charge Duration' };
+  assert.match(card._renderHelpDialog('settings', 'Settings'), /Ignored.*even when zero.*retained/);
+  card._helpTopic = { key: 'relative_auto_mode', label: 'Relative Auto Mode' };
+  rendered = card._renderHelpDialog('settings', 'Settings');
+  for (const text of ['Defaults off', 'deltas may be negative', 'tomorrow or later', 'Charging wins',
+    'Charge Allowed', 'Discharge Allowed', 'every control mode', 'only in Auto', 'survive restart',
+    'without an automatic replan on restore', 'without replanning']) assert.ok(rendered.includes(text), text);
+  for (const key of ['control_mode', 'schedule_actions']) {
+    card._helpTopic = { key, label: key };
+    assert.match(card._renderHelpDialog('settings', 'Settings'), /signed price deltas without duration caps/);
+  }
+  card._helpTopic = null;
+  assert.match(card._renderHelpDialog('plan', 'Plan'), /Lines reflect current selection cutoffs/);
+  states[`switch.${prefix}_relative_auto_mode`].state = 'off';
+  card._helpTopic = { key: 'charge_price_threshold', label: 'Charge Price Delta', unit: ' ct/kWh' };
+  rendered = card._renderHelpDialog('settings', 'Settings');
+  assert.match(rendered, /aria-label=Charge Price Threshold/);
+  assert.match(rendered, /Charge Duration caps/);
+  assert.doesNotMatch(rendered, /Signed delta/);
+});
+
+function chartCutoffs(result) {
+  const { card, templates } = result;
+  templates.length = 0;
+  card._renderAutoPlanContent();
+  return thresholdLines(templates).map(node => {
+    const label = node.rendered.match(/class="plan-threshold-label"[^>]*>([^<]+)</);
+    return [node.strings.join('').includes('data-type="charge"') ? 'charge' : 'discharge', Number(label[1])];
+  });
+}
+
+test('both days use global backend references, with delta pending values reconciled against number entities', () => {
+  const result = relativeSetup(), { card, states, prefix } = result;
+  assert.deepEqual(chartCutoffs(result), [['charge', 20.1], ['discharge', -2.1], ['charge', 20.1], ['discharge', -2.1]]);
+  // Neither displayed day's extrema (-20 and 22) equals the backend's full selection horizon.
+  card._pendingThresholds = { charge: 5.25, discharge: -1.5 };
+  assert.deepEqual(chartCutoffs(result), [['charge', 18.9], ['discharge', -9.6], ['charge', 18.9], ['discharge', -9.6]]);
+  assert.equal(card._pendingThresholds.charge, 5.25);
+  states[`number.${prefix}_charge_price_threshold`].state = '5.25';
+  states[`number.${prefix}_discharge_price_threshold`].state = '-1.5';
+  chartCutoffs(result);
+  assert.deepEqual(plain(card._pendingThresholds), {});
+  states[`sensor.${prefix}_charge_plan`].attributes.price_reference_max = 23.13;
+  assert.equal(chartCutoffs(result)[0][1], 17.9, 'reference refresh changes the cutoff without a service or replan');
+  assert.equal(result.calls.length, 0);
+});
+
+for (const missing of [null, undefined, NaN, Infinity, -Infinity, '24.13']) {
+  test(`relative chart hides invalid references ${String(missing)} without substituting displayed prices`, () => {
+    const result = relativeSetup(), attrs = result.states[`sensor.${result.prefix}_charge_plan`].attributes;
+    attrs.price_reference_min = attrs.price_reference_max = missing;
+    assert.deepEqual(chartCutoffs(result), []);
+    assert.doesNotMatch(result.card._renderAutoPlanContent(), /Charge Cutoff|Discharge Cutoff/);
+  });
+}
+
+test('zero references are valid and missing switch preserves absolute lines and clears pending units on mode changes', () => {
+  const result = relativeSetup(null), { card, states, prefix } = result;
+  assert.deepEqual(chartCutoffs(result), [['charge', 4], ['discharge', 6], ['charge', 4], ['discharge', 6]]);
+  card._pendingThresholds = { charge: 7 };
+  states[`switch.${prefix}_relative_auto_mode`] = { state: 'on', attributes: {} };
+  chartCutoffs(result);
+  assert.deepEqual(plain(card._pendingThresholds), {});
+  states[`sensor.${prefix}_charge_plan`].attributes.price_reference_min = 0;
+  states[`sensor.${prefix}_charge_plan`].attributes.price_reference_max = 0;
+  states[`number.${prefix}_charge_price_threshold`].state = '-4';
+  assert.deepEqual(chartCutoffs(result), [['charge', 4], ['discharge', 6], ['charge', 4], ['discharge', 6]]);
+  card._pendingThresholds = { discharge: 9 };
+  states[`switch.${prefix}_relative_auto_mode`].state = 'off';
+  chartCutoffs(result);
+  assert.deepEqual(plain(card._pendingThresholds), {});
+});
+
+function startThresholdDrag(result, type, timers) {
+  const { card, templates } = result;
+  card.classList = { add() {}, remove() {} };
+  card._addThresholdDragListeners = () => {};
+  card._removeThresholdDragListeners = () => {};
+  card._clientToSvgY = value => value;
+  card._renderAutoPlanContent();
+  const line = thresholdLines(templates).find(node => node.strings.join('').includes(`data-type="${type}"`));
+  assert.ok(line, `${type} line rendered`);
+  const text = { nodeType: 3, nodeValue: '' };
+  const position = {};
+  const label = { lastChild: text, setAttribute: (key, value) => { position[key] = value; },
+    set textContent(_) { assert.fail('must retain Lit markers'); } };
+  const group = { classList: { add() {}, remove() {} }, closest: () => ({}), querySelectorAll: () => [],
+    querySelector: () => label, setPointerCapture() {}, hasPointerCapture: () => true,
+    releasePointerCapture: pointer => { position.released = pointer; } };
+  const event = { currentTarget: group, pointerId: 3, preventDefault() {}, stopPropagation() {} };
+  binding(line, '@pointerdown')(event);
+  timers.tick(1000);
+  return { event, text, position, move: price => {
+    const { scaleMin, scaleRange, padT, plotH } = card._thresholdDrag.scale;
+    card._onThresholdPointerMove({ ...event, clientY: padT + plotH - (price - scaleMin) / scaleRange * plotH });
+  } };
+}
+
+for (const [type, cutoff, delta, shown] of [
+  ['charge', 20.02, 4, 20.13], ['charge', 24.5, -.25, 24.38], ['charge', -9, 30, -5.87], ['charge', 40, -10, 34.13],
+  ['discharge', -3.02, 5, -3.13], ['discharge', -9.5, -1.25, -9.38], ['discharge', 24, 30, 21.87], ['discharge', -20, -10, -18.13],
+]) {
+  test(`relative ${type} drag at ${cutoff} snaps/clamps the signed delta ${delta} before deriving cutoff`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = relativeSetup(), { card, calls, prefix } = result;
+    // Widen the displayed chart so drag targets can exceed the allowed delta range in both directions.
+    result.states[`sensor.${prefix}_charge_plan`].attributes.plan[0].price = -20;
+    result.states[`sensor.${prefix}_charge_plan`].attributes.plan[1].price = 40;
+    const drag = startThresholdDrag(result, type, t.mock.timers);
+    drag.move(cutoff);
+    assert.equal(card._thresholdDrag.value, delta);
+    assert.ok(Math.abs(card._thresholdDrag.price - shown) < 1e-8);
+    assert.equal(drag.text.nodeValue, String(Math.round(shown * 10) / 10));
+    card._onThresholdPointerUp(drag.event);
+    assert.equal(card._thresholdDrag, null);
+    assert.equal(drag.position.released, 3);
+    assert.equal(card._pendingThresholds[type], delta, 'pending remains in delta units');
+    assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_${type}_price_threshold`, value: delta }]]);
+    const displayed = chartCutoffs(result).filter(([kind]) => kind === type);
+    assert.deepEqual(displayed, [[type, Math.round(shown * 10) / 10], [type, Math.round(shown * 10) / 10]]);
+  });
+}
+
+for (const path of ['render', 'move', 'commit']) for (const change of ['mode', 'minimum', 'maximum', 'missing']) {
+  test(`relative drag cancels on changed ${change} through ${path} without committing`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = relativeSetup(), { card, states, prefix, calls } = result;
+    const drag = startThresholdDrag(result, 'charge', t.mock.timers);
+    drag.move(20);
+    const attrs = states[`sensor.${prefix}_charge_plan`].attributes;
+    if (change === 'mode') states[`switch.${prefix}_relative_auto_mode`].state = 'off';
+    if (change === 'minimum') attrs.price_reference_min = -9;
+    if (change === 'maximum') attrs.price_reference_max = 24.14;
+    if (change === 'missing') attrs.price_reference_max = null;
+    if (path === 'render') card.render();
+    if (path === 'move') drag.move(21);
+    if (path === 'commit') card._onThresholdPointerUp(drag.event);
+    assert.equal(card._thresholdDrag, null);
+    assert.equal(card._thresholdHoldTimer, null);
+    assert.equal(drag.position.released, 3);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(plain(card._pendingThresholds), {});
+  });
+}
+
+test('threshold pointer cancellation and missing references never commit or start a hold', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const result = relativeSetup(), { card, states, prefix, calls } = result;
+  const drag = startThresholdDrag(result, 'charge', t.mock.timers);
+  drag.move(20);
+  card._onThresholdPointerUp({ ...drag.event, type: 'pointercancel' });
+  assert.equal(card._thresholdDrag, null);
+  assert.equal(calls.length, 0);
+  states[`sensor.${prefix}_charge_plan`].attributes.price_reference_max = null;
+  card._onThresholdPointerDown(drag.event, 'charge', {});
+  assert.equal(card._thresholdDrag, null);
+  assert.equal(card._thresholdHoldTimer, null);
+});
+
+for (const state of ['unknown', 'unavailable']) {
+  test(`relative lines ignore stale attributes on ${state} Charge Plan`, () => {
+    const result = relativeSetup();
+    result.states[`sensor.${result.prefix}_charge_plan`].state = state;
+    assert.deepEqual(chartCutoffs(result), []);
+  });
+}
+
+test('each relative cutoff requires its corresponding reference', () => {
+  const result = relativeSetup(), attrs = result.states[`sensor.${result.prefix}_charge_plan`].attributes;
+  attrs.price_reference_max = null;
+  assert.deepEqual(chartCutoffs(result), [['discharge', -2.1], ['discharge', -2.1]]);
+  attrs.price_reference_max = 24.13;
+  attrs.price_reference_min = null;
+  assert.deepEqual(chartCutoffs(result), [['charge', 20.1], ['charge', 20.1]]);
+});
+
+for (const type of ['charge', 'discharge']) {
+  test(`absolute ${type} drag keeps absolute step snapping, service units and optimistic lines`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = relativeSetup('off'), { card, calls, prefix } = result;
+    const drag = startThresholdDrag(result, type, t.mock.timers);
+    drag.move(7.11);
+    card._onThresholdPointerUp(drag.event);
+    assert.equal(card._pendingThresholds[type], 7);
+    assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_${type}_price_threshold`, value: 7 }]]);
+    assert.deepEqual(chartCutoffs(result).filter(([kind]) => kind === type), [[type, 7], [type, 7]]);
+  });
+}
+
+test('absolute drag cannot commit after relative mode is enabled before rerender', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const result = relativeSetup('off'), { card, states, prefix, calls } = result;
+  const drag = startThresholdDrag(result, 'discharge', t.mock.timers);
+  drag.move(7);
+  states[`switch.${prefix}_relative_auto_mode`].state = 'on';
+  card._onThresholdPointerUp(drag.event);
+  assert.equal(card._thresholdDrag, null);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(plain(card._pendingThresholds), {});
+});
