@@ -490,12 +490,16 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   instance._removeThresholdDragListeners = () => {};
   instance._clientToSvgY = y => y;
   const marker = { nodeType: 8, nodeValue: '?lit$marker$' }, textNode = { nodeType: 3, nodeValue: '10' };
-  const positions = {}, label = {
+  const positions = { y: '193' }, label = {
     childNodes: [marker, textNode], lastChild: textNode,
+    getAttribute: key => positions[key],
     setAttribute: (key, value) => { positions[key] = value; },
     set textContent(_) { assert.fail('Replacing label content removes the Lit marker needed for the next render'); },
   };
-  const lines = [{ setAttribute() {} }, { setAttribute() {} }];
+  const lines = [0, 1].map(() => ({ attributes: { y1: '189.5', y2: '189.5' },
+    getAttribute(key) { return this.attributes[key]; },
+    setAttribute(key, value) { this.attributes[key] = String(value); },
+  }));
   const group = { classList: { add() {}, remove() {} }, closest: () => ({}), querySelectorAll: () => lines, querySelector: () => label };
   const scale = { scaleMin: 0, scaleMax: 40, scaleRange: 40, padT: 38, plotH: 202, step: .25 };
   instance._onThresholdPointerDown(event({}, { currentTarget: group }), 'charge', scale);
@@ -513,6 +517,13 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   assert.equal(instance._thresholdDrag, null);
   assert.equal(JSON.stringify(calls), JSON.stringify(commit ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: 24 }]] : []));
   assert.equal(instance._pendingThresholds.charge, commit ? 24 : undefined);
+  assert.equal(textNode.nodeValue, commit ? '24' : '10');
+  assert.ok(Math.abs(Number(positions.y) - (commit ? 122.3 : 193)) < 1e-7);
+  for (const line of lines) for (const key of ['y1', 'y2']) {
+    assert.ok(Math.abs(Number(line.attributes[key]) - (commit ? 118.8 : 189.5)) < 1e-7);
+  }
+  assert.equal(label.childNodes[0], marker);
+  assert.equal(label.childNodes[1], textNode);
 });
 
 

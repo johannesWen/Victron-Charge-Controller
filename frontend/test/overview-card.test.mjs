@@ -556,17 +556,33 @@ function startThresholdDrag(result, type, timers) {
   card._renderAutoPlanContent();
   const line = thresholdLines(templates).find(node => node.strings.join('').includes(`data-type="${type}"`));
   assert.ok(line, `${type} line rendered`);
-  const text = { nodeType: 3, nodeValue: '' };
-  const position = {};
-  const label = { lastChild: text, setAttribute: (key, value) => { position[key] = value; },
+  const initialLabel = line.rendered.match(/<text[^>]*y="([^"]+)"[^>]*class="plan-threshold-label"[^>]*>([^<]+)</);
+  const marker = { nodeType: 8, nodeValue: '?lit$marker$' };
+  const text = { nodeType: 3, nodeValue: initialLabel[2] };
+  const position = { y: initialLabel[1] };
+  const label = { childNodes: [marker, text], lastChild: text, getAttribute: key => position[key],
+    setAttribute: (key, value) => { position[key] = String(value); },
     set textContent(_) { assert.fail('must retain Lit markers'); } };
-  const group = { classList: { add() {}, remove() {} }, closest: () => ({}), querySelectorAll: () => [],
+  const lines = [...line.rendered.matchAll(/<line[^>]*y1="([^"]+)"[^>]*y2="([^"]+)"/g)].map(([, y1, y2]) => ({
+    attributes: { y1, y2 }, getAttribute(key) { return this.attributes[key]; },
+    setAttribute(key, value) { this.attributes[key] = String(value); },
+  }));
+  assert.equal(lines.length, 2, 'both visible line and hit area are present');
+  const original = { lines: lines.map(line => ({ ...line.attributes })), y: position.y, text: text.nodeValue };
+  const assertRestored = () => {
+    assert.deepEqual(lines.map(line => line.attributes), original.lines, 'restore both coordinates of both lines');
+    assert.equal(position.y, original.y, 'restore label position');
+    assert.equal(text.nodeValue, original.text, 'restore label text');
+    assert.equal(label.childNodes[0], marker, 'preserve Lit comment marker');
+    assert.equal(label.childNodes[1], text, 'preserve Lit text node');
+  };
+  const group = { classList: { add() {}, remove() {} }, closest: () => ({}), querySelectorAll: () => lines,
     querySelector: () => label, setPointerCapture() {}, hasPointerCapture: () => true,
     releasePointerCapture: pointer => { position.released = pointer; } };
   const event = { currentTarget: group, pointerId: 3, preventDefault() {}, stopPropagation() {} };
   binding(line, '@pointerdown')(event);
   timers.tick(1000);
-  return { event, text, position, move: price => {
+  return { event, text, position, assertRestored, lines, original, move: price => {
     const { scaleMin, scaleRange, padT, plotH } = card._thresholdDrag.scale;
     card._onThresholdPointerMove({ ...event, clientY: padT + plotH - (price - scaleMin) / scaleRange * plotH });
   } };
@@ -602,7 +618,8 @@ for (const path of ['render', 'move', 'commit']) for (const change of ['mode', '
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const result = relativeSetup(), { card, states, prefix, calls } = result;
     const drag = startThresholdDrag(result, 'charge', t.mock.timers);
-    drag.move(20);
+    drag.move(10);
+    assert.notDeepEqual(drag.lines.map(line => line.attributes), drag.original.lines);
     const attrs = states[`sensor.${prefix}_charge_plan`].attributes;
     if (change === 'mode') states[`switch.${prefix}_relative_auto_mode`].state = 'off';
     if (change === 'minimum') attrs.price_reference_min = -9;
@@ -614,6 +631,7 @@ for (const path of ['render', 'move', 'commit']) for (const change of ['mode', '
     assert.equal(card._thresholdDrag, null);
     assert.equal(card._thresholdHoldTimer, null);
     assert.equal(drag.position.released, 3);
+    drag.assertRestored();
     assert.equal(calls.length, 0);
     assert.deepEqual(plain(card._pendingThresholds), {});
   });
@@ -625,6 +643,9 @@ test('threshold pointer cancellation and missing references never commit or star
   const drag = startThresholdDrag(result, 'charge', t.mock.timers);
   drag.move(20);
   card._onThresholdPointerUp({ ...drag.event, type: 'pointercancel' });
+  drag.assertRestored();
+  card.render();
+  drag.assertRestored();
   assert.equal(card._thresholdDrag, null);
   assert.equal(calls.length, 0);
   states[`sensor.${prefix}_charge_plan`].attributes.price_reference_max = null;
@@ -670,7 +691,23 @@ test('absolute drag cannot commit after relative mode is enabled before rerender
   drag.move(7);
   states[`switch.${prefix}_relative_auto_mode`].state = 'on';
   card._onThresholdPointerUp(drag.event);
+  drag.assertRestored();
   assert.equal(card._thresholdDrag, null);
   assert.equal(calls.length, 0);
   assert.deepEqual(plain(card._pendingThresholds), {});
 });
+
+for (const mode of ['on', 'off']) for (const type of ['charge', 'discharge']) {
+  test(`explicit ${type} drag cancellation restores SVG coordinates and label with relative mode ${mode}`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = relativeSetup(mode), { card, calls } = result;
+    const drag = startThresholdDrag(result, type, t.mock.timers);
+    drag.move(10);
+    assert.notDeepEqual(drag.lines.map(line => line.attributes), drag.original.lines);
+    card._finishThresholdDrag(false);
+    drag.assertRestored();
+    card.render();
+    drag.assertRestored();
+    assert.equal(calls.length, 0);
+  });
+}

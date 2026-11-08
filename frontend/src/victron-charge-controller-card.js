@@ -1297,6 +1297,8 @@ class VictronChargeControllerCard extends LitElement {
       // Store pending value so both charts update immediately
       this._pendingThresholds[type] = rounded;
       this.requestUpdate();
+    } else {
+      this._thresholdDrag.restore?.();
     }
 
     this._thresholdDrag = null;
@@ -1312,10 +1314,21 @@ class VictronChargeControllerCard extends LitElement {
     const group = e.currentTarget;
     const svgEl = group.closest('svg');
     const pointerId = e.pointerId;
+    const lines = Array.from(group.querySelectorAll('line'), line => [line, line.getAttribute('y1'), line.getAttribute('y2')]);
+    const label = group.querySelector('text');
+    const labelY = label?.getAttribute('y');
+    const text = label?.lastChild?.nodeType === 3 ? label.lastChild : null;
+    const labelText = text?.nodeValue;
+    // Lit caches bindings, so rerendering alone cannot undo direct SVG edits.
+    const restore = () => {
+      lines.forEach(([line, y1, y2]) => { line.setAttribute('y1', y1); line.setAttribute('y2', y2); });
+      if (label) label.setAttribute('y', labelY);
+      if (text) text.nodeValue = labelText;
+    };
 
     // Start hold timer
     if (this._thresholdHoldTimer) clearTimeout(this._thresholdHoldTimer);
-    this._thresholdDrag = { type, scale, group, svgEl, pointerId, context, unlocked: false, price: null, value: null };
+    this._thresholdDrag = { type, scale, group, svgEl, pointerId, context, restore, unlocked: false, price: null, value: null };
     group.classList.add('threshold-holding');
     this.classList.add('threshold-drag-active');
     this._addThresholdDragListeners();
