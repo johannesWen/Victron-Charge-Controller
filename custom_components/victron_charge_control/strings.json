@@ -96,7 +96,9 @@
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
           "ac_grid_setpoint_entity": "AC grid setpoint (required, W)",
           "max_discharge_power_entity": "Max discharge power entity (optional, W)",
-          "battery_power_entity": "Battery power sensor (optional, W or kW)"
+          "battery_power_entity": "Battery power sensor (optional, W or kW)",
+          "power_limit": "Power range limit (W)",
+          "idle_setpoint_limit": "Idle setpoint range limit (W)"
         },
         "data_description": {
           "battery_soc_entity": "Select the battery state of charge sensor in percent (0-100%), for example GX Device - DC battery charge. Used to enforce the minimum and maximum battery charge levels.",
@@ -112,7 +114,9 @@
           "grid_consumer_entity": "Select the power sensor for a load to supply from solar surplus and the grid. When Grid Consumer is enabled, only the shortfall after subtracting the current solar surplus is added to the active control target after a five-second batching delay, before feed-in and grid setpoint limits. Missing or invalid solar readings use the full consumer power. Invalid consumer readings immediately remove the offset. Leave empty to disable this feature.",
           "ac_grid_setpoint_entity": "Select the distinct Victron AC grid setpoint number in watts from the built-in Victron GX integration. All active control uses this RAM value through number.set_value (MQTT). It is refreshed every 5 seconds; the Venus OS 3.85 timeout has not been verified. An inactive unknown RAM value is allowed, but unavailable triggers the safety watchdog.",
           "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
-          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged."
+          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged.",
+          "power_limit": "Whole watts, at least 1 (default 15000). Sets the selectable ranges for charge power, discharge power, minimum and maximum grid setpoints, and both grid feed-in limits. Saving reloads the integration and clamps existing settings to the new ranges before control starts. This does not set an operating target or change device limits.",
+          "idle_setpoint_limit": "Whole watts, at least 0 (default 500). Sets the independent Idle Setpoint range from minus this value to plus this value. Set to 0 to allow only 0 W. Saving reloads the integration and clamps the saved idle setpoint to this range."
         }
       }
     },
@@ -121,7 +125,9 @@
       "number_required": "Select a number entity.",
       "distinct_setpoints": "Select different entities for the permanent AC power setpoint and RAM AC grid setpoint.",
       "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit.",
-      "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings."
+      "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings.",
+      "invalid_power_limit": "Enter a finite whole number of watts, at least 1.",
+      "invalid_idle_setpoint_limit": "Enter a finite whole number of watts, at least 0."
     }
   },
   "entity": {

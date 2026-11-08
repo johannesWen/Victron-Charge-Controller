@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 from homeassistant.components.number import NumberEntity, NumberEntityDescription, NumberMode
@@ -16,6 +17,8 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    CONF_IDLE_SETPOINT_LIMIT,
+    CONF_POWER_LIMIT,
     DEFAULT_CHARGE_POWER,
     DEFAULT_CHARGE_PRICE_THRESHOLD,
     DEFAULT_CHEAPEST_HOURS,
@@ -25,11 +28,13 @@ from .const import (
     DEFAULT_EXPENSIVE_HOURS,
     DEFAULT_GRID_FEED_IN_PRICE_THRESHOLD,
     DEFAULT_IDLE_SETPOINT,
+    DEFAULT_IDLE_SETPOINT_LIMIT,
     DEFAULT_MAX_GRID_FEED_IN,
     DEFAULT_MAX_GRID_SETPOINT,
     DEFAULT_MAX_SOC,
     DEFAULT_MIN_GRID_SETPOINT,
     DEFAULT_MIN_SOC,
+    DEFAULT_POWER_LIMIT,
     DEFAULT_PV_CHARGE_SHARE,
     DEFAULT_REDUCED_GRID_FEED_IN,
     DEFAULT_SOC_HYSTERESIS,
@@ -37,6 +42,11 @@ from .const import (
 )
 from .coordinator import VictronChargeControlCoordinator
 from .planning import valid_duration
+
+POWER_LIMIT_KEYS = (
+    "charge_power", "discharge_power", "min_grid_setpoint", "max_grid_setpoint",
+    "default_max_grid_feed_in", "reduced_max_grid_feed_in",
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -101,7 +111,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:flash",
         native_unit_of_measurement=UnitOfPower.WATT,
         native_min_value=0,
-        native_max_value=15000,
+        native_max_value=DEFAULT_POWER_LIMIT,
         native_step=100,
         coordinator_attr="charge_power",
         default_value=DEFAULT_CHARGE_POWER,
@@ -112,7 +122,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:flash",
         native_unit_of_measurement=UnitOfPower.WATT,
         native_min_value=0,
-        native_max_value=15000,
+        native_max_value=DEFAULT_POWER_LIMIT,
         native_step=100,
         coordinator_attr="discharge_power",
         default_value=DEFAULT_DISCHARGE_POWER,
@@ -122,8 +132,8 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         translation_key="idle_setpoint",
         icon="mdi:pause-circle",
         native_unit_of_measurement=UnitOfPower.WATT,
-        native_min_value=-500,
-        native_max_value=500,
+        native_min_value=-DEFAULT_IDLE_SETPOINT_LIMIT,
+        native_max_value=DEFAULT_IDLE_SETPOINT_LIMIT,
         native_step=10,
         coordinator_attr="idle_setpoint",
         default_value=DEFAULT_IDLE_SETPOINT,
@@ -133,7 +143,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         translation_key="min_grid_setpoint",
         icon="mdi:arrow-down-bold",
         native_unit_of_measurement=UnitOfPower.WATT,
-        native_min_value=-15000,
+        native_min_value=-DEFAULT_POWER_LIMIT,
         native_max_value=0,
         native_step=100,
         coordinator_attr="min_grid_setpoint",
@@ -145,7 +155,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:arrow-up-bold",
         native_unit_of_measurement=UnitOfPower.WATT,
         native_min_value=0,
-        native_max_value=15000,
+        native_max_value=DEFAULT_POWER_LIMIT,
         native_step=100,
         coordinator_attr="max_grid_setpoint",
         default_value=DEFAULT_MAX_GRID_SETPOINT,
@@ -209,7 +219,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:transmission-tower-export",
         native_unit_of_measurement=UnitOfPower.WATT,
         native_min_value=0,
-        native_max_value=15000,
+        native_max_value=DEFAULT_POWER_LIMIT,
         native_step=100,
         coordinator_attr="default_max_grid_feed_in",
         default_value=DEFAULT_MAX_GRID_FEED_IN,
@@ -220,7 +230,7 @@ NUMBERS: tuple[VictronCCNumberDescription, ...] = (
         icon="mdi:transmission-tower-off",
         native_unit_of_measurement=UnitOfPower.WATT,
         native_min_value=0,
-        native_max_value=15000,
+        native_max_value=DEFAULT_POWER_LIMIT,
         native_step=100,
         coordinator_attr="reduced_max_grid_feed_in",
         default_value=DEFAULT_REDUCED_GRID_FEED_IN,
@@ -266,6 +276,19 @@ class VictronCCNumber(CoordinatorEntity[VictronChargeControlCoordinator], Number
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
+        if description.key in POWER_LIMIT_KEYS:
+            limit = entry.options.get(CONF_POWER_LIMIT, DEFAULT_POWER_LIMIT)
+            self._attr_native_min_value = -limit if description.key == "min_grid_setpoint" else 0
+            self._attr_native_max_value = 0 if description.key == "min_grid_setpoint" else limit
+        elif description.key == "idle_setpoint":
+            limit = entry.options.get(CONF_IDLE_SETPOINT_LIMIT, DEFAULT_IDLE_SETPOINT_LIMIT)
+            self._attr_native_min_value = -limit
+            self._attr_native_max_value = limit
+        if description.key in (*POWER_LIMIT_KEYS, "idle_setpoint"):
+            # Platforms finish restoring before coordinator control starts.
+            setattr(coordinator, description.coordinator_attr, min(
+                self.native_max_value, max(self.native_min_value, description.default_value)
+            ))
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -283,6 +306,8 @@ class VictronCCNumber(CoordinatorEntity[VictronChargeControlCoordinator], Number
 
     async def async_set_native_value(self, value: float) -> None:
         """Update the coordinator attribute and trigger refresh."""
+        if not math.isfinite(value):
+            raise ServiceValidationError("Value must be finite")
         attr = self.entity_description.coordinator_attr
         if attr in ("cheapest_hours", "expensive_hours") and not valid_duration(value):
             raise ServiceValidationError("Duration must be finite, between 0 and 12 hours, in 0.25-hour increments")
@@ -307,9 +332,13 @@ class VictronCCNumber(CoordinatorEntity[VictronChargeControlCoordinator], Number
         if last_state is not None and last_state.state not in ("unavailable", "unknown"):
             try:
                 value = float(last_state.state)
+                if not math.isfinite(value):
+                    return
                 attr = self.entity_description.coordinator_attr
                 if attr in ("cheapest_hours", "expensive_hours") and not valid_duration(value):
                     return
+                if attr in (*POWER_LIMIT_KEYS, "idle_setpoint"):
+                    value = min(self.native_max_value, max(self.native_min_value, value))
                 setattr(self.coordinator, attr, value)
             except (ValueError, TypeError):
                 pass

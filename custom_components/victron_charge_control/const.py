@@ -26,6 +26,8 @@ CONF_DC_COUPLED_PV_FEED_IN_ENTITY = "dc_coupled_pv_feed_in_entity"
 # --- Config options keys (from options flow) ---
 CONF_SAFETY_STARTUP_GRACE_SECONDS = "safety_startup_grace_seconds"
 CONF_USE_SOLCAST_FORECAST = "use_solcast_forecast"
+CONF_POWER_LIMIT = "power_limit"
+CONF_IDLE_SETPOINT_LIMIT = "idle_setpoint_limit"
 
 # --- Control modes ---
 MODE_OFF = "off"
@@ -57,6 +59,8 @@ ACTION_BLOCKED = "blocked"
 MAX_FIXED_PLANS = 8
 
 # --- Defaults ---
+DEFAULT_POWER_LIMIT = 15000
+DEFAULT_IDLE_SETPOINT_LIMIT = 500
 DEFAULT_MIN_SOC = 10.0
 DEFAULT_MAX_SOC = 95.0
 DEFAULT_SOC_HYSTERESIS = 2.0

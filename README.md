@@ -441,6 +441,26 @@ With Relative Auto Mode off, automatic selection takes whole eligible price inte
 
 ## Defaults
 
+In **Settings → Devices & services → Victron Charge Control → Configure**, set
+**Power range limit** (`power_limit`, default **15000 W**) and **Idle setpoint
+range limit** (`idle_setpoint_limit`, default **500 W**). Both accept finite whole
+watts with no fixed upper cap: power must be at least 1 W; idle may be 0 W.
+
+| Setting | Selectable range |
+| --- | --- |
+| Charge Power, Discharge Power, Max Grid Setpoint, Default Max Grid Feed-in, Reduced Max Grid Feed-in | 0 to Power range limit |
+| Min Grid Setpoint | −Power range limit to 0 |
+| Idle Setpoint | −Idle setpoint range limit to +Idle setpoint range limit |
+
+The idle range is independent; setting its limit to 0 allows only a 0 W idle
+setpoint. These options change the entity and dashboard ranges, not the operating
+targets or the Victron device's hardware limits. Saving options reloads the
+integration. When a limit is lowered, saved settings outside the new range are
+clamped to its nearest boundary before control starts; initial defaults are
+bounded too. Settings already within range and saved schedules are preserved.
+Raising a limit does not raise an existing target. Existing installations use
+the default ranges until these options are changed.
+
 Change these values through the dashboard or Home Assistant entities.
 
 | Parameter | Default |
