@@ -293,10 +293,11 @@ test('Grid Consumer help label opens its accessible topic with limits, timing an
   assert.equal(instance._helpTrigger, trigger);
   const rendered = instance._renderHelpDialog('controls', 'Settings');
   assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Grid Consumer/);
-  for (const text of ['Auto, Manual, Force Charge and Force Discharge', 'before grid and reduced feed-in limits',
-    '5000 W', '1000 W before limits', 'five-second window', 'further changes do not restart',
-    'Initial enable, restart restore and recovery', 'watt deadband', 'clears the offset without delay',
-    'intentional battery discharge', 'included in ESS consumption', 'aggregate power sensor']) {
+  for (const text of ['Auto, Manual, Force Charge and Force Discharge', 'Grid and reduced feed-in limits still apply',
+    '5000 W', '+1000 W grid target before limits', 'waits 5 seconds', 'More changes do not restart',
+    'enabling the switch, restarting or recovering', 'Very small target changes', 'without the 5-second wait',
+    'battery can still discharge', 'included in the consumption measured by your Victron system',
+    'one sensor that adds their power together', 'Example:']) {
     assert.ok(rendered.includes(text), text);
   }
 });

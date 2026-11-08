@@ -102,10 +102,10 @@ test('Disable Discharge opens its existing accessible help dialog with behavior 
   assert.equal(card._helpTopic.key, 'disable_discharge');
   const rendered = card._renderHelpDialog('settings', 'Settings');
   assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Disable Discharge/);
-  for (const text of ['0 W', '5 seconds', 'regular Charge slots and Force Charge', 'Max SOC',
-    'zero Charge Power', 'Charge Allowed off', 'PV Charge is excluded', '−1 W', 'watchdog stop',
-    'previous numerical limit is not restored', 'defaults off', 'logged and retried',
-    'Pending release survives restart and reconfiguration', 'orderly shutdown', 'crash or outage']) {
+  for (const text of ['0 W', '5 seconds', 'regular Charge periods and Force Charge', 'Max SOC',
+    'Charge Power is 0 W', 'Charge Allowed is off', 'PV Charge is not included', '−1 W', 'watchdog safety check',
+    'does not put back the previous limit', 'starts off', 'logged and retried',
+    'remembered after a restart or configuration change', 'normal shutdown', 'crash or outage', 'Example:']) {
     assert.ok(rendered.includes(text), text);
   }
   assert.doesNotMatch(card._renderOverviewView(), /Disable Discharge/);
@@ -359,9 +359,10 @@ test('Battery Power Control help explains configuration, sampling, coexistence a
   card._openHelp = topic => { card._helpOpen = true; card._helpTopic = topic; };
   binding(label, '@click')({ currentTarget: {} });
   const rendered = card._renderHelpDialog('settings', 'Settings');
-  for (const text of ['W or kW', 'positive when charging', 'negative when discharging', 'defaults off',
-    'restored after restart', 'PV Charge', 'solar-only discharge', 'each new battery reading once', 'five seconds',
-    '120 seconds', 'changing the grid target before adjusting again', 'Grid Consumer offsets', 'SOC protection', 'not guaranteed']) {
+  for (const text of ['W or kW', 'positive when charging', 'negative when discharging', 'starts off',
+    'keeps your choice after a restart', 'PV Charge', 'solar-only discharge', 'each new reading once', '5 seconds',
+    '120 seconds', 'changing the grid target before adjusting again', 'solar surplus and Grid Consumer adjustments',
+    'Battery level limits', 'battery may not reach the requested power', 'new target 4000 W']) {
     assert.ok(rendered.includes(text), text);
   }
 });
@@ -468,6 +469,34 @@ test('duration handlers reject disabled changes and resume using retained values
   assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_expensive_hours_auto_discharge`, value: 2.5 }]]);
 });
 
+for (const relative of ['off', 'on']) test(`every Settings help dialog has an example with Relative mode ${relative}`, () => {
+  const { card, templates, calls, states, prefix } = relativeSetup(relative);
+  states[`switch.${prefix}_grid_feed_in_control`] = { state: 'on', attributes: {} };
+  for (const key of ['charge_power', 'discharge_power', 'pv_charging_battery_share',
+    'min_soc', 'max_soc', 'soc_hysteresis', 'idle_setpoint', 'min_grid_setpoint', 'max_grid_setpoint',
+    'grid_feed_in_price_threshold', 'default_max_grid_feed_in', 'reduced_max_grid_feed_in']) {
+    states[`number.${prefix}_${key}`] = { state: '1', attributes: { min: 0, max: 100, step: 1 } };
+  }
+  card.render();
+  const helpButtons = templates.filter(node => /setting-help-label|setting-help-icon/.test(node.strings.join('')));
+  const topics = new Set();
+  card._openHelp = topic => { card._helpOpen = true; card._helpTopic = topic; };
+  for (const button of helpButtons) {
+    binding(button, '@click')({ currentTarget: {} });
+    const { key } = card._helpTopic;
+    topics.add(key);
+    const rendered = card._renderHelpDialog('settings', 'Settings');
+    assert.match(rendered, /Example:/, key);
+    if (key === 'control_mode' || key === 'schedule_actions') {
+      assert.equal((rendered.match(/Example:/g) || []).length, key === 'control_mode' ? 5 : 2);
+    }
+  }
+  assert.equal(topics.size, 29, 'all Settings help topics are reachable');
+  card._helpTopic = null;
+  assert.match(card._renderHelpDialog('settings', 'Settings'), /SOC means battery level/);
+  assert.equal(calls.length, 0);
+});
+
 test('Relative label opens the mode help dialog without changing settings', () => {
   const { card, templates, calls } = relativeSetup();
   card.render();
@@ -478,8 +507,8 @@ test('Relative label opens the mode help dialog without changing settings', () =
   assert.equal(card._helpTopic.key, 'relative_auto_mode');
   const rendered = card._renderHelpDialog('settings', 'Settings');
   assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Relative/);
-  assert.match(rendered, /maximum reference price minus Charge Price Delta/);
-  assert.match(rendered, /Duration budgets are ignored/);
+  assert.match(rendered, /30 − 10 = 20/);
+  assert.match(rendered, /Duration limits do not apply/);
   assert.equal(calls.length, 0);
 });
 
@@ -488,21 +517,21 @@ test('relative help follows the active mode, retains numeric ranges, and explain
   card._helpOpen = true;
   card._helpTopic = { key: 'charge_price_threshold', label: 'Charge Price Threshold', unit: ' ct/kWh' };
   let rendered = card._renderHelpDialog('settings', 'Settings');
-  for (const text of ['aria-label=Charge Price Delta', 'Signed delta', 'negative delta', 'including equality',
-    'maximum minus', 'before blocked hours and PV Charge', 'Charging wins', 'Charge Duration zero',
+  for (const text of ['aria-label=Charge Price Delta', 'price difference', 'negative delta', 'exactly at that result are included',
+    '30 − 10 = 20', 'before blocked hours and PV Charge', 'Charging wins', 'Charge Duration at 0 h',
     'Minimum', '-10 ct/kWh', '30 ct/kWh', '0.25 ct/kWh']) assert.ok(rendered.includes(text), text);
   card._helpTopic = { key: 'discharge_price_threshold', label: 'Discharge Price Delta' };
-  assert.match(card._renderHelpDialog('settings', 'Settings'), /minimum plus Discharge Price Delta/);
+  assert.match(card._renderHelpDialog('settings', 'Settings'), /5 \+ 10 = 15/);
   card._helpTopic = { key: 'cheapest_hours_auto_charge', label: 'Charge Duration' };
-  assert.match(card._renderHelpDialog('settings', 'Settings'), /Ignored.*even when zero.*retained/);
+  assert.match(card._renderHelpDialog('settings', 'Settings'), /not used in Relative mode[\s\S]*even if the saved duration is 0 h[\s\S]*saved duration is kept/);
   card._helpTopic = { key: 'relative_auto_mode', label: 'Relative Auto Mode' };
   rendered = card._renderHelpDialog('settings', 'Settings');
-  for (const text of ['Defaults off', 'deltas may be negative', 'tomorrow or later', 'Charging wins',
-    'Charge Allowed', 'Discharge Allowed', 'every control mode', 'only in Auto', 'survive restart',
-    'without an automatic replan on restore', 'without replanning']) assert.ok(rendered.includes(text), text);
+  for (const text of ['Absolute, the default', 'zero or negative', 'tomorrow or later', 'charging wins',
+    'Permission switches', 'battery level limits', 'any mode', 'only rebuilds the schedule in Auto',
+    'saved mode and schedule return without rebuilding', 'chart lines without changing the plan']) assert.ok(rendered.includes(text), text);
   for (const key of ['control_mode', 'schedule_actions']) {
     card._helpTopic = { key, label: key };
-    assert.match(card._renderHelpDialog('settings', 'Settings'), /signed price deltas without duration caps/);
+    assert.match(card._renderHelpDialog('settings', 'Settings'), /Relative mode uses price differences[\s\S]*no duration limit/);
   }
   card._helpTopic = null;
   assert.match(card._renderHelpDialog('plan', 'Plan'), /Lines reflect current selection cutoffs/);
@@ -510,8 +539,8 @@ test('relative help follows the active mode, retains numeric ranges, and explain
   card._helpTopic = { key: 'charge_price_threshold', label: 'Charge Price Delta', unit: ' ct/kWh' };
   rendered = card._renderHelpDialog('settings', 'Settings');
   assert.match(rendered, /aria-label=Charge Price Threshold/);
-  assert.match(rendered, /Charge Duration caps/);
-  assert.doesNotMatch(rendered, /Signed delta/);
+  assert.match(rendered, /up to Charge Duration/);
+  assert.doesNotMatch(rendered, /price difference/);
 });
 
 function chartCutoffs(result) {
