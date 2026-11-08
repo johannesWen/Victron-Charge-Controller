@@ -200,7 +200,7 @@ It uses the Home Assistant time zone even when your browser uses a different zon
 
 To view or edit an hour:
 
-- Tap or click an hour in Price or PV forecast to open its interval picker. Right-click, hold, or focus the hour and press Enter or Space also work.
+- Tap or click an hour in Price or PV forecast to show its information. Press and hold or right-click to open its interval picker, or focus the hour and press Enter or Space.
 - All available quarters start selected. Deselect any quarters you want to leave unchanged, then choose Charge, PV, Discharge, or Idle to apply only to the selection.
 - Past intervals and missing prices are shown disabled; the current partially elapsed quarter stays editable. Reopening the picker selects all available intervals again.
 - Hourly feeds show one whole-hour choice. Mixed feeds retain their actual interval bounds. Times include UTC offsets so repeated DST hours can be edited separately.
@@ -252,7 +252,7 @@ Cards connected to older installations without this switch show absolute setting
 Select the optional **Battery power sensor** (`battery_power_entity`) during integration setup,
 or in Settings → Devices & Services → Victron Charge Control → Configure or Reconfigure.
 The sensor must report W or kW, with **positive power for charging and negative power for discharging**.
-Enable **Battery Power Control** beside the power sliders in Settings → Charge / Discharge.
+Enable **Battery Power Control** in Overview → Settings or beside the power sliders in Settings → Charge / Discharge.
 It defaults off and restores its on/off state after restart. No extra tuning parameters are needed.
 The switch exposes `source_entity`, normalized `power_w`, and `feedback_status` attributes
 (`disabled`, `inactive`, `waiting`, `active`, or `fallback`).

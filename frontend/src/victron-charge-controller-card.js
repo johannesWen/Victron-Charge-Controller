@@ -120,7 +120,7 @@ const HELP_TEXT = {
       items: [
         [
           { text: 'Tap an hour', bold: true },
-          { text: ' in Price or PV forecast to open the action picker; right-click and hold also work. Keyboard users can focus an hour and press Enter or Space.' },
+          { text: ' in Price or PV forecast to show its information. Press and hold or right-click to open the action picker. Keyboard users can focus an hour and press Enter or Space.' },
         ],
         'All available intervals in that hour start selected. Deselect any quarters, then choose Idle, Charge, Discharge or PV Charge to override only the selection. Past intervals and missing prices are disabled. Hourly feeds retain one whole-hour choice.',
         'Use the Recalculate button to restore the automatic plan.',
@@ -1016,7 +1016,7 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _renderBatteryPowerControl() {
+  _renderBatteryPowerControl(showDisableDischarge = true) {
     const state = this._state('switch', 'battery_power_control');
     const configured = Boolean(state?.attributes?.source_entity);
     const disabled = !configured || !['on', 'off'].includes(state?.state);
@@ -1032,11 +1032,11 @@ class VictronChargeControllerCard extends LitElement {
         }[state.attributes.feedback_status] || '') : '';
     return this._renderTogglePair([
       { label: 'Battery Power Control', key: 'battery_power_control', disabled, tooltip: message },
-      {
+      ...(showDisableDischarge ? [{
         label: 'Disable Discharge', key: 'disable_discharge',
         tooltip: ['on', 'off'].includes(this._val('switch', 'disable_discharge')) ? ''
           : 'Configure a Maximum discharge power entity in the integration options to enable Disable Discharge.',
-      },
+      }] : []),
     ]);
   }
 
@@ -1503,7 +1503,10 @@ class VictronChargeControllerCard extends LitElement {
           { label: 'Charge Allowed', key: 'charge_allowed' },
           { label: 'Discharge Allowed', key: 'discharge_allowed' },
         ])}
-        ${this._renderGridConsumer()}
+        <div class="overview-toggle-row">
+          ${this._renderBatteryPowerControl(false)}
+          <div>${this._renderGridConsumer()}</div>
+        </div>
       `)}`;
   }
 
@@ -1542,12 +1545,26 @@ class VictronChargeControllerCard extends LitElement {
 
       <!-- Keep automatic scheduling settings available in every control mode. -->
       ${this._renderSection('Auto Mode', 'mdi:auto-fix', html`
-        ${this._renderGridConsumer()}
-        ${this._renderToggle('Relative Auto Mode', 'relative_auto_mode', relativeUnavailable,
-          relativeUnavailable ? 'Relative Auto Mode switch is unavailable; absolute price settings are shown.' : '')}
+        <div class="auto-mode-toggles">
+          <div>${this._renderGridConsumer()}</div>
+          <div class="control-row toggle-row relative-mode-toggle">
+            ${this._renderHelpLabel('Absolute', 'relative_auto_mode')}
+            <span class="toggle-tooltip"
+              title=${relativeUnavailable ? 'Relative Auto Mode switch is unavailable; absolute price settings are shown.' : nothing}
+              tabindex=${relativeUnavailable ? '0' : nothing}
+              role=${relativeUnavailable ? 'group' : nothing}
+              aria-label=${relativeUnavailable ? 'Relative Auto Mode switch is unavailable; absolute price settings are shown.' : nothing}>
+              <ha-switch aria-label="Relative Auto Mode"
+                .checked=${relative}
+                .disabled=${relativeUnavailable}
+                @change=${() => { if (!relativeUnavailable) this._toggleSwitch('relative_auto_mode'); }}
+              ></ha-switch>
+            </span>
+            ${this._renderHelpLabel('Relative', 'relative_auto_mode')}
+          </div>
+        </div>
         ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h', relative)}
         ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h', relative)}
-        ${relative ? html`<div class="forecast-status" role="status">Duration budgets are ignored in Relative Auto Mode, even when zero. Saved duration values are retained.</div>` : nothing}
         ${this._renderSlider(this._priceThresholdLabel('charge'), 'charge_price_threshold', ' ct/kWh')}
         ${this._renderSlider(this._priceThresholdLabel('discharge'), 'discharge_price_threshold', ' ct/kWh')}
       `)}
@@ -1898,7 +1915,7 @@ class VictronChargeControllerCard extends LitElement {
     const editable = group.entries.some(entry => this._editablePeriod(entry, group));
     return svg`<g class="plan-bar-group" tabindex="0" role=${editable ? 'button' : 'img'}
       data-past=${group.end <= Date.now() ? 'true' : 'false'} data-readonly=${String(!editable)}
-      aria-label=${`${this._periodLabel(group)} · ${editable ? 'Choose hour intervals and action' : 'No editable price intervals'} · ${detailLabel}`}
+      aria-label=${`${this._periodLabel(group)} · ${editable ? 'Click for information; hold, right-click or press Enter or Space to choose intervals and action' : 'No editable price intervals'} · ${detailLabel}`}
       @mouseenter=${show} @focus=${show} @mouseleave=${hide} @blur=${hide}
       @keydown=${e => this._onBarKeyDown(e, chartId, group.index)}
       @click=${e => this._onBarClick(e, chartId, group.index)}
@@ -1907,7 +1924,7 @@ class VictronChargeControllerCard extends LitElement {
       @pointermove=${e => this._onBarPointerMove(e)} @pointerup=${e => this._onBarPointerUp(e)}
       @pointercancel=${e => this._onBarPointerUp(e)} @pointerleave=${e => this._onBarPointerUp(e)}>
       <rect class="plan-bar-hit" x=${x} y=${top} width=${width} height=${height} fill="transparent" pointer-events="all" />
-      <title>${this._periodLabel(group)} · ${detailLabel}${editable ? ' · Open to choose intervals and action' : ''}</title>
+      <title>${this._periodLabel(group)} · ${detailLabel}${editable ? ' · Click for information; hold or right-click to choose intervals and action' : ''}</title>
     </g>`;
   }
 
@@ -2021,10 +2038,6 @@ class VictronChargeControllerCard extends LitElement {
       this._barLongPressFired = false;
       e.preventDefault();
       e.stopPropagation();
-      return;
-    }
-    if (chartId !== 'history') {
-      this._openPicker(chartId, index, e.currentTarget);
       return;
     }
     if (chartId === 'history' && this._tooltipBar?.chartId === chartId && this._tooltipBar?.index === index) {
@@ -3461,6 +3474,9 @@ class VictronChargeControllerCard extends LitElement {
       .control-row.toggle-pair {
         gap: 16px;
       }
+      .overview-toggle-row {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+      }
       .toggle-pair-item {
         display: flex; align-items: center; gap: 8px;
         flex: 1 1 0; min-width: 0;
@@ -3468,6 +3484,12 @@ class VictronChargeControllerCard extends LitElement {
       .toggle-pair-item > .control-label {
         flex: 1; width: auto; text-align: right;
       }
+      .auto-mode-toggles {
+        display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 16px;
+      }
+      .auto-mode-toggles > div { flex: 1 1 auto; }
+      .relative-mode-toggle { justify-content: flex-end; gap: 8px; }
+      .control-row.relative-mode-toggle > .control-label { flex: 0; }
 
       /* ── Mode selector ─────────────────────────── */
       .mode-group {
@@ -3573,6 +3595,15 @@ class VictronChargeControllerCard extends LitElement {
       }
       .slider-container input[type="range"].unlocked::-moz-range-thumb {
         opacity: 1; transform: scale(1.3);
+      }
+      .slider-container input[type="range"]:disabled {
+        background: var(--vcc-disabled); cursor: not-allowed;
+      }
+      .slider-container input[type="range"]:disabled::-webkit-slider-thumb {
+        background: var(--vcc-disabled); cursor: not-allowed;
+      }
+      .slider-container input[type="range"]:disabled::-moz-range-thumb {
+        background: var(--vcc-disabled); cursor: not-allowed;
       }
       .slider-hold-progress {
         position: absolute; bottom: -3px; left: 0; right: 0;
@@ -3840,11 +3871,11 @@ class VictronChargeControllerCard extends LitElement {
       }
       .plan-hour-tooltip { pointer-events: none; }
       .plan-hour-details {
-        box-sizing: border-box; padding: 8px 10px;
+        box-sizing: border-box; width: max-content; max-width: 100%; padding: 5px 8px;
         background: var(--vcc-bg, #fff); color: var(--vcc-text, #212121);
         border: 1px solid var(--vcc-border, #ddd); border-radius: 5px;
-        font-size: 14px; line-height: 1.25;
-        display: flex; flex-direction: column; gap: 6px;
+        font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums;
+        display: flex; flex-direction: column; gap: 2px;
       }
       .vcc-help-dialog.plan-picker { width: min(360px, calc(100vw - 24px)); padding: 10px; gap: 8px; }
       .plan-picker p, .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }

@@ -541,7 +541,64 @@ function openHour(instance, plan = pricedPeriods(), index = 0, view = 'price', t
   return instance._pickerBar;
 }
 
-for (const view of ['price', 'pv']) for (const gesture of ['click', 'contextmenu', 'pointerdown', 'keydown']) {
+for (const view of ['price', 'pv']) for (const pointerType of ['mouse', 'touch']) {
+  test(`${view} ${pointerType} click shows hour details without opening the picker`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const templates = [], instance = card({ templates }), plan = pricedPeriods();
+    openHour(instance, plan, 0, view);
+    instance._closePicker();
+    const target = nodes(templates, 'plan-bar-group').find(node => node.rendered.includes('02:00 GMT+2–02:00 GMT+1'));
+    const press = event({}, { pointerType, button: 0, clientX: 20, clientY: 30 });
+    if (pointerType === 'mouse') handler(target, 'mouseenter')(press);
+    handler(target, 'pointerdown')(press);
+    t.mock.timers.tick(100);
+    handler(target, 'pointerup')(press);
+    handler(target, 'click')(press);
+    assert.equal(instance._pickerBar, null);
+    assert.ok(instance._tooltipBar);
+    const render = () => {
+      if (view === 'price') return instance._renderPriceChart(plan);
+      const charts = chartsFor(plan);
+      return instance._renderSolarChart(charts.days[0], charts, 'Europe/Vienna');
+    };
+    assert.match(render(), /class="plan-hour-tooltip"/);
+    assert.equal(Object.keys(instance._pendingPlanActions).length, 0);
+    t.mock.timers.tick(500);
+    assert.equal(instance._pickerBar, null, 'short press cancels the hold');
+    handler(target, 'click')(press);
+    assert.match(render(), /class="plan-hour-tooltip"/, 'repeated clicks keep details visible');
+    t.mock.timers.tick(10000);
+    assert.equal(instance._tooltipBar, null);
+  });
+}
+
+for (const cancel of ['pointerup', 'pointercancel', 'pointerleave', 'pointermove']) {
+  test(`${cancel} cancels a pending hour hold`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const templates = [], instance = card({ templates });
+    openHour(instance);
+    instance._closePicker();
+    const target = nodes(templates, 'plan-bar-group')[0];
+    handler(target, 'pointerdown')(event({}, { button: 0, clientX: 20, clientY: 30 }));
+    t.mock.timers.tick(100);
+    handler(target, cancel)(event({}, { clientX: 30, clientY: 30 }));
+    t.mock.timers.tick(500);
+    assert.equal(instance._pickerBar, null);
+    assert.equal(instance._barHoldTimer, null);
+  });
+}
+
+test('history clicks still toggle information', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const instance = card();
+  instance._onBarClick(event(), 'history', 0);
+  assert.equal(instance._tooltipBar.chartId, 'history');
+  instance._onBarClick(event(), 'history', 0);
+  assert.equal(instance._tooltipBar, null);
+  assert.equal(instance._tooltipHideTimer, null);
+});
+
+for (const view of ['price', 'pv']) for (const gesture of ['contextmenu', 'pointerdown', 'keydown']) {
   test(`${view} ${gesture} selects a whole hour with four available quarters`, t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const templates = [], instance = card({ templates }), plan = pricedPeriods();
@@ -551,7 +608,16 @@ for (const view of ['price', 'pv']) for (const gesture of ['click', 'contextmenu
     const target = view === 'price' ? targets[0] : targets.find(node => node.rendered.includes('02:00 GMT+2–02:00 GMT+1'));
     assert.ok(target);
     handler(target, gesture)(event({}, { key: 'Enter', button: 0, clientX: 20, clientY: 30 }));
-    if (gesture === 'pointerdown') t.mock.timers.tick(500);
+    if (gesture === 'pointerdown') {
+      t.mock.timers.tick(499);
+      assert.equal(instance._pickerBar, null);
+      t.mock.timers.tick(1);
+      const picker = instance._pickerBar;
+      handler(target, 'pointerup')(event());
+      handler(target, 'click')(event());
+      assert.equal(instance._pickerBar, picker, 'release click keeps the same picker open');
+      assert.equal(instance._tooltipBar, null);
+    }
     assert.equal(instance._pickerBar.rows.length, 4);
     assert.equal(instance._pickerBar.selected.size, 4);
     assert.equal(instance._pickerBar.group.start, Date.parse(plan[0].start_time));
@@ -789,7 +855,8 @@ for (const unavailable of ['past', 'missing']) test(`${unavailable} whole-hour t
 });
 
 for (const view of ['price', 'pv']) for (const unavailable of ['past', 'missing']) {
-  for (const inspect of ['mouseenter', 'focus']) test(`${view} ${inspect} inspects all ${unavailable} hour details without enabling edits`, () => {
+  for (const inspect of ['mouseenter', 'focus', 'click']) test(`${view} ${inspect} inspects all ${unavailable} hour details without enabling edits`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const templates = [], instance = card({ now: unavailable === 'past' ? '2026-10-26T00:00:00Z' : '2026-10-24T00:00:00Z', templates });
     const plan = pricedPeriods();
     if (unavailable === 'missing') plan.slice(0, 4).forEach(entry => { entry.price = null; });
@@ -836,7 +903,7 @@ test('opening an editable hour hides passive details and chart switching clears 
   const target = nodes(templates, 'plan-bar-group')[0];
   handler(target, 'focus')(event());
   assert.match(instance._renderPriceChart(plan), /class="plan-hour-tooltip"/);
-  handler(target, 'click')(event());
+  handler(target, 'contextmenu')(event());
   assert.equal(instance._pickerBar.selected.size, 4);
   assert.doesNotMatch(instance._renderPriceChart(plan), /class="plan-hour-tooltip"/);
   instance._closePicker();

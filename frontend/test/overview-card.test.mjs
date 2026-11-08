@@ -115,7 +115,7 @@ test('Disable Discharge opens its existing accessible help dialog with behavior 
 test('Overview routes from normalized configuration, shows compact controls and server calculation without writes', () => {
   const { card, calls } = setup();
   const rendered = card.render();
-  for (const label of ['Overview', 'Mode', 'Settings', 'Charge Allowed', 'Discharge Allowed', 'Grid Consumer', 'Setting', 'PV charge', 'Surplus', 'Grid consumer', 'Grid setpoint']) {
+  for (const label of ['Overview', 'Mode', 'Settings', 'Charge Allowed', 'Discharge Allowed', 'Grid Consumer', 'Battery Power Control', 'Setting', 'PV charge', 'Surplus', 'Grid consumer', 'Grid setpoint']) {
     assert.ok(rendered.includes(label), label);
   }
   assert.match(rendered, /\+50 W/);
@@ -150,7 +150,7 @@ for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge'])
 for (const state of ['on', 'off']) test(`Overview permission switches in ${state} state use their correct services`, () => {
   const { card, templates, calls, prefix } = setup({ charge: state, discharge: state });
   card.render();
-  const toggles = switches(templates);
+  const toggles = switches(templates).filter(node => ['Charge Allowed', 'Discharge Allowed'].includes(binding(node, 'aria-label')));
   assert.equal(toggles.length, 2);
   toggles.forEach(node => {
     assert.equal(binding(node, '.checked'), state === 'on');
@@ -260,12 +260,13 @@ test('Settings retains mode, permissions and tuning without Overview status; oth
   assert.equal(calls.length, 0);
 });
 
-for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
-  test(`Battery Power Control binds ${state} and targets the configured prefix`, () => {
+for (const view of ['settings', 'overview']) for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
+  test(`${view} Battery Power Control binds ${state} and targets the configured prefix`, () => {
     const { card, templates, calls, states, prefix } = setup();
     const entityId = `switch.${prefix}_battery_power_control`;
     if (state !== null) states[entityId] = { state, attributes: { source_entity: 'sensor.battery', feedback_status: 'active' } };
-    card._renderControlsView();
+    card.setConfig({ ...card.config, view });
+    card.render();
     const toggle = switches(templates).find(node => binding(node, 'aria-label') === 'Battery Power Control');
     assert.equal(binding(toggle, '.checked'), state === 'on');
     assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
@@ -391,11 +392,13 @@ for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge'])
   test(`Relative Auto Mode binds the configured prefix and remains available in ${mode}`, () => {
     const { card, templates, calls, prefix } = relativeSetup('off', mode);
     const rendered = card.render();
-    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"')
-      && node.rendered.includes('Help for Relative Auto Mode'));
+    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row relative-mode-toggle"'));
     assert.equal(binding(toggle, '.checked'), false);
     assert.equal(binding(toggle, '.disabled'), false);
-    assert.ok(rendered.indexOf('Auto Mode') < rendered.indexOf('aria-label=Relative Auto Mode'));
+    assert.match(toggle.rendered, /Absolute<\/button>[\s\S]*<ha-switch[\s\S]*>Relative<\/button>/);
+    const row = templates.find(node => node.strings.join('').includes('class="auto-mode-toggles"'));
+    assert.match(row.rendered, /Grid Consumer[\s\S]*relative-mode-toggle/);
+    assert.ok(rendered.indexOf('Auto Mode') < rendered.indexOf('aria-label="Relative Auto Mode"'));
     binding(toggle, '@change')();
     assert.deepEqual(plain(calls), [['switch', 'turn_on', { entity_id: `switch.${prefix}_relative_auto_mode` }]]);
   });
@@ -405,8 +408,7 @@ for (const state of [null, 'unknown', 'unavailable', 'off', 'on']) {
   test(`Relative Auto Mode ${state} safely controls labels and duration availability`, () => {
     const { card, states, templates, calls, prefix } = relativeSetup(state);
     const rendered = card.render();
-    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row"')
-      && node.rendered.includes('Help for Relative Auto Mode'));
+    const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row relative-mode-toggle"'));
     assert.equal(binding(toggle, '.checked'), state === 'on');
     assert.equal(binding(toggle, '.disabled'), !['on', 'off'].includes(state));
     const controls = ranges(templates);
@@ -418,9 +420,11 @@ for (const state of [null, 'unknown', 'unavailable', 'off', 'on']) {
     for (const type of ['Charge', 'Discharge']) {
       assert.ok(controls.some(node => binding(node, 'aria-label') === `${type} Price ${state === 'on' ? 'Delta' : 'Threshold'}`));
     }
-    if (state === 'on') assert.match(rendered, /Duration budgets are ignored.*even when zero.*Saved duration values are retained/);
+    assert.doesNotMatch(rendered, /Duration budgets are ignored.*Saved duration values are retained/);
     if (!['on', 'off'].includes(state)) {
       assert.match(rendered, /switch is unavailable; absolute price settings are shown/);
+      assert.equal(binding(toggle, 'role'), 'group');
+      assert.match(binding(toggle, 'aria-label'), /Relative Auto Mode switch is unavailable/);
       binding(toggle, '@change')();
       assert.equal(calls.length, 0);
     } else {
@@ -462,6 +466,21 @@ test('duration handlers reject disabled changes and resume using retained values
   card._sliderUnlocked.add(input);
   binding(restored, '@change')({ target: input });
   assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_expensive_hours_auto_discharge`, value: 2.5 }]]);
+});
+
+test('Relative label opens the mode help dialog without changing settings', () => {
+  const { card, templates, calls } = relativeSetup();
+  card.render();
+  const label = templates.find(node => node.rendered.includes('aria-label=Help for Relative'));
+  assert.match(label.rendered, /aria-haspopup="dialog"/);
+  card._openHelp = topic => { card._helpOpen = true; card._helpTopic = topic; };
+  binding(label, '@click')({ currentTarget: {} });
+  assert.equal(card._helpTopic.key, 'relative_auto_mode');
+  const rendered = card._renderHelpDialog('settings', 'Settings');
+  assert.match(rendered, /role="dialog" aria-modal="true" aria-label=Relative/);
+  assert.match(rendered, /maximum reference price minus Charge Price Delta/);
+  assert.match(rendered, /Duration budgets are ignored/);
+  assert.equal(calls.length, 0);
 });
 
 test('relative help follows the active mode, retains numeric ranges, and explains schedule timing', () => {
