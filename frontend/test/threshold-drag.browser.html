@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Threshold drag Lit regression</title>
+<!-- Run npm run build, serve the repository root, then open this file in a browser. -->
+<pre id="results">Running…</pre>
+<script type="module">
+import '../../custom_components/victron_charge_control/static/victron-charge-controller-card.js';
+
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.thresholdDragResults = (async () => {
+  await customElements.whenDefined('victron-charge-controller-card');
+  const results = [];
+  for (const relative of [true, false]) for (const type of ['charge', 'discharge']) {
+    for (const scenario of ['external_cancel', 'external_commit', 'simultaneous', 'commit']) {
+      const name = `${relative ? 'relative' : 'absolute'} ${type} ${scenario}`;
+      const card = document.createElement('victron-charge-controller-card');
+      card._syncSolarForecast = () => {}; // No HA connection or network requests in this fixture.
+      card.setConfig({ entity_prefix: 'garage', view: 'plan' });
+      const calls = [];
+      const states = {
+        'select.garage_control_mode': { state: 'auto', attributes: {} },
+        'switch.garage_relative_auto_mode': { state: relative ? 'on' : 'off', attributes: {} },
+        'number.garage_charge_price_threshold': { state: '4', attributes: { min: -50, max: 100, step: .5 } },
+        'number.garage_discharge_price_threshold': { state: '6', attributes: { min: -50, max: 100, step: .5 } },
+        'sensor.garage_charge_plan': { state: 'ready', attributes: {
+          price_reference_min: 0, price_reference_max: 24,
+          plan: [{ date: '2035-01-01', hour: 12, price: 0, action: 'idle' },
+            { date: '2035-01-02', hour: 12, price: 24, action: 'idle' }],
+        } },
+      };
+      card.hass = { states, config: { time_zone: 'UTC' }, callService: (...args) => { calls.push(args); return Promise.resolve(); } };
+      document.body.append(card);
+      try {
+        await card.updateComplete;
+        const group = card.shadowRoot.querySelector(`[data-type="${type}"]`);
+        const label = group.querySelector('text'), marker = label.firstChild, text = label.lastChild;
+        const before = Number(text.nodeValue);
+        assert(before === (type === 'charge' ? (relative ? 20 : 4) : 6), `${name}: initial cutoff`);
+        const pointer = event => new PointerEvent(event, { bubbles: true, cancelable: true, pointerId: 7 });
+        group.dispatchEvent(pointer('pointerdown'));
+        await new Promise(resolve => setTimeout(resolve, 1050));
+        const scale = card._thresholdDrag.scale;
+        const y = price => scale.padT + scale.plotH - (price - scale.scaleMin) / scale.scaleRange * scale.plotH;
+        const svg = group.closest('svg'), point = svg.createSVGPoint();
+        point.x = 100;
+        point.y = y(10);
+        const screen = point.matrixTransform(svg.getScreenCTM());
+        document.dispatchEvent(new PointerEvent('pointermove', {
+          bubbles: true, cancelable: true, pointerId: 7, clientX: screen.x, clientY: screen.y,
+        }));
+        assert(text.nodeValue === '10', `${name}: preview moved`);
+        let expected = 10;
+        if (scenario !== 'commit') {
+          states[`number.garage_${type}_price_threshold`].state = '5';
+          let newRelative = relative;
+          if (scenario === 'simultaneous') {
+            newRelative = !relative;
+            states['switch.garage_relative_auto_mode'].state = newRelative ? 'on' : 'off';
+            Object.assign(states['sensor.garage_charge_plan'].attributes, { price_reference_min: 1, price_reference_max: 25 });
+          }
+          const attrs = states['sensor.garage_charge_plan'].attributes;
+          expected = newRelative ? (type === 'charge' ? attrs.price_reference_max - 5 : attrs.price_reference_min + 5) : 5;
+          card.hass = { ...card.hass, states: { ...states } };
+          if (scenario !== 'external_commit') {
+            await card.updateComplete;
+            assert(card._thresholdDrag === null, `${name}: canceled before Lit renders`);
+            assert(Number(text.nodeValue) === expected, `${name}: new cutoff rendered before cancel`);
+          }
+        }
+        document.dispatchEvent(pointer(scenario === 'external_cancel' ? 'pointercancel' : 'pointerup'));
+        await card.updateComplete;
+        card.requestUpdate();
+        await card.updateComplete;
+        assert(card._thresholdDrag === null, `${name}: drag finished`);
+        assert(label.firstChild === marker && label.lastChild === text, `${name}: Lit marker and text identity`);
+        assert(marker.nodeType === 8 && text.nodeType === 3, `${name}: real Lit nodes`);
+        for (const line of group.querySelectorAll('line')) for (const attr of ['y1', 'y2']) {
+          assert(Math.abs(Number(line.getAttribute(attr)) - y(expected)) < 1e-8, `${name}: ${attr} follows latest cutoff`);
+        }
+        assert(Math.abs(Number(label.getAttribute('y')) - y(expected) - 3.5) < 1e-8, `${name}: label position`);
+        assert(Number(text.nodeValue) === expected, `${name}: cutoff survives cancel and second Lit update`);
+        assert(calls.length === (scenario === 'commit' ? 1 : 0), `${name}: service count`);
+        if (scenario === 'commit') {
+          const value = relative && type === 'charge' ? 14 : 10;
+          assert(JSON.stringify(calls[0]) === JSON.stringify(['number', 'set_value', {
+            entity_id: `number.garage_${type}_price_threshold`, value,
+          }]), `${name}: ordinary commit`);
+        } else assert(states[`number.garage_${type}_price_threshold`].state === '5', `${name}: external value retained`);
+        results.push({ name, before, after: expected, serviceCalls: calls.length, passed: true });
+      } finally {
+        card.remove();
+      }
+    }
+  }
+  return results;
+})();
+window.thresholdDragResults.then(
+  results => { document.querySelector('#results').textContent = JSON.stringify(results, null, 2); },
+  error => { document.querySelector('#results').textContent = error.stack; },
+);
+</script>

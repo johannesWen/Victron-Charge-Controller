@@ -1219,15 +1219,16 @@ class VictronChargeControllerCard extends LitElement {
     };
   }
 
-  _thresholdContextMatches(context) {
+  _thresholdContextMatches(context, type) {
     const current = this._priceThresholdContext();
-    return context && context.relative === current.relative && context.min === current.min && context.max === current.max;
+    return context && context.relative === current.relative && context.min === current.min && context.max === current.max
+      && context.value === this._val('number', `${type}_price_threshold`);
   }
 
   _syncThresholdContext() {
     const context = this._priceThresholdContext();
     if (this._lastThresholdContext && context.relative !== this._lastThresholdContext.relative) this._pendingThresholds = {};
-    if (this._thresholdDrag && !this._thresholdContextMatches(this._thresholdDrag.context)) this._finishThresholdDrag(false);
+    if (this._thresholdDrag && !this._thresholdContextMatches(this._thresholdDrag.context, this._thresholdDrag.type)) this._finishThresholdDrag(false);
     this._lastThresholdContext = context;
     return context;
   }
@@ -1290,7 +1291,7 @@ class VictronChargeControllerCard extends LitElement {
       }
     }
 
-    if (commit && unlocked && value != null && this._thresholdContextMatches(context)) {
+    if (commit && unlocked && value != null && this._thresholdContextMatches(context, type)) {
       const key = type === 'charge' ? 'charge_price_threshold' : 'discharge_price_threshold';
       const rounded = context.relative ? value : Math.round(value * 100) / 100;
       this._setNumber(key, rounded);
@@ -1308,7 +1309,7 @@ class VictronChargeControllerCard extends LitElement {
     e.preventDefault();
     e.stopPropagation();
     if (this._thresholdDrag) this._finishThresholdDrag(false);
-    const context = this._syncThresholdContext();
+    const context = { ...this._syncThresholdContext(), value: this._val('number', `${type}_price_threshold`) };
     if (context.relative && (type === 'charge' ? context.max : context.min) === null) return;
 
     const group = e.currentTarget;

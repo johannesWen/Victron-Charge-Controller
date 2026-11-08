@@ -697,6 +697,24 @@ test('absolute drag cannot commit after relative mode is enabled before rerender
   assert.deepEqual(plain(card._pendingThresholds), {});
 });
 
+for (const mode of ['on', 'off']) for (const type of ['charge', 'discharge']) for (const path of ['render', 'move', 'commit']) {
+  test(`${type} threshold state change cancels through ${path} with relative mode ${mode}`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = relativeSetup(mode), { card, states, prefix, calls } = result;
+    const drag = startThresholdDrag(result, type, t.mock.timers);
+    drag.move(10);
+    states[`number.${prefix}_${type}_price_threshold`].state = '5';
+    if (path === 'render') card.render();
+    if (path === 'move') drag.move(11);
+    if (path === 'commit') card._onThresholdPointerUp(drag.event);
+    assert.equal(card._thresholdDrag, null);
+    assert.equal(card._thresholdHoldTimer, null);
+    drag.assertRestored();
+    assert.equal(calls.length, 0);
+    assert.deepEqual(plain(card._pendingThresholds), {});
+  });
+}
+
 for (const mode of ['on', 'off']) for (const type of ['charge', 'discharge']) {
   test(`explicit ${type} drag cancellation restores SVG coordinates and label with relative mode ${mode}`, t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
