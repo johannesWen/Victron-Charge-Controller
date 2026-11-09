@@ -120,7 +120,7 @@ test('Overview routes from normalized configuration, shows compact controls and 
     assert.ok(rendered.includes(label), label);
   }
   assert.match(rendered, /\+50 W/);
-  assert.match(rendered, /−2,000 W/);
+  assert.ok(rendered.includes(`−${(2000).toLocaleString()} W`));
   assert.match(rendered, /<strong>−450 W<\/strong>/);
   assert.match(rendered, /10\.00 ct\/kWh/);
   assert.doesNotMatch(rendered, /Charge \/ Discharge|Battery Limits|Blocked Hours|Replan Hours|slider-row/);
@@ -329,8 +329,8 @@ for (const sign of [1, -1]) test(`Overview includes signed battery feedback and 
   sensor.state = String(sign * 3500);
   const rendered = card.render();
   assert.match(rendered, /<dt>Battery feedback<\/dt>/);
-  assert.ok(rendered.includes(`${sign > 0 ? '+' : '−'}1,000 W`));
-  assert.ok(rendered.includes(`<strong>${sign > 0 ? '' : '−'}3,500 W (${sign > 0 ? '' : '−'}4,000 W)</strong>`));
+  assert.ok(rendered.includes(`${sign > 0 ? '+' : '−'}${(1000).toLocaleString()} W`));
+  assert.ok(rendered.includes(`<strong>${sign > 0 ? '' : '−'}${(3500).toLocaleString()} W (${sign > 0 ? '' : '−'}${(4000).toLocaleString()} W)</strong>`));
 });
 
 test('Overview hides zero or absent battery feedback and preserves consumer terms', () => {
