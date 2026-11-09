@@ -73,7 +73,7 @@ const HELP_TEXT = {
         'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
       ] },
     { heading: 'Price cutoffs', items: [
-      'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charging wins overlaps and duration budgets are ignored, including zero; permissions and SOC protection still apply.',
+      'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charge and Discharge Durations limit the selected periods; charging wins overlaps. Permissions and SOC protection still apply.',
       'Both days use the same current/future reference prices from Charge Plan, including tomorrow or later and prices excluded by blocks or PV Charge. Lines are hidden when their reference is unavailable or outside the chart scale. Hold a line to drag its cutoff; this edits the corresponding delta in relative mode.',
       'Lines reflect current selection cutoffs. Reference prices can refresh without changing the saved schedule; Recalculate and the existing Auto-setting and Recalculation Hours triggers apply the new selection. Switching Relative Auto Mode recalculates only in Auto; restoring it after restart preserves schedules.',
     ] },
@@ -151,7 +151,7 @@ const HELP_TEXT = {
 const SETTINGS_HELP = {
   control_mode: [
     { heading: 'Off', items: ['Uses Idle Setpoint as the grid power target. It does not turn off your Victron system or stop battery use controlled by Victron.', 'Example: with Idle Setpoint at 0 W, the controller asks for no net grid import or export. This is a target, not a guarantee.'] },
-    { heading: 'Auto', items: ['Chooses charging and discharging times from the available electricity prices. Absolute mode uses your price limits and durations. Relative mode uses price differences and has no duration limit.', 'Example: set Charge Price Threshold to 10 ct/kWh and Charge Duration to 2 h. Auto chooses up to 2 hours of the cheapest available times at 10 ct/kWh or less.', 'Blocked hours are skipped. Your fixed plan or changes in the Plan card can replace the automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.'] },
+    { heading: 'Auto', items: ['Chooses charging and discharging times from the available electricity prices. Absolute mode uses fixed price limits; Relative mode uses price differences. Both use Charge and Discharge Durations.', 'Example: set Charge Price Threshold to 10 ct/kWh and Charge Duration to 2 h. Auto chooses up to 2 hours of the cheapest available times at 10 ct/kWh or less.', 'Blocked hours are skipped. Your fixed plan or changes in the Plan card can replace the automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.'] },
     { heading: 'Manual', items: ['Uses the times you choose in the Plan card and any active fixed plan. It does not choose times by price. Outside those times, it uses Idle Setpoint.', 'Example: choose Charge from 01:00 to 02:00 in the Plan card. Manual follows that choice if charging is allowed and the battery is below its limit.', 'Recalculation Hours clear your manual Charge and Discharge times and apply the active fixed plan again. Battery level limits and permission switches still apply.'] },
     { heading: 'Force Charge', items: ['Requests charging now at Charge Power, without waiting for the schedule or a low price.', 'Example: use this when you want to charge before a trip, even if the current hour is blocked for automatic charging.', 'Charge Allowed must be on. Max SOC, the restart buffer and grid power limits still apply. Force Charge stays selected until you change the mode.'] },
     { heading: 'Force Discharge', items: ['Requests discharging now, without waiting for the schedule or a high price.', 'Example: use this to request discharge during an hour that Auto did not select.', 'Discharge Allowed must be on. Battery level limits, the restart buffer and export limits still apply. At Min SOC, only spare solar power may be exported if a solar surplus sensor is configured. Force Discharge stays selected until you change the mode.'] },
@@ -162,14 +162,14 @@ const SETTINGS_HELP = {
     'For discharge, Auto chooses the highest prices at or above Discharge Price Threshold, up to Discharge Duration. Example: a threshold of 20 ct/kWh and duration of 1 h allows up to 1 hour at 20 ct/kWh or more.',
     'Auto uses available prices from now onward, which can include more than one day. It selects whole price periods without going over each duration. A duration of 0 h selects no periods for that action. If both rules select the same period, discharge wins.',
     'Blocked hours and PV Charge periods are skipped. Your fixed plan and choices in the Plan card can replace automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.',
-    'Returning from Relative restores your saved duration limits. The saved price values now mean fixed limits, so check them after switching. Changing the switch rebuilds the schedule only in Auto. After a restart, the saved mode and schedule return without rebuilding the schedule.',
+    'Charge and Discharge Durations also apply in Relative mode. The saved price values now mean fixed limits, so check them after switching. Changing the switch rebuilds the schedule only in Auto. After a restart, the saved mode and schedule return without rebuilding the schedule.',
   ],
   relative_auto_mode: [
     'Relative is the Auto setting with the switch to the right. It compares each price with the highest and lowest available prices. You set a price delta, meaning a price difference in ct/kWh, instead of a fixed price limit.',
     'Example: the highest price is 30 ct/kWh and Charge Price Delta is 10. Auto can charge at 20 ct/kWh or less: 30 − 10 = 20. If the lowest price is 5 and Discharge Price Delta is 10, it can discharge at 15 or more: 5 + 10 = 15.',
-    'Relative mode uses all available prices from now onward, including tomorrow or later. It finds the highest and lowest prices before skipping blocked hours and PV Charge times. If a time matches both rules, charging wins.',
+    'Relative mode uses all available prices from now onward, including tomorrow or later. It finds the highest and lowest prices before skipping blocked hours and PV Charge times. Auto chooses the cheapest qualifying charge periods and most expensive qualifying discharge periods up to their separate durations. If both select a period, charging wins and discharge does not refill that time.',
     'A delta can be zero or negative. With a highest price of 30, a charge delta of −5 allows prices up to 35. The same saved price values are used in both modes, so check them after switching.',
-    'Duration limits do not apply in Relative mode, even if they are 0 h. Their saved values return when you choose Absolute. Permission switches, battery level limits, blocked hours, PV Charge times and your fixed plan still matter.',
+    'Example: with Charge Duration at 1 h, up to four qualifying 15-minute periods can be selected; 0 h selects none. Whole price periods are never split to fit. Permission switches, battery level limits, blocked hours, PV Charge times and your fixed plan still matter.',
     'You can change this switch in any mode, but it only rebuilds the schedule in Auto. After a restart, the saved mode and schedule return without rebuilding the schedule. New prices can move the chart lines without changing the plan. Use Recalculate, Recalculation Hours or an Auto setting change to rebuild it.',
   ],
   grid_consumer: [
@@ -318,32 +318,32 @@ const SETTINGS_HELP = {
     'If no hours are selected, these timed updates are off. You can still use Recalculate in Auto. Changing Auto settings can also rebuild the schedule.',
   ],
   schedule_actions: [
-    { heading: 'Recalculate', items: ['Builds a new Auto schedule from the available prices from now onward. Absolute mode uses price limits and durations. Relative mode uses price differences with no duration limit. Auto mode and usable price data are required.', 'Example: tomorrow’s prices have arrived. Press Recalculate to include them in the plan.', 'It replaces your individual Charge and Discharge choices, keeps PV Charge periods, skips recurring blocked hours when choosing automatic times, and applies the active fixed plan again. It does not change the control mode.'] },
+    { heading: 'Recalculate', items: ['Builds a new Auto schedule from the available prices from now onward. Absolute mode uses fixed price limits; Relative mode uses price differences. Both use Charge and Discharge Durations. Auto mode and usable price data are required.', 'Example: tomorrow’s prices have arrived. Press Recalculate to include them in the plan.', 'It replaces your individual Charge and Discharge choices, keeps PV Charge periods, skips recurring blocked hours when choosing automatic times, and applies the active fixed plan again. It does not change the control mode.'] },
     { heading: 'Clear Schedule', items: ['Removes planned Charge, Discharge and PV Charge times. It also clears both lists of recurring blocked hours.', 'Example: use it to remove your current plan and daily blocks. Saved fixed plans are kept. If one is active, its times are immediately added back, so the plan may not be empty.', 'It does not change the mode, permission switches or Recalculation Hours. Force Charge or Force Discharge can keep running. A later Auto update can fill the plan again. Use Off if you want this controller to stop following charging and discharging plans; Victron can still control battery power.'] },
   ],
 };
 
 const RELATIVE_SETTINGS_HELP = {
   cheapest_hours_auto_charge: [
-    'Charge Duration is not used in Relative mode. Auto can select every period that meets the charge price rule, even if the saved duration is 0 h.',
-    'Example: your saved duration is 1 h, but 3 hours meet the price rule. Relative mode can select all 3 hours. The 1 h limit is used again when you return to Absolute.',
-    'The saved duration is kept. Charge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply.',
+    'Charge Duration limits the total grid charging time Auto may select in Relative mode. It chooses the cheapest periods that meet Charge Price Delta, from now onward across available current and future prices.',
+    'Example: with Charge Duration at 1 h, Auto can select four qualifying 15-minute periods, even if 3 hours qualify. It never splits a price period to fit; 0 h selects no automatic grid charging.',
+    'The same saved duration applies in Absolute mode. If both rules select a period, charging wins. Charge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply.',
   ],
   expensive_hours_auto_discharge: [
-    'Discharge Duration is not used in Relative mode. Auto can select every period that meets the discharge price rule, even if the saved duration is 0 h.',
-    'Example: your saved duration is 2 h, but 4 hours meet the price rule. Relative mode can select all 4 hours, unless charging has also been selected for some of them. The 2 h limit returns in Absolute mode.',
-    'The saved duration is kept. Discharge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply.',
+    'Discharge Duration limits the total discharge time Auto may select in Relative mode. It chooses the most expensive periods that meet Discharge Price Delta, from now onward across available current and future prices.',
+    'Example: with Discharge Duration at 2 h, Auto can select eight qualifying 15-minute periods, even if 4 hours qualify. It never splits a price period to fit; 0 h selects no automatic discharge.',
+    'The same saved duration applies in Absolute mode. Charging wins overlapping selections without refilling discharge time. Discharge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply.',
   ],
   charge_price_threshold: [
     'In Relative mode, Charge Price Delta is a price difference, in ct/kWh. Subtract it from the highest available price to find the highest price Auto may choose for charging. Prices exactly at that result are included.',
     'Example: highest price 30, delta 10: 30 − 10 = 20 ct/kWh. Prices of 20 or less match. A delta of 0 allows prices up to 30. A negative delta of −5 allows prices up to 35.',
-    'The highest price comes from all available current and future periods, including tomorrow or later, before blocked hours and PV Charge times are skipped. There is no duration limit, even with Charge Duration at 0 h. Charging wins if both price rules match the same period.',
+    'The highest price comes from all available current and future periods, including tomorrow or later, before blocked hours and PV Charge times are skipped. Auto takes the cheapest qualifying periods up to Charge Duration; 0 h selects none. Charging wins if both selections include the same period.',
     'Changing the delta in Auto rebuilds the schedule. Charge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply. Force Charge and times chosen manually do not use this price test.',
   ],
   discharge_price_threshold: [
     'In Relative mode, Discharge Price Delta is a price difference, in ct/kWh. Add it to the lowest available price to find the lowest price Auto may choose for discharge. Prices exactly at that result are included.',
     'Example: lowest price 5, delta 10: 5 + 10 = 15 ct/kWh. Prices of 15 or more match. A delta of 0 allows prices from 5 upward. A negative delta of −5 allows prices from 0 upward.',
-    'The lowest price comes from all available current and future periods, including tomorrow or later, before blocked hours and PV Charge times are skipped. There is no duration limit, even with Discharge Duration at 0 h. Charging wins if both price rules match the same period.',
+    'The lowest price comes from all available current and future periods, including tomorrow or later, before blocked hours and PV Charge times are skipped. Auto takes the most expensive qualifying periods up to Discharge Duration; 0 h selects none. Charging wins if both selections include the same period, without refilling discharge time.',
     'Changing the delta in Auto rebuilds the schedule. Discharge Allowed, battery level limits, blocked hours, PV Charge times and fixed plans still apply. Force Discharge and times chosen manually do not use this price test.',
   ],
 };
@@ -1304,8 +1304,7 @@ class VictronChargeControllerCard extends LitElement {
     const input = e.target;
     const tooltip = input.parentElement.querySelector('.slider-tooltip');
     tooltip.style.display = 'none';
-    const disabled = input.disabled || (this._relativeAutoMode()
-      && ['cheapest_hours_auto_charge', 'expensive_hours_auto_discharge'].includes(numberKey));
+    const disabled = input.disabled;
     // Commit if the slider was unlocked, then re-lock.
     if (this._sliderUnlocked.has(input)) {
       if (!disabled) this._setNumber(numberKey, input.value);
@@ -1681,8 +1680,8 @@ class VictronChargeControllerCard extends LitElement {
             ${this._renderHelpLabel('Relative', 'relative_auto_mode')}
           </div>
         </div>
-        ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h', relative)}
-        ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h', relative)}
+        ${this._renderSlider('Charge Duration', 'cheapest_hours_auto_charge', ' h')}
+        ${this._renderSlider('Discharge Duration', 'expensive_hours_auto_discharge', ' h')}
         ${this._renderSlider(this._priceThresholdLabel('charge'), 'charge_price_threshold', ' ct/kWh')}
         ${this._renderSlider(this._priceThresholdLabel('discharge'), 'discharge_price_threshold', ' ct/kWh')}
       `)}

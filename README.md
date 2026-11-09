@@ -232,8 +232,7 @@ Deltas are signed and may be negative:
 
 The references are the minimum and maximum of all normalized current and future price intervals, including tomorrow or later, before blocked-hour and PV Charge exclusions.
 A negative charge delta places its cutoff above the maximum; a negative discharge delta places its cutoff below the minimum.
-Relative selection has no duration cap: Charge Duration and Discharge Duration are disabled in the card, but their saved values remain displayed and are used again when relative mode is off.
-Even zero duration permits relative selection; use Charge Allowed and Discharge Allowed to prevent the corresponding action.
+Charge Duration and Discharge Duration limit Relative Auto Mode as well as Absolute Auto Mode. Auto independently chooses the cheapest qualifying charge periods and the most expensive qualifying discharge periods, up to each duration across available current and future prices. It takes whole price periods without exceeding either budget; 0 h selects none for that action. For example, a 1 h charge budget can select four qualifying 15-minute periods even when 3 hours qualify. If both selections include the same period, charging wins and discharge time is not refilled.
 Permission switches, SOC protection, recurring blocks, PV Charge exclusions and fixed-plan overrides still apply.
 
 In the Price chart, both days show the same calculated absolute cutoffs using `sensor.<entity_prefix>_charge_plan` attributes `price_reference_min` and `price_reference_max`, in ct/kWh.
@@ -378,7 +377,7 @@ Existing settings and schedules remain saved.
 | Discharge Allowed | Switch | Allow discharging. |
 | Disable Discharge | Switch | Prevent battery discharge during Charge slots and Force Charge. See [Disable Discharge](#disable-discharge). |
 | Battery Power Control | Switch | Target measured battery watts during Charge and full Discharge; defaults off and restores after restart. See [Battery Power Control](#battery-power-control). |
-| Relative Auto Mode | Switch | Use signed price deltas without duration caps; defaults off and restores without replanning. See [Relative Auto Mode](#relative-auto-mode). |
+| Relative Auto Mode | Switch | Use signed price deltas with Charge and Discharge Duration budgets; defaults off and restores without replanning. See [Relative Auto Mode](#relative-auto-mode). |
 | Grid Consumer | Switch | Enable the load adjustment described in [Grid Consumer](#grid-consumer). |
 | Grid Feed-in Control Enabled | Switch | Enables price-based grid feed-in limiting. |
 | Min SOC | Number | Minimum battery charge level. |
@@ -391,8 +390,8 @@ Existing settings and schedules remain saved.
 | Min Grid Setpoint | Number | Lowest allowed grid setpoint. |
 | Max Grid Setpoint | Number | Highest allowed grid setpoint. |
 | Setpoint Deadband | Number | Minimum change in watts for normal power updates. Set to `0` to disable. |
-| Cheapest Hours (Charge Duration in the card) | Number | Absolute Auto charge duration budget in hours, adjustable in 0.25-hour steps; retained but ignored in Relative Auto Mode. |
-| Expensive Hours (Discharge Duration in the card) | Number | Absolute Auto discharge duration budget in hours, adjustable in 0.25-hour steps; retained but ignored in Relative Auto Mode. |
+| Cheapest Hours (Charge Duration in the card) | Number | Auto charge duration budget in hours in both price modes, adjustable from 0 to 12 in 0.25-hour steps. |
+| Expensive Hours (Discharge Duration in the card) | Number | Auto discharge duration budget in hours in both price modes, adjustable from 0 to 12 in 0.25-hour steps. |
 | Charge Price Threshold | Number | Absolute maximum charging price, or signed Charge Price Delta below the reference maximum in Relative Auto Mode (ct/kWh). |
 | Discharge Price Threshold | Number | Absolute minimum discharging price, or signed Discharge Price Delta above the reference minimum in Relative Auto Mode (ct/kWh). |
 | Grid Feed-in Price Threshold | Number | Reduce feed-in when the price falls below this value. |
@@ -439,7 +438,7 @@ The Charge Plan's detailed `plan`, `charge_hours`, `discharge_hours`, and `pv_ch
 | `victron_charge_control.calculate_schedule` | Recalculate the automatic schedule from EPEX Spot prices. |
 | `victron_charge_control.clear_schedule` | Clear scheduled and blocked hours. An active fixed plan still applies. |
 
-With Relative Auto Mode off, automatic selection takes whole eligible price intervals without exceeding the duration budget. For example, 1.25 hours can select five quarters from a 15-minute feed; an hourly feed selects one whole hour. The budget spans the available current and future data, rather than guaranteeing a duration each day. Existing entity IDs and saved duration values remain valid.
+In both price modes, automatic selection takes whole eligible price intervals without exceeding each duration budget. For example, 1.25 hours can select five quarters from a 15-minute feed; an hourly feed selects one whole hour. The budgets span the available current and future data, rather than guaranteeing a duration each day. Existing entity IDs and saved duration values remain valid.
 
 ## Defaults
 

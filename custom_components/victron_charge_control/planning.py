@@ -36,7 +36,7 @@ def calculate_auto_schedule(
     now: Any,
     relative_auto_mode: bool = False,
 ) -> tuple[list[ScheduleSlot], list[ScheduleSlot]] | None:
-    """Select source periods by absolute budgets or relative price differences."""
+    """Select whole source periods within budgets and absolute or relative cutoffs."""
     if control_mode != MODE_AUTO:
         return None
     state = hass.states.get(epex_spot_entity)
@@ -52,9 +52,9 @@ def calculate_auto_schedule(
         discharge_price_threshold = minimum + discharge_price_threshold
 
     def select(hours, blocked, threshold, discharge=False):
-        if not relative_auto_mode and not valid_duration(hours):
+        if not valid_duration(hours):
             return []
-        remaining = float("inf") if relative_auto_mode else hours * 3600
+        remaining = hours * 3600
         selected = []
         # Earliest instant breaks ties in either price direction.
         for item in sorted(prices, key=lambda item: (-item.price if discharge else item.price, item.start)):

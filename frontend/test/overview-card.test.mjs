@@ -376,7 +376,8 @@ function relativeSetup(relative = 'on', mode = 'auto') {
   for (const [key, value] of Object.entries({
     cheapest_hours_auto_charge: '0', expensive_hours_auto_discharge: '1.25',
     charge_price_threshold: '4', discharge_price_threshold: '6',
-  })) states[`number.${prefix}_${key}`] = { state: value, attributes: { min: -10, max: 30, step: .25 } };
+  })) states[`number.${prefix}_${key}`] = { state: value, attributes: key.includes('hours')
+    ? { min: 0, max: 12, step: .25 } : { min: -10, max: 30, step: .25 } };
   states[`sensor.${prefix}_charge_plan`] = { state: 'ready', attributes: {
     price_reference_min: -8.13, price_reference_max: 24.13,
     plan: [
@@ -407,7 +408,7 @@ for (const mode of ['off', 'auto', 'manual', 'force_charge', 'force_discharge'])
 }
 
 for (const state of [null, 'unknown', 'unavailable', 'off', 'on']) {
-  test(`Relative Auto Mode ${state} safely controls labels and duration availability`, () => {
+  test(`Relative Auto Mode ${state} safely controls labels and keeps durations available`, () => {
     const { card, states, templates, calls, prefix } = relativeSetup(state);
     const rendered = card.render();
     const toggle = templates.find(node => node.strings.join('').includes('class="control-row toggle-row relative-mode-toggle"'));
@@ -416,7 +417,7 @@ for (const state of [null, 'unknown', 'unavailable', 'off', 'on']) {
     const controls = ranges(templates);
     for (const [label, value] of [['Charge Duration', '0'], ['Discharge Duration', '1.25']]) {
       const control = controls.find(node => binding(node, 'aria-label') === label);
-      assert.equal(binding(control, '.disabled'), state === 'on');
+      assert.equal(binding(control, '.disabled'), false);
       assert.equal(binding(control, '.value'), value);
     }
     for (const type of ['Charge', 'Discharge']) {
@@ -437,37 +438,49 @@ for (const state of [null, 'unknown', 'unavailable', 'off', 'on']) {
   });
 }
 
-test('duration handlers reject disabled changes and resume using retained values after relative mode turns off', () => {
-  const { card, states, templates, calls, prefix } = relativeSetup();
+for (const relative of ['on', 'off', null]) test(`duration sliders commit in Relative mode ${relative} and retain hold lock`, () => {
+  const { card, states, templates, calls, prefix } = relativeSetup(relative);
   card.render();
-  const control = ranges(templates).find(node => binding(node, 'aria-label') === 'Discharge Duration');
-  const input = { disabled: true, value: '10', dataset: { lockedValue: '1.25' }, classList: { remove() {} },
-    parentElement: { querySelector: () => ({ style: {} }) } };
-  card._sliderUnlocked.add(input);
-  binding(control, '@pointerdown')({ target: input });
-  assert.equal(card._sliderHoldTimers.has(input), false);
-  binding(control, '@input')({ target: input });
-  assert.equal(input.value, '1.25');
-  input.value = '10';
-  binding(control, '@change')({ target: input });
-  assert.equal(input.value, '1.25');
-  assert.equal(card._sliderUnlocked.has(input), false);
-  assert.equal(calls.length, 0);
-  input.disabled = false;
-  input.value = '10';
-  card._sliderUnlocked.add(input);
-  binding(control, '@change')({ target: input });
-  assert.equal(calls.length, 0, 'mode-change race before disabled binding updates cannot commit');
-  states[`switch.${prefix}_relative_auto_mode`].state = 'off';
+  for (const [label, key, initial, next] of [
+    ['Charge Duration', 'cheapest_hours_auto_charge', '0', '0.25'],
+    ['Discharge Duration', 'expensive_hours_auto_discharge', '1.25', '2.5'],
+  ]) {
+    calls.length = 0;
+    const control = ranges(templates).find(node => binding(node, 'aria-label') === label);
+    const input = { disabled: false, value: initial, dataset: { lockedValue: initial }, classList: { remove() {} },
+      parentElement: { querySelector: () => ({ style: {} }) } };
+    assert.equal(binding(control, '.disabled'), false);
+    assert.equal(binding(control, 'min'), 0);
+    assert.equal(binding(control, 'max'), 12);
+    assert.equal(binding(control, 'step'), .25);
+    input.value = next;
+    binding(control, '@input')({ target: input });
+    assert.equal(input.value, initial, 'locked input reverts');
+    binding(control, '@change')({ target: input });
+    assert.equal(calls.length, 0, 'locked input cannot commit');
+    input.disabled = true;
+    binding(control, '@pointerdown')({ target: input });
+    assert.equal(card._sliderHoldTimers.has(input), false, 'disabled input cannot start hold');
+    card._sliderUnlocked.add(input);
+    input.value = next;
+    binding(control, '@change')({ target: input });
+    assert.equal(input.value, initial, 'disabled input reverts');
+    assert.equal(calls.length, 0, 'disabled input cannot commit');
+    input.disabled = false;
+    card._sliderUnlocked.add(input);
+    input.value = next;
+    binding(control, '@change')({ target: input });
+    assert.deepEqual(plain(calls.at(-1)), ['number', 'set_value', { entity_id: `number.${prefix}_${key}`, value: Number(next) }]);
+    assert.equal(card._sliderUnlocked.has(input), false, 'slider re-locks after commit');
+    states[`number.${prefix}_${key}`].state = next;
+  }
+  if (relative !== null) states[`switch.${prefix}_relative_auto_mode`].state = relative === 'on' ? 'off' : 'on';
   templates.length = 0;
   card.render();
-  const restored = ranges(templates).find(node => binding(node, 'aria-label') === 'Discharge Duration');
-  assert.equal(binding(restored, '.disabled'), false);
-  assert.equal(binding(restored, '.value'), '1.25');
-  input.value = '2.5';
-  card._sliderUnlocked.add(input);
-  binding(restored, '@change')({ target: input });
-  assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_expensive_hours_auto_discharge`, value: 2.5 }]]);
+  for (const [label, value] of [['Charge Duration', '0.25'], ['Discharge Duration', '2.5']]) {
+    const control = ranges(templates).find(node => binding(node, 'aria-label') === label);
+    assert.equal(binding(control, '.value'), value, 'entity value persists in either mode');
+  }
 });
 
 for (const relative of ['off', 'on']) test(`every Settings help dialog has an example with Relative mode ${relative}`, () => {
@@ -516,7 +529,7 @@ for (const relative of ['off', 'on']) test(`Absolute and Relative labels open th
       assert.doesNotMatch(rendered, /30 − 10 = 20|Duration limits do not apply/);
     } else {
       assert.match(rendered, /30 − 10 = 20/);
-      assert.match(rendered, /Duration limits do not apply/);
+      assert.match(rendered, /up to their separate durations/);
       assert.match(rendered, /charging wins/);
       assert.doesNotMatch(rendered, /up to 2 hours/);
     }
@@ -530,12 +543,12 @@ test('relative help follows the active mode, retains numeric ranges, and explain
   card._helpTopic = { key: 'charge_price_threshold', label: 'Charge Price Threshold', unit: ' ct/kWh' };
   let rendered = card._renderHelpDialog('settings', 'Settings');
   for (const text of ['aria-label=Charge Price Delta', 'price difference', 'negative delta', 'exactly at that result are included',
-    '30 − 10 = 20', 'before blocked hours and PV Charge', 'Charging wins', 'Charge Duration at 0 h',
+    '30 − 10 = 20', 'before blocked hours and PV Charge', 'Charging wins', 'Charge Duration; 0 h selects none',
     'Minimum', '-10 ct/kWh', '30 ct/kWh', '0.25 ct/kWh']) assert.ok(rendered.includes(text), text);
   card._helpTopic = { key: 'discharge_price_threshold', label: 'Discharge Price Delta' };
   assert.match(card._renderHelpDialog('settings', 'Settings'), /5 \+ 10 = 15/);
   card._helpTopic = { key: 'cheapest_hours_auto_charge', label: 'Charge Duration' };
-  assert.match(card._renderHelpDialog('settings', 'Settings'), /not used in Relative mode[\s\S]*even if the saved duration is 0 h[\s\S]*saved duration is kept/);
+  assert.match(card._renderHelpDialog('settings', 'Settings'), /limits the total grid charging time[\s\S]*0 h selects no automatic grid charging[\s\S]*same saved duration applies in Absolute mode/);
   card._helpTopic = { key: 'relative_auto_mode', label: 'Relative Auto Mode' };
   rendered = card._renderHelpDialog('settings', 'Settings');
   for (const text of ['switch to the right', 'zero or negative', 'tomorrow or later', 'charging wins',
@@ -543,7 +556,7 @@ test('relative help follows the active mode, retains numeric ranges, and explain
     'saved mode and schedule return without rebuilding', 'chart lines without changing the plan']) assert.ok(rendered.includes(text), text);
   for (const key of ['control_mode', 'schedule_actions']) {
     card._helpTopic = { key, label: key };
-    assert.match(card._renderHelpDialog('settings', 'Settings'), /Relative mode uses price differences[\s\S]*no duration limit/);
+    assert.match(card._renderHelpDialog('settings', 'Settings'), /Relative mode uses price differences[\s\S]*Both use Charge and Discharge Durations/);
   }
   card._helpTopic = null;
   assert.match(card._renderHelpDialog('plan', 'Plan'), /Lines reflect current selection cutoffs/);
