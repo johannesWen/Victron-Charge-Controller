@@ -203,7 +203,7 @@
       return base;
     };
 
-    const states = {
+    let states = {
       // select
       [e('select','control_mode')]:            { state: 'auto', attributes: { options: ['off','auto','manual','force_charge','force_discharge'] } },
       // sensors
@@ -269,6 +269,7 @@
     // to simulate HA's (previously slow) coordinator confirmation path —
     // useful to verify the card's optimistic pending-state rendering.
     const mockApply = (domain, service, data) => {
+      states = structuredClone(states);
       // Apply state changes so the card reflects them on next update
       const eid = data.entity_id;
       if (eid && states[eid]) {
@@ -347,6 +348,7 @@
         states[e('sensor','last_schedule_update')].state = new Date().toISOString();
       }
       // Trigger re-render
+      hass.states = states;
       card.hass = { ...hass };
     };
     const hass = {
@@ -379,17 +381,18 @@
       document.body.classList.toggle('dark');
     });
     document.getElementById('modeSelect').addEventListener('change', (ev) => {
-      states[e('select','control_mode')].state = ev.target.value;
-      card.hass = { ...hass };
+      mockApply('select', 'select_option', { entity_id: e('select','control_mode'), option: ev.target.value });
     });
     document.getElementById('actionSelect').addEventListener('change', (ev) => {
-      states[e('sensor','desired_action')].state = ev.target.value;
+      const id = e('sensor','desired_action');
+      states = { ...states, [id]: { ...states[id], state: ev.target.value } };
+      hass.states = states;
       card.hass = { ...hass };
     });
     document.getElementById('showFixed').addEventListener('click', () => {
       card._planPage = 1;
       card._fixedPlanNumber = 1;
-      card.hass = { ...hass };
+      card.requestUpdate();
     });
     if (window.location.hash.includes('fixed')) {
       card._planPage = 1;

@@ -1,11 +1,22 @@
 const HOUR = 3600000;
 const numeric = value => typeof value === 'number' && Number.isFinite(value);
 const timestamp = value => typeof value === 'string' && /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? Date.parse(value) : NaN;
+const formatters = new Map();
+
+function formatter(locale, options) {
+  const key = JSON.stringify([locale, options]);
+  if (!formatters.has(key)) {
+    const value = new Intl.DateTimeFormat(locale, options);
+    if (formatters.size >= 32) formatters.delete(formatters.keys().next().value);
+    formatters.set(key, value);
+  }
+  return formatters.get(key);
+}
 
 export function normalizeForecast(data) {
   if (!data?.usable) return { usable: false, reason: data?.reason || 'PV forecast unavailable' };
   try {
-    new Intl.DateTimeFormat('en', { timeZone: data.time_zone }).format();
+    formatter('en', { timeZone: data.time_zone }).format();
     if (!data.time_zone || data.days?.length !== 2 || !Array.isArray(data.intervals)) throw new Error();
     const days = data.days.map(day => ({ ...day, start: timestamp(day.start), end: timestamp(day.end) }));
     if (days.some(day => !/^\d{4}-\d{2}-\d{2}$/.test(day.date) || !Number.isFinite(day.start) || !(day.end > day.start))
@@ -22,11 +33,11 @@ export function normalizeForecast(data) {
 }
 
 export function localHour(time, timeZone) {
-  return Number(new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', hourCycle: 'h23' }).format(time));
+  return Number(formatter('en-GB', { timeZone, hour: '2-digit', hourCycle: 'h23' }).format(time));
 }
 
 export function forecastTime(time, timeZone) {
-  return new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' }).format(time);
+  return formatter('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' }).format(time);
 }
 
 export function normalizePlan(plan = []) {
@@ -36,7 +47,8 @@ export function normalizePlan(plan = []) {
 
 export function buildForecastCharts(forecast, plan = []) {
   plan = normalizePlan(plan);
-  const civilHour = new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, hour: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' });
+  const civilHour = formatter('en-GB', { timeZone: forecast.time_zone, hour: '2-digit', hourCycle: 'h23', timeZoneName: 'longOffset' });
+  const minute = formatter('en-GB', { timeZone: forecast.time_zone, minute: '2-digit' });
   const days = forecast.days.map(day => {
     const entries = new Map(plan.filter(entry => entry.date === day.date).map(entry => [Number(entry.hour), entry]));
     let hours = [];
@@ -49,7 +61,7 @@ export function buildForecastCharts(forecast, plan = []) {
       else {
         const hour = localHour(start, forecast.time_zone);
         const entry = entries.get(hour);
-        hours.push({ ...entry, date: day.date, start, end, hour, minute: Number(new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, minute: '2-digit' }).format(start)), price: numeric(entry?.price) ? entry.price : null });
+        hours.push({ ...entry, date: day.date, start, end, hour, minute: Number(minute.format(start)), price: numeric(entry?.price) ? entry.price : null });
       }
       previousHour = key;
     }
@@ -61,7 +73,7 @@ export function buildForecastCharts(forecast, plan = []) {
       hours = boundaries.slice(0, -1).map((start, index) => {
         const entry = periods.find(entry => entry.start <= start && start < entry.end);
         return { ...entry, date: day.date, start, end: boundaries[index + 1], hour: localHour(start, forecast.time_zone),
-          minute: Number(new Intl.DateTimeFormat('en-GB', { timeZone: forecast.time_zone, minute: '2-digit' }).format(start)),
+          minute: Number(minute.format(start)),
           price: entry?.price ?? null };
       });
     }

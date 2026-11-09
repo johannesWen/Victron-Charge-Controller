@@ -3,6 +3,50 @@ import test from 'node:test';
 import { normalizeForecast, buildForecastCharts, forecastAreas, forecastTime, ForecastPoller } from '../src/solar-forecast.mjs';
 
 const HOUR = 3600000;
+
+test('quarter-hour forecasts reuse formatters, keep validation and bound timezone retention', async () => {
+  const module = await import('../src/solar-forecast.mjs?formatter-regression');
+  const Original = Intl.DateTimeFormat;
+  let constructions = 0;
+  Intl.DateTimeFormat = function (...args) { constructions++; return new Original(...args); };
+  try {
+    const raw = fixture('2026-10-15T00:00:00+02:00', '2026-10-16T00:00:00+02:00', '2026-10-17T00:00:00+02:00');
+    const start = Date.parse(raw.days[0].start);
+    const plan = Array.from({ length: 192 }, (_, index) => {
+      const time = start + index * HOUR / 4;
+      return { date: raw.days[index < 96 ? 0 : 1].date, hour: Math.floor(index / 4) % 24,
+        start_time: new Date(time).toISOString(), end_time: new Date(time + HOUR / 4).toISOString(),
+        price: index % 3 ? -2 : null };
+    });
+    for (let render = 0; render < 3; render++) {
+      const normalized = module.normalizeForecast(raw);
+      const charts = module.buildForecastCharts(normalized, plan);
+      for (const day of charts.days) for (const period of day.hours) {
+        assert.equal(module.forecastTime(period.start, raw.time_zone), new Original('en-GB', {
+          timeZone: raw.time_zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset',
+        }).format(period.start));
+        module.forecastTime(period.end, raw.time_zone);
+      }
+      assert.equal(charts.days.reduce((count, day) => count + day.hours.length, 0), 192);
+      assert.equal(charts.days[0].hours[0].price, null);
+      assert.equal(charts.days[0].hours[1].price, -2);
+      assert.equal(constructions, 5, 'one formatter per timezone/options combination across repeated renders');
+    }
+    for (let index = 0; index < 2; index++) {
+      assert.equal(module.normalizeForecast({ ...raw, time_zone: 'Invalid/Timezone' }).usable, false);
+    }
+    assert.equal(constructions, 7, 'invalid timezones never become cached valid values');
+    const zones = Intl.supportedValuesOf('timeZone').slice(0, 40);
+    for (const zone of zones) module.localHour(start, zone);
+    const before = constructions;
+    module.localHour(start, zones.at(-1));
+    assert.equal(constructions, before, 'recent timezone is retained');
+    module.localHour(start, zones[0]);
+    assert.equal(constructions, before + 1, 'old timezone is evicted from the bounded cache');
+  } finally {
+    Intl.DateTimeFormat = Original;
+  }
+});
 const fixture = (start = '2026-10-25T00:00:00+02:00', middle = '2026-10-26T00:00:00+01:00', end = '2026-10-27T00:00:00+01:00') => ({
   status: 'ready', usable: true, reason: null, source_updated_at: start, time_zone: 'Europe/Vienna',
   days: [{ date: start.slice(0, 10), start, end: middle }, { date: middle.slice(0, 10), start: middle, end }],

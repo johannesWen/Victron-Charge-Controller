@@ -369,7 +369,7 @@ class VictronChargeControllerCard extends LitElement {
 
   static get properties() {
     return {
-      hass: { type: Object },
+      hass: { type: Object, noAccessor: true },
       config: { type: Object },
     };
   }
@@ -434,17 +434,55 @@ class VictronChargeControllerCard extends LitElement {
       if (!state.usable) this._setPlanChartMode('price');
       this.requestUpdate();
     });
-    this._onForecastVisibilityBound = () => this._syncSolarForecast();
+    this._onForecastVisibilityBound = () => {
+      this._syncSolarForecast();
+      this._syncPlanTimers();
+      if (!document.hidden) this.requestUpdate();
+    };
+  }
+
+  get hass() { return this._hass; }
+
+  set hass(value) {
+    const previousSnapshot = this._integrationSnapshot;
+    const previousContext = this._hassContext;
+    this._hass = value;
+    const snapshot = this._getIntegrationSnapshot();
+    const context = [value?.connection, value?.connection?.connected, value?.connected,
+      value?.config, value?.locale, value?.language];
+    const changed = !previousSnapshot || previousSnapshot.prefix !== snapshot.prefix
+      || previousSnapshot.entities.size !== snapshot.entities.size
+      || [...snapshot.entities].some(([id, state]) => previousSnapshot.entities.get(id) !== state);
+    if (changed) this._entityAliases = {};
+    this._hassContext = context;
+    if (this.config?.view !== 'plan' || changed || !previousContext
+      || context.some((item, index) => item !== previousContext[index])) {
+      this.requestUpdate();
+    }
+  }
+
+  _getIntegrationSnapshot() {
+    const states = this.hass?.states;
+    const prefix = this.config?.entity_prefix ?? DEFAULT_PREFIX;
+    if (this._integrationSnapshot?.states === states && this._integrationSnapshot?.prefix === prefix) return this._integrationSnapshot;
+    const match = new RegExp(`^[^.]+\\..*${VictronChargeControllerCard._escapeRegExp(prefix)}_`);
+    const entities = new Map();
+    for (const id of Object.keys(states || {})) if (match.test(id)) entities.set(id, states[id]);
+    return this._integrationSnapshot = { states, prefix, entities };
   }
 
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('visibilitychange', this._onForecastVisibilityBound);
     this._syncSolarForecast();
+    this._syncPlanTimers();
+    this.requestUpdate();
   }
 
   updated() {
     this._syncSolarForecast();
+    this._syncPlanTimers();
+    if (this.isConnected === false) this._chartPeriods = {};
     if (this._pickerBar && (this.config?.view !== 'plan' || this._planPage !== 'auto')) this._closePicker();
   }
 
@@ -453,9 +491,38 @@ class VictronChargeControllerCard extends LitElement {
     this._forecastPoller.setActive(active, this.hass?.connection);
   }
 
+  _syncPlanTimers() {
+    const active = this.isConnected && !document.hidden && !!this.hass;
+    if (active && this.config?.view === 'plan') {
+      if (this._planRefreshTimer == null) this._planRefreshTimer = setTimeout(() => {
+        this._planRefreshTimer = null;
+        this.requestUpdate();
+      }, 60000 - Date.now() % 60000);
+    } else {
+      clearTimeout(this._planRefreshTimer);
+      this._planRefreshTimer = null;
+    }
+    clearTimeout(this._pendingExpiryTimer);
+    this._pendingExpiryTimer = null;
+    if (!active) return;
+    const pendings = [...Object.values(this._pendingFixedPlanNames),
+      ...Object.values(this._pendingFixedPlanHours).flatMap(Object.values),
+      ...Object.values(this._pendingPlanActions), this._pendingActiveFixedPlan].filter(Boolean);
+    if (pendings.length) this._pendingExpiryTimer = setTimeout(() => {
+      this._pendingExpiryTimer = null;
+      this._clearStalePendings();
+      this.requestUpdate();
+    }, Math.max(0, Math.min(...pendings.map(pending => pending.ts + PENDING_MAX_AGE_MS)) - Date.now()));
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     this._forecastPoller.stop();
+    clearTimeout(this._planRefreshTimer);
+    this._planRefreshTimer = null;
+    clearTimeout(this._pendingExpiryTimer);
+    this._pendingExpiryTimer = null;
+    this._chartPeriods = {};
     document.removeEventListener('visibilitychange', this._onForecastVisibilityBound);
     this._setPlanChartMode('price');
     this._finishThresholdDrag(false);
@@ -473,6 +540,9 @@ class VictronChargeControllerCard extends LitElement {
 
   setConfig(config) {
     if (this._pickerBar) this._closePicker();
+    this._entityAliases = {};
+    this._integrationSnapshot = null;
+    this._chartPeriods = {};
     this.config = {
       entity_prefix: DEFAULT_PREFIX,
       ...config,
@@ -536,7 +606,7 @@ class VictronChargeControllerCard extends LitElement {
     const reStrict = new RegExp(`^${domain}\\.${wanted}(?:_\\d+)?$`);
     const reLoose = new RegExp(`^${domain}\\..*${wanted}(?:_\\d+)?$`);
     let best = null;
-    for (const entityId of Object.keys(states)) {
+    for (const entityId of this._getIntegrationSnapshot().entities.keys()) {
       const layer = reStrict.test(entityId) ? 0 : (reLoose.test(entityId) ? 1 : null);
       if (layer === null) continue;
       // Prefer canonical ids over device-prefixed ones, then the shortest
@@ -662,22 +732,22 @@ class VictronChargeControllerCard extends LitElement {
     // will never be confirmed by a matching entity state.
     const now = Date.now();
     for (const [plan, pending] of Object.entries(this._pendingFixedPlanNames)) {
-      if (now - pending.ts > PENDING_MAX_AGE_MS) delete this._pendingFixedPlanNames[plan];
+      if (now - pending.ts >= PENDING_MAX_AGE_MS) delete this._pendingFixedPlanNames[plan];
     }
     for (const [plan, hourActions] of Object.entries(this._pendingFixedPlanHours)) {
       for (const [hour, pending] of Object.entries(hourActions)) {
-        if (now - pending.ts > PENDING_MAX_AGE_MS) delete hourActions[hour];
+        if (now - pending.ts >= PENDING_MAX_AGE_MS) delete hourActions[hour];
       }
       if (Object.keys(hourActions).length === 0) delete this._pendingFixedPlanHours[plan];
     }
     if (
       this._pendingActiveFixedPlan !== undefined
-      && now - this._pendingActiveFixedPlan.ts > PENDING_MAX_AGE_MS
+      && now - this._pendingActiveFixedPlan.ts >= PENDING_MAX_AGE_MS
     ) {
       this._pendingActiveFixedPlan = undefined;
     }
     for (const [key, pending] of Object.entries(this._pendingPlanActions)) {
-      if (now - pending.ts > PENDING_MAX_AGE_MS) delete this._pendingPlanActions[key];
+      if (now - pending.ts >= PENDING_MAX_AGE_MS) delete this._pendingPlanActions[key];
     }
   }
 
@@ -1670,7 +1740,6 @@ class VictronChargeControllerCard extends LitElement {
 
   _renderPriceChart(enrichedPlan, { chargeThreshold = null, dischargeThreshold = null, forcedScaleMin = null, forcedScaleMax = null, chartId = 'today' } = {}) {
     enrichedPlan = normalizePlan(enrichedPlan);
-    this._chartPeriods[chartId] = enrichedPlan;
     // Extract prices and determine scale
     const validPrices = enrichedPlan
       .map(p => p.price)
@@ -1678,6 +1747,8 @@ class VictronChargeControllerCard extends LitElement {
       .map(Number)
       .filter(Number.isFinite);
     if (validPrices.length === 0) return null;
+    this._chartPeriods[chartId] = enrichedPlan;
+    const groups = this._planHourGroups(enrichedPlan);
 
     let scaleMin, scaleMax;
     if (forcedScaleMin !== null && forcedScaleMax !== null) {
@@ -1755,7 +1826,7 @@ class VictronChargeControllerCard extends LitElement {
           `;
         })}
 
-        ${this._planHourGroups(enrichedPlan).map(group => this._renderHourTarget(group, chartId, {
+        ${groups.map(group => this._renderHourTarget(group, chartId, {
           x: timed ? padL + (group.start - timelineStart) / (timelineEnd - timelineStart) * plotW : columnX(group.index),
           width: timed ? 3600000 / (timelineEnd - timelineStart) * plotW : columnW(group.index),
           top: padT, height: plotH,
@@ -1804,7 +1875,7 @@ class VictronChargeControllerCard extends LitElement {
           class="plan-axis-unit">ct/kWh</text>
 
         <!-- X-axis labels (every 2 hours) -->
-        ${this._planHourGroups(enrichedPlan).map(group => {
+        ${groups.map(group => {
           const current = group.start <= now && now < group.end;
           if (!current && group.hour % 2 !== 0) return nothing;
           const x = timed ? padL + ((group.start + group.end) / 2 - timelineStart) / (timelineEnd - timelineStart) * plotW
@@ -1816,7 +1887,7 @@ class VictronChargeControllerCard extends LitElement {
           `;
         })}
 
-        ${this._renderHourTooltip(chartId, this._planHourGroups(enrichedPlan))}
+        ${this._renderHourTooltip(chartId, groups)}
       </svg>
     `;
   }
@@ -2785,6 +2856,7 @@ class VictronChargeControllerCard extends LitElement {
 
   _openPlanPage(page) {
     this._closePicker();
+    this._chartPeriods = {};
     this._planPage = page;
     this._planNameEditing = false;
     this._planNameDraft = '';
@@ -2796,12 +2868,7 @@ class VictronChargeControllerCard extends LitElement {
   _openNewFixedPlan(plans) {
     const next = this._nextFixedPlanNumber(plans);
     if (next == null) return;
-    this._closePicker();
-    this._planPage = next;
-    this._fixedPlanNumber = next;
-    this._planNameEditing = false;
-    this._planNameDraft = '';
-    this.requestUpdate();
+    this._openPlanPage(next);
   }
 
   _renderPlanTabs() {
@@ -2961,10 +3028,12 @@ class VictronChargeControllerCard extends LitElement {
     this._tooltipHideTimer = null;
     this._tooltipBar = null;
     this._planChartMode = mode;
+    this._chartPeriods = {};
     this.requestUpdate();
   }
 
   _renderAutoPlanPage() {
+    this._chartPeriods = {};
     const forecast = this._solarForecast;
     return html`
       ${this._renderPlanControls()}
@@ -3006,6 +3075,7 @@ class VictronChargeControllerCard extends LitElement {
     const now = Date.now();
     const chartId = `solar-${day.date}`;
     this._chartPeriods[chartId] = day.hours;
+    const groups = this._planHourGroups(day.hours);
     const x = time => left + (time - day.start) / (day.end - day.start) * (right - left);
     const priceY = price => bottom - (price - scales.priceMin) / (scales.priceMax - scales.priceMin) * (bottom - top);
     const baseline = priceY(0);
@@ -3034,13 +3104,13 @@ class VictronChargeControllerCard extends LitElement {
         }))}
         ${forecastAreas(day.intervals, 'pv_estimate', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fff59d" fill-opacity="0.3" stroke="#f9d95b" stroke-width="1.5" />`)}
         ${forecastAreas(day.intervals, 'pv_estimate10', x, pvY, baseline).map(path => svg`<path d=${path} fill="#fbc02d" fill-opacity="0.35" stroke="#e0a800" stroke-width="1.5" />`)}
-        ${this._planHourGroups(day.hours).filter(group => group.hour % 2 === 0 || (group.start <= now && now < group.end)).map(group => svg`
+        ${groups.filter(group => group.hour % 2 === 0 || (group.start <= now && now < group.end)).map(group => svg`
           <text x=${(x(group.start) + x(group.end)) / 2} y="260" text-anchor="middle"
             class="plan-axis-label ${group.start <= now && now < group.end ? 'plan-current-hour' : ''}">${String(group.hour).padStart(2, '0')}</text>`)}
-        ${this._planHourGroups(day.hours).map(group => this._renderHourTarget(group, chartId,
+        ${groups.map(group => this._renderHourTarget(group, chartId,
           { x: x(group.start), width: x(group.end) - x(group.start), top, height: bottom - top },
           details(group)))}
-        ${this._renderHourTooltip(chartId, this._planHourGroups(day.hours), details)}
+        ${this._renderHourTooltip(chartId, groups, details)}
       </svg>
     `;
   }
@@ -3186,6 +3256,7 @@ class VictronChargeControllerCard extends LitElement {
   // ── Main render ─────────────────────────────────────────
 
   render() {
+    this._chartPeriods = {};
     if (!this.hass || !this.config) return nothing;
     this._syncThresholdContext();
     this._clearStalePendings();
