@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from tests.slots import public_slot, public_day
 
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.components.recorder.db_schema import StateAttributes
 from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfTime
 
 from custom_components.victron_charge_control.const import (
@@ -346,6 +349,51 @@ class TestChargePlanSensor:
         assert sensor._attr_extra_state_attributes["pv_charge_hours"] == [
             public_slot("2026-05-02", 12)
         ]
+
+
+@pytest.mark.parametrize(("minutes", "hours"), [(60, 48), (15, 48), (60, 49), (15, 49)])
+def test_recorder_omits_large_schedule_arrays(coordinator, minutes, hours):
+    """Keep complete live data while HA records only small attributes."""
+    start = datetime(2026, 10, 24 if hours == 49 else 21, 22, tzinfo=timezone.utc)
+    zone = ZoneInfo("Europe/Vienna")
+    coordinator.hass.config.time_zone = "Europe/Vienna"
+    periods = []
+    for index in range(hours * 60 // minutes):
+        begin = start + timedelta(minutes=index * minutes)
+        local = begin.astimezone(zone)
+        periods.append({
+            "date": local.date().isoformat(), "hour": local.hour, "minute": local.minute,
+            "start_time": begin.isoformat(), "end_time": (begin + timedelta(minutes=minutes)).isoformat(),
+            "price": 12.34,
+        })
+    coordinator.data = ChargeControlData(
+        prices_today=periods, charge_hours=periods[::3], discharge_hours=periods[1::3],
+        pv_charge_hours=periods[2::3], blocked_charging_hours=[1], blocked_discharging_hours=[2],
+        price_reference_min=1.0, price_reference_max=42.0,
+    )
+    plan = ChargePlanSensor(coordinator, MockConfigEntry())
+    plan.async_write_ha_state = MagicMock()
+    plan._handle_coordinator_update()
+    sensors = [(plan, {"plan", "charge_hours", "discharge_hours", "pv_charge_hours"})]
+    sensors += [(ScheduleSensor(coordinator, MockConfigEntry(), kind), {"slots"})
+                for kind in ("charge", "discharge", "pv_charge")]
+    assert len(plan.extra_state_attributes["plan"]) == len(periods)
+    for sensor, excluded in sensors:
+        live = sensor.extra_state_attributes
+        assert excluded <= live.keys()
+        if isinstance(sensor, ScheduleSensor):
+            assert live["slots"] == getattr(coordinator.data, f"{sensor._schedule_type}_hours")
+        else:
+            for key in excluded - {"plan"}:
+                assert live[key] == getattr(coordinator.data, key)
+        state = SimpleNamespace(attributes=live, state_info={
+            "unrecorded_attributes": sensor._Entity__combined_unrecorded_attributes,
+        })
+        event = SimpleNamespace(data={"new_state": state})
+        recorded = StateAttributes.shared_attrs_bytes_from_event(event, None)
+        assert len(recorded) < 16384
+        assert json.loads(recorded) == {key: value for key, value in live.items() if key not in excluded}
+        assert sensor.native_value
 
 
 class TestLastScheduleUpdateSensor:
