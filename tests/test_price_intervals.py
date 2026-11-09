@@ -108,37 +108,58 @@ def test_eur_conversion_and_invalid_record_do_not_extend_previous_interval():
 
 
 @pytest.mark.parametrize("hours,count", [(0.25, 1), (1.25, 5), (2, 8)])
-def test_duration_budget_selects_distinct_quarters_including_current(controller, hours, count):
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("action", ["charge", "discharge"])
+def test_duration_budget_selects_distinct_quarters_including_current(controller, hours, count, relative, action):
     entries = [price(START + timedelta(minutes=15 * i), value=i) for i in range(12)]
     publish(controller, entries)
-    controller.cheapest_hours = hours
+    controller.relative_auto_mode = relative
+    controller.charge_price_threshold = 0 if relative else 100
+    controller.discharge_price_threshold = 0
+    controller.cheapest_hours = hours if action == "charge" else 0
+    controller.expensive_hours = hours if action == "discharge" else 0
     controller.calculate_auto_schedule()
-    assert controller.charge_hours == [(START + timedelta(minutes=15*i), START + timedelta(minutes=15*(i+1))) for i in range(count)]
-    assert sum((end-start).total_seconds() for start, end in controller.charge_hours) == hours * 3600
+    selected = controller.charge_hours if action == "charge" else controller.discharge_hours
+    indices = range(count) if action == "charge" else range(12-count, 12)
+    assert selected == [(START + timedelta(minutes=15*i), START + timedelta(minutes=15*(i+1))) for i in indices]
+    assert sum((end-start).total_seconds() for start, end in selected) == hours * 3600
 
 
 @pytest.mark.parametrize("hours,count", [(0.25, 0), (1.25, 1), (2, 2)])
-def test_hourly_budget_never_selects_fraction_of_source(controller, hours, count):
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("action", ["charge", "discharge"])
+def test_hourly_budget_never_selects_fraction_of_source(controller, hours, count, relative, action):
     publish(controller, [price(START + timedelta(hours=i), minutes=60, value=i) for i in range(3)])
-    controller.cheapest_hours = hours
+    controller.relative_auto_mode = relative
+    controller.charge_price_threshold = 0 if relative else 100
+    controller.discharge_price_threshold = 0
+    controller.cheapest_hours = hours if action == "charge" else 0
+    controller.expensive_hours = hours if action == "discharge" else 0
     controller.calculate_auto_schedule()
-    assert len(controller.charge_hours) == count
+    indices = range(count) if action == "charge" else range(3-count, 3)
+    selected = controller.charge_hours if action == "charge" else controller.discharge_hours
+    assert selected == [utc_slot(DAY, 10+i) for i in indices]
 
 
-def test_selection_thresholds_blocks_pv_conflicts_and_ties(controller):
+@pytest.mark.parametrize("relative", [False, True])
+def test_selection_thresholds_blocks_pv_conflicts_and_ties(controller, relative):
     entries = [price(START + timedelta(minutes=15*i), value=5) for i in range(12)]
     publish(controller, entries)
     controller._blocked_charging_hours = [11]
     controller._pv_charge_hours = [utc_slot(DAY, 10, 0, 15)]
     controller.cheapest_hours = 1.25
     controller.expensive_hours = .25
-    controller.discharge_price_threshold = 5
+    controller.relative_auto_mode = relative
+    controller.charge_price_threshold = 0 if relative else 100
+    controller.discharge_price_threshold = 0 if relative else 5
     controller.calculate_auto_schedule()
-    assert controller.discharge_hours == [utc_slot(DAY, 10, 15, 15)]
-    assert controller.charge_hours == [utc_slot(DAY, 10, 30, 15), utc_slot(DAY, 10, 45, 15),
-                                       utc_slot(DAY, 12, 0, 15), utc_slot(DAY, 12, 15, 15)]
-    controller.charge_price_threshold = 4.9
-    controller.discharge_price_threshold = 5.1
+    expected = [utc_slot(DAY, 10, 30, 15), utc_slot(DAY, 10, 45, 15),
+                utc_slot(DAY, 12, 0, 15), utc_slot(DAY, 12, 15, 15)]
+    # Relative charging wins the independently selected overlap, without refilling discharge.
+    assert controller.discharge_hours == ([] if relative else [utc_slot(DAY, 10, 15, 15)])
+    assert controller.charge_hours == ([utc_slot(DAY, 10, 15, 15)] + expected if relative else expected)
+    controller.charge_price_threshold = .1 if relative else 4.9
+    controller.discharge_price_threshold = .1 if relative else 5.1
     controller.calculate_auto_schedule()
     assert controller.charge_hours == controller.discharge_hours == []
 
@@ -165,7 +186,7 @@ def test_relative_selection(controller, minutes, values, charge_delta, discharge
     controller.relative_auto_mode = True
     controller.charge_price_threshold = charge_delta
     controller.discharge_price_threshold = discharge_delta
-    controller.cheapest_hours = controller.expensive_hours = 0
+    controller.cheapest_hours = controller.expensive_hours = 12
     controller._blocked_charging_hours = controller._blocked_discharging_hours = []
     controller.calculate_auto_schedule()
     slots = [item.slot for item in normalized(entries)]
@@ -183,15 +204,28 @@ def test_absolute_thresholds_do_not_use_relative_equality_tolerance(controller):
     assert controller.charge_hours == controller.discharge_hours == []
 
 
-@pytest.mark.parametrize("duration", [0, -1, None, "bad", float("nan"), float("inf"), .1])
-def test_relative_ignores_invalid_duration_budgets(controller, duration):
-    publish(controller, [price(value=0), price(START + timedelta(minutes=15), value=10)])
+@pytest.mark.parametrize("charge_hours,discharge_hours,charge,discharge", [
+    (.5, .25, [1, 4], [3]),
+    (.25, .5, [1], [3, 5]),
+    (0, .5, [], [3, 5]),
+    (.5, 0, [1, 4], []),
+    (0, 0, [], []),
+])
+def test_relative_finite_independent_budgets_choose_price_extremes(
+    controller, charge_hours, discharge_hours, charge, discharge
+):
+    entries = [price(START + timedelta(minutes=15*i), value=value)
+               for i, value in enumerate([8, 1, 5, 10, 2, 9])]
+    publish(controller, entries)
     controller.relative_auto_mode = True
-    controller.cheapest_hours = controller.expensive_hours = duration
-    controller.charge_price_threshold = controller.discharge_price_threshold = 10
+    controller.cheapest_hours = charge_hours
+    controller.expensive_hours = discharge_hours
+    controller.charge_price_threshold = 2
+    controller.discharge_price_threshold = 7
     controller.calculate_auto_schedule()
-    assert controller.charge_hours == [utc_slot(DAY, 10, 0, 15)]
-    assert controller.discharge_hours == [utc_slot(DAY, 10, 15, 15)]
+    slots = [item.slot for item in normalized(entries)]
+    assert controller.charge_hours == [slots[i] for i in charge]
+    assert controller.discharge_hours == [slots[i] for i in discharge]
 
 
 def test_relative_extrema_include_current_tomorrow_and_later_before_exclusions(controller):
@@ -203,6 +237,7 @@ def test_relative_extrema_include_current_tomorrow_and_later_before_exclusions(c
                price(START + timedelta(days=3), value="nan")]
     data = publish(controller, entries)
     controller.relative_auto_mode = True
+    controller.cheapest_hours = controller.expensive_hours = 1
     controller.charge_price_threshold = controller.discharge_price_threshold = 25
     controller._pv_charge_hours = [utc_slot("2026-05-03", 10, 0, 15)]
     controller._blocked_discharging_hours = [11]
@@ -227,12 +262,14 @@ def test_relative_dst_slots_and_blocked_local_hours(controller, monkeypatch, dat
     entries = [price(start + timedelta(minutes=15*i), value=5) for i in range(hours*4)]
     publish(controller, entries)
     controller.relative_auto_mode = True
+    controller.cheapest_hours = controller.expensive_hours = 12
     controller.charge_price_threshold = controller.discharge_price_threshold = 0
     controller._blocked_charging_hours = controller._blocked_discharging_hours = [2]
     controller.calculate_auto_schedule()
     expected = [item.slot for item in normalized(entries) if item.start.astimezone(zone).hour != 2]
-    assert controller.charge_hours == expected
+    assert controller.charge_hours == expected[:48]
     assert len(expected) == 92
+    assert sum((end-start).total_seconds() for start, end in controller.charge_hours) == 12*3600
     assert controller.discharge_hours == []
 
 
@@ -434,7 +471,9 @@ def test_plan_preserves_every_price_and_action_and_short_state(controller):
 
 
 @pytest.mark.parametrize("key", ["cheapest_hours", "expensive_hours"])
-async def test_duration_entity_restores_fraction_without_replanning(controller, key):
+@pytest.mark.parametrize("relative", [False, True])
+async def test_duration_entity_restores_fraction_without_replanning(controller, key, relative):
+    controller.relative_auto_mode = relative
     description = next(item for item in NUMBERS if item.key == key)
     number = VictronCCNumber(controller, MockConfigEntry(), description)
     number.hass = controller.hass
@@ -445,6 +484,33 @@ async def test_duration_entity_restores_fraction_without_replanning(controller, 
     assert getattr(controller, key) == 1.25
     assert description.native_step == .25
     controller.calculate_auto_schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("key", ["cheapest_hours", "expensive_hours"])
+@pytest.mark.parametrize("mode", ["auto", "manual", "off", "force_charge", "force_discharge"])
+async def test_relative_duration_number_change_replans_only_in_auto(controller, key, mode):
+    publish(controller, [price(START + timedelta(minutes=15*i), value=i) for i in range(8)])
+    controller.relative_auto_mode = True
+    controller.cheapest_hours = controller.expensive_hours = .25
+    controller.charge_price_threshold = controller.discharge_price_threshold = 0
+    controller.calculate_auto_schedule()
+    before = (controller.charge_hours, controller.discharge_hours)
+    controller.calculate_auto_schedule = MagicMock(wraps=controller.calculate_auto_schedule)
+    controller.control_mode = mode
+    description = next(item for item in NUMBERS if item.key == key)
+    number = VictronCCNumber(controller, MockConfigEntry(), description)
+    number.async_write_ha_state = MagicMock()
+    controller.async_request_refresh = AsyncMock()
+
+    await number.async_set_native_value(.5)
+
+    assert getattr(controller, key) == .5
+    expected_charge = [utc_slot(DAY, 10, 0, 15), utc_slot(DAY, 10, 15, 15)]
+    expected_discharge = [utc_slot(DAY, 11, 30, 15), utc_slot(DAY, 11, 45, 15)]
+    expected = (expected_charge, before[1]) if key == "cheapest_hours" else (before[0], expected_discharge)
+    assert (controller.charge_hours, controller.discharge_hours) == (expected if mode == MODE_AUTO else before)
+    assert controller.calculate_auto_schedule.call_count == (1 if mode == MODE_AUTO else 0)
+    controller.async_request_refresh.assert_awaited_once()
 
 
 async def test_registered_exact_service_routes_without_loss(controller):
@@ -495,12 +561,17 @@ def test_public_legacy_hour_setter_expands_to_utc(controller):
     assert controller.charge_hours == [utc_slot(DAY,10), utc_slot(DAY,11)]
 
 
-def test_mixed_duration_budget_and_price_gap(controller):
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("hours", [.25, 1.25])
+def test_mixed_duration_budget_and_price_gap(controller, relative, hours):
     publish(controller, [price(minutes=60,value=1), price(START+timedelta(hours=1),value=2),
                          price(START+timedelta(minutes=90),value=3)])
-    controller.cheapest_hours = 1.25
+    controller.cheapest_hours = hours
+    controller.relative_auto_mode = relative
+    controller.charge_price_threshold = 0 if relative else 100
     controller.calculate_auto_schedule()
-    assert controller.charge_hours == [utc_slot(DAY,10), utc_slot(DAY,11,0,15)]
+    expected = [utc_slot(DAY,11,0,15)]
+    assert controller.charge_hours == ([utc_slot(DAY,10)] + expected if hours == 1.25 else expected)
     assert not active_slot(controller.charge_hours, START+timedelta(minutes=75))
 
 
@@ -521,11 +592,14 @@ def test_invalid_numeric_or_out_of_range_period_is_ignored(entry):
 
 @pytest.mark.parametrize("blocked,excluded", [([10],True),([11],True),([12],False)])
 @pytest.mark.parametrize("action", ["charge", "discharge"])
-def test_native_period_excluded_when_any_touched_hour_is_blocked(controller, blocked, excluded, action):
+@pytest.mark.parametrize("relative", [False, True])
+def test_native_period_excluded_when_any_touched_hour_is_blocked(controller, blocked, excluded, action, relative):
     start = START + timedelta(minutes=45)
     publish(controller, [price(start, minutes=60)])
     controller.cheapest_hours = 1 if action == "charge" else 0
     controller.expensive_hours = 1 if action == "discharge" else 0
+    controller.relative_auto_mode = relative
+    controller.charge_price_threshold = 0 if relative else 100
     controller.discharge_price_threshold = 0
     setattr(controller, f"_blocked_{'charging' if action == 'charge' else 'discharging'}_hours", blocked)
     controller.calculate_auto_schedule()
@@ -595,13 +669,22 @@ async def test_invalid_duration_restore_keeps_current_safe_budget(controller, ke
     assert getattr(controller,key) == 1.25
 
 
-@pytest.mark.parametrize("value", [float("nan"),float("inf"),float("-inf"),-.25,12.25,1.1,None,"bad"])
+@pytest.mark.parametrize("value", [0,True,False,float("nan"),float("inf"),float("-inf"),-.25,12.25,1.1,None,"bad","1.25"])
 @pytest.mark.parametrize("key", ["cheapest_hours","expensive_hours"])
-def test_invalid_planner_budget_selects_nothing(controller, key, value):
-    publish(controller, [price(START+timedelta(minutes=15*i)) for i in range(8)])
+@pytest.mark.parametrize("relative", [False, True])
+def test_zero_or_invalid_planner_budget_only_disables_its_action(controller, key, value, relative):
+    publish(controller, [price(START+timedelta(minutes=15*i), value=i) for i in range(8)])
+    controller.relative_auto_mode = relative
+    controller.cheapest_hours = controller.expensive_hours = .25
+    controller.charge_price_threshold = 0 if relative else 100
+    controller.discharge_price_threshold = 0
     setattr(controller,key,value)
     controller.calculate_auto_schedule()
     assert getattr(controller,"charge_hours" if key == "cheapest_hours" else "discharge_hours") == []
+    if key == "cheapest_hours":
+        assert controller.discharge_hours == [utc_slot(DAY, 11, 45, 15)]
+    else:
+        assert controller.charge_hours == [utc_slot(DAY, 10, 0, 15)]
 
 
 @pytest.mark.parametrize("value", ["nan","inf","-inf","-0.25","12.25","1.1"])
