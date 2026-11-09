@@ -56,9 +56,10 @@ async def flow_hass(tmp_path, monkeypatch):
     monkeypatch.setattr(frame._hass, "hass", hass)
     hass.config_entries = ConfigEntries(hass, {})
     hass.config.components.add(DOMAIN)
-    loaded = MagicMock(domain=DOMAIN)
+    loaded = MagicMock(domain=DOMAIN, is_built_in=False)
     loaded.async_get_component = AsyncMock(return_value=integration)
     loaded.async_get_platform = AsyncMock()
+    hass.data[loader.DATA_CUSTOM_COMPONENTS] = {DOMAIN: loaded}
     with (
         patch("homeassistant.loader.async_get_integration", return_value=loaded),
         patch("homeassistant.config_entries.async_process_deps_reqs", new_callable=AsyncMock),
