@@ -315,15 +315,15 @@ test('Overview shows the setpoint above its signed calculation without a duplica
     assert.ok(rendered.includes(label), label);
   }
   assert.match(rendered, /\+50 W/);
-  assert.match(rendered, /−2,000 W/);
+  assert.ok(rendered.includes(`−${(2000).toLocaleString()} W`));
   assert.match(rendered, /<strong>−450 W<\/strong>/);
   assert.doesNotMatch(rendered, /<dt>Limits<\/dt>|<span>PV Charge<\/span>/);
   assert.ok(rendered.indexOf('setpoint-result') < rendered.indexOf('calculation-terms'));
 });
 
 for (const [target, setting, consumer, limit, expected] of [
-  ['5000', 3000, 3000, -1000, '5,000 W (6,000 W)'],
-  ['-500', -3000, 500, 2000, '−500 W (−2,500 W)'],
+  ['5000', 3000, 3000, -1000, `${(5000).toLocaleString()} W (${(6000).toLocaleString()} W)`],
+  ['-500', -3000, 500, 2000, `−${(500).toLocaleString()} W (−${(2500).toLocaleString()} W)`],
 ]) test(`capped setpoint ${target} shows the uncapped calculation in brackets`, () => {
   const instance = card();
   instance._state = () => ({ state: target, attributes: { calculation: {

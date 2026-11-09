@@ -421,6 +421,8 @@ Existing settings and schedules remain saved.
 | Solar Surplus Mean (15 min) | Sensor | Average spare solar power over 15 minutes, in watts. Requires a solar surplus sensor. |
 | Solar Surplus Mode | Sensor | Battery protection stage: `normal`, `solar_only`, or `blocked`. Desired Action shows whether the controller requests discharge. |
 
+The Charge Plan's detailed `plan`, `charge_hours`, `discharge_hours`, and `pv_charge_hours` attributes and the schedule sensors' `slots` attributes remain available live to cards and automations. Future recorder history omits these arrays to stay within Home Assistant's attribute size limit; existing history is not deleted. WebSocket payloads are unchanged, and saved schedules still restore after restart.
+
 ## Services
 
 | Service | Description |

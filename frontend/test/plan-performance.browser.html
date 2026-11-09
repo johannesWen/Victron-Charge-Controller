@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Plan update filtering Lit regression</title>
+<!-- Build the card, serve the repository root, then open this file in a browser. -->
+<pre id="results">Running…</pre>
+<script type="module">
+import '../../custom_components/victron_charge_control/static/victron-charge-controller-card.js';
+
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.planPerformanceResults = (async () => {
+  await customElements.whenDefined('victron-charge-controller-card');
+  const card = document.createElement('victron-charge-controller-card');
+  card._syncSolarForecast = () => {}; // Keep the fixture independent of HA and forecast requests.
+  card.setConfig({ entity_prefix: 'garage', view: 'plan' });
+  card.hass = { states: {
+    'select.garage_control_mode': { state: 'auto' },
+    'sensor.garage_fixed_plans': { state: '1', attributes: { plans: { 1: { name: 'Evening' } } } },
+    'sensor.garage_charge_plan': { state: 'ready', attributes: {
+      time_zone: 'UTC', plan: [{ date: '2035-01-01', hour: 1, price: -2 }],
+    } },
+  }, config: { time_zone: 'UTC' } };
+  let renders = 0;
+  const render = card.render.bind(card);
+  card.render = () => { renders++; return render(); };
+  document.body.append(card);
+  try {
+    await card.updateComplete;
+    const initial = renders;
+    for (let index = 0; index < 25; index++) card.hass = { ...card.hass,
+      states: { ...card.hass.states, 'sensor.unrelated': { state: String(index) } },
+    };
+    await card.updateComplete;
+    assert(renders === initial, 'unrelated HA replacements do not render');
+    assert(card.hass.states['sensor.unrelated'].state === '24', 'latest hass remains available');
+    card._openHelp({ key: 'control_mode', label: 'Mode' });
+    card.hass = { ...card.hass, states: { ...card.hass.states, 'sensor.unrelated': { state: 'next' } } };
+    await card.updateComplete;
+    assert(renders === initial + 1, 'explicit help update survives an unrelated HA update in the same Lit cycle');
+    assert(card.shadowRoot.querySelector('[role="dialog"]'), 'help is visible in the DOM');
+    card._closeHelp();
+    card._openPlanPage(1);
+    card.hass = { ...card.hass };
+    await card.updateComplete;
+    assert(card.shadowRoot.textContent.includes('Evening'), 'fixed-plan local navigation survives unchanged HA');
+    assert(Object.keys(card._chartPeriods).length === 0, 'fixed-plan view releases chart arrays');
+    card._openPlanPage('auto');
+    await card.updateComplete;
+    const beforeRelevant = renders;
+    card.hass = { ...card.hass, states: { ...card.hass.states,
+      'sensor.garage_current_price': { state: '0.3' },
+    } };
+    await card.updateComplete;
+    assert(renders === beforeRelevant + 1, 'integration addition renders');
+    assert(card.shadowRoot.textContent.includes('30.00 ct/kWh'), 'latest price reaches the DOM');
+    const sameHass = card.hass;
+    sameHass.states = { ...sameHass.states, 'sensor.garage_current_price': { state: '0.4' } };
+    card.hass = sameHass;
+    await card.updateComplete;
+    assert(card.shadowRoot.textContent.includes('40.00 ct/kWh'), 'detected entity replacement renders even when hass identity is reused');
+    card.requestUpdate();
+    card.remove();
+    await card.updateComplete;
+    assert(Object.keys(card._chartPeriods).length === 0, 'queued render after removal releases chart arrays');
+    assert(card._planRefreshTimer === null && card._pendingExpiryTimer === null, 'disconnect cancels timers');
+    return { passed: true, renders, unrelatedUpdates: 25 };
+  } finally {
+    card.remove();
+  }
+})();
+window.planPerformanceResults.then(
+  result => { document.querySelector('#results').textContent = JSON.stringify(result, null, 2); },
+  error => { document.querySelector('#results').textContent = error.stack; },
+);
+</script>

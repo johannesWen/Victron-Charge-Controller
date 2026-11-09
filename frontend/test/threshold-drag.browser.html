@@ -51,12 +51,15 @@ window.thresholdDragResults = (async () => {
         assert(text.nodeValue === '10', `${name}: preview moved`);
         let expected = 10;
         if (scenario !== 'commit') {
-          states[`number.garage_${type}_price_threshold`].state = '5';
+          const thresholdId = `number.garage_${type}_price_threshold`;
+          states[thresholdId] = { ...states[thresholdId], state: '5' };
           let newRelative = relative;
           if (scenario === 'simultaneous') {
             newRelative = !relative;
-            states['switch.garage_relative_auto_mode'].state = newRelative ? 'on' : 'off';
-            Object.assign(states['sensor.garage_charge_plan'].attributes, { price_reference_min: 1, price_reference_max: 25 });
+            states['switch.garage_relative_auto_mode'] = { state: newRelative ? 'on' : 'off' };
+            states['sensor.garage_charge_plan'] = { ...states['sensor.garage_charge_plan'], attributes: {
+              ...states['sensor.garage_charge_plan'].attributes, price_reference_min: 1, price_reference_max: 25,
+            } };
           }
           const attrs = states['sensor.garage_charge_plan'].attributes;
           expected = newRelative ? (type === 'charge' ? attrs.price_reference_max - 5 : attrs.price_reference_min + 5) : 5;

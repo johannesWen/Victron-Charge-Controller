@@ -517,6 +517,7 @@ class ScheduleSensor(VictronCCBaseSensor):
     """Sensor showing scheduled charge or discharge hours as a comma-separated string."""
 
     _attr_icon = "mdi:clock-outline"
+    _unrecorded_attributes = frozenset({"slots"})
 
     def __init__(
         self,
@@ -604,6 +605,7 @@ class ChargePlanSensor(VictronCCBaseSensor):
 
     _attr_translation_key = "charge_plan"
     _attr_icon = "mdi:calendar-clock"
+    _unrecorded_attributes = frozenset({"plan", "charge_hours", "discharge_hours", "pv_charge_hours"})
 
     def __init__(
         self,
