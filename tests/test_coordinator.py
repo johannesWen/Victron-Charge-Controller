@@ -618,6 +618,34 @@ class TestCostTracking:
         assert coord.grid_energy_cost == 0.0
         assert coord.last_grid_consumption_kwh == 100
 
+    @pytest.mark.parametrize("invalid", ["NaN", "inf", "-inf"])
+    def test_nonfinite_meters_recover_with_fixed_tariffs(self, mock_hass, invalid):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord.config_entry.options.update({CONF_BUY_PRICE: "25", CONF_SELL_PRICE: "10"})
+
+        def sample(imported, exported):
+            coord.hass.states.get.side_effect = {
+                "sensor.grid_consumption_kwh": MockState(imported),
+                "sensor.grid_feed_in_kwh": MockState(exported),
+            }.get
+            coord._update_cost_tracking(None)
+            return (
+                coord.grid_energy_cost, coord.grid_energy_revenue,
+                coord.grid_energy_import, coord.grid_energy_export,
+            )
+
+        assert sample("100", "20") == (0, 0, 0, 0)
+        assert sample("102", "22") == pytest.approx((0.5, 0.2, 2, 2))
+        assert sample(invalid, invalid) == pytest.approx((0.5, 0.2, 2, 2))
+        assert coord.last_grid_consumption_kwh == 102
+        assert coord.last_grid_feed_in_kwh == 22
+        assert sample("103", "23") == pytest.approx((0.75, 0.3, 3, 3))
+        assert sample("104", "24") == pytest.approx((1, 0.4, 4, 4))
+
+        coord._last_grid_consumption_kwh = coord._last_grid_feed_in_kwh = float(invalid)
+        assert sample("105", "25") == pytest.approx((1, 0.4, 4, 4))
+        assert sample("106", "26") == pytest.approx((1.25, 0.5, 5, 5))
+
     def test_restore_cost_state(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         restored_at = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)

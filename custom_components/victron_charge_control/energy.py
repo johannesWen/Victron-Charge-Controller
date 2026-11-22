@@ -37,21 +37,21 @@ def read_meter_delta(
     is the updated baseline (only set when the meter is configured AND
     produced a usable reading), and ``delta_kwh`` is the positive kWh
     difference since ``last_kwh``, or ``None`` when no delta is
-    available. A negative delta (meter reset) re-baselines without
-    contributing a delta.
+    available. A missing or invalid baseline, a meter reset, or an
+    overflow re-baselines without contributing a delta.
     """
     if entity_id is None:
         return None, None, None
 
     current_kwh = get_entity_float(hass, entity_id)
-    if current_kwh is None:
+    if current_kwh is None or not isfinite(current_kwh):
         return None, None, None
 
-    if last_kwh is None:
+    if last_kwh is None or not isfinite(last_kwh):
         return current_kwh, None, None
 
     delta_kwh = current_kwh - last_kwh
-    if delta_kwh < 0:
+    if delta_kwh < 0 or not isfinite(delta_kwh):
         return current_kwh, None, None
     if delta_kwh == 0:
         return None, None, None
