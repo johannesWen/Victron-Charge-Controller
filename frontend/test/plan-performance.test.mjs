@@ -273,3 +273,107 @@ test('each chart computes hour groups once and a late source removal prevents a 
   charts.days.forEach(day => card._renderSolarChart(day, charts, 'UTC'));
   assert.equal(groups, 2, 'PV also computes each chart group once');
 });
+
+test('Settings edits each fixed price independently and rejects invalid drafts without clearing the saved rate', async () => {
+  const { card, push } = setup();
+  card.setConfig({ view: 'settings', entity_prefix: 'garage' });
+  const buy = 'text.cellar_garage_buy_price_2';
+  const sell = 'text.garage_sell_price';
+  const calls = [];
+  push({ ...card.hass.states, [buy]: { state: '24.75' }, [sell]: { state: '' } }, {
+    callService: (domain, service, data) => calls.push([domain, service, { ...data }]),
+  });
+  const rendered = card.render();
+  assert.match(rendered, /<label class="tariff-field">\s*<span>Buy price \(ct\/kWh\)<\/span>\s*<input[^>]*inputmode="decimal"[^>]*\.value=24\.75/);
+  assert.match(rendered, /Sell price \(ct\/kWh\)<\/span>\s*<input[^>]*\?disabled=false placeholder=EPEX spot price/);
+
+  const input = {
+    value: '',
+    setCustomValidity(message) { this.message = message; },
+    setAttribute(key, value) { this[key] = value; },
+    reportValidity() { this.reported = true; },
+  };
+  for (const value of ['-', ' ', '2,5.7', 'NaN', '0x10', '1e2']) {
+    input.value = value;
+    card._setTariff('buy_price', input);
+    assert.equal(input.value, value);
+  }
+  assert.deepEqual(calls, []);
+  assert.equal(input['aria-invalid'], 'true');
+  assert.equal(input.reported, true);
+
+  input.value = '0';
+  await card._setTariff('buy_price', input);
+  input.value = ' -2,5 ';
+  await card._setTariff('sell_price', input);
+  input.value = '';
+  await card._setTariff('buy_price', input);
+  assert.deepEqual(calls, [
+    ['text', 'set_value', { entity_id: buy, value: '0' }],
+    ['text', 'set_value', { entity_id: sell, value: '-2.5' }],
+    ['text', 'set_value', { entity_id: buy, value: '' }],
+  ]);
+
+  for (const state of ['unknown', 'unavailable', undefined]) {
+    push({ ...card.hass.states, [buy]: state === undefined ? undefined : { state } });
+    assert.match(card._renderTariffField('buy_price', 'Buy price'), /\?disabled=true placeholder=Unavailable/);
+    input.value = '15';
+    card._setTariff('buy_price', input);
+    assert.equal(input.value, '');
+  }
+  assert.equal(calls.length, 3);
+});
+
+test('Plan shows fixed rate lines on the shared Price scale and preserves missing spot data and controls', () => {
+  const { card, push, flush } = setup();
+  const buy = 'text.garage_buy_price';
+  const sell = 'text.garage_sell_price';
+  const chargePlan = 'sensor.garage_charge_plan';
+  const today = { date: '2026-10-15', hour: 1, price: 4 };
+  const tomorrow = { date: '2026-10-16', hour: 1, price: 2 };
+  const states = {
+    ...card.hass.states,
+    [buy]: { state: '50' },
+    [sell]: { state: '-10' },
+    [chargePlan]: { state: 'ready', attributes: { plan: [today, tomorrow] } },
+    'number.garage_charge_price_threshold': { state: '4' },
+  };
+  push(states);
+  const rendered = flush();
+  const ys = [...rendered.matchAll(/class="plan-tariff" pointer-events="none">\s*<line [^>]*y1="([^"]+)"[^>]*stroke-dasharray="4,3"/g)]
+    .map(match => Number(match[1]));
+  assert.equal(ys.length, 4);
+  assert.deepEqual(ys.slice(0, 2), ys.slice(2));
+  assert.ok(ys[0] >= 38 && ys[0] < ys[1] && ys[1] <= 250);
+  assert.equal((rendered.match(/>Buy 50<\/text>/g) || []).length, 2);
+  assert.equal((rendered.match(/>Sell -10<\/text>/g) || []).length, 2);
+  assert.match(rendered, /class="threshold-line-group" data-type="charge"/);
+  assert.match(rendered, /class="plan-bar-hit"/);
+
+  push({ ...states, [buy]: { state: '0' }, [sell]: { state: '0.0' } });
+  assert.equal((flush().match(/>Buy \/ Sell 0<\/text>/g) || []).length, 2);
+  push({ ...states, [buy]: { state: 'unavailable' }, [sell]: { state: '0' } });
+  assert.equal((flush().match(/>Sell 0<\/text>/g) || []).length, 2);
+  push({ ...states, [buy]: { state: '0' }, [sell]: { state: '' } });
+  assert.equal((flush().match(/>Buy 0<\/text>/g) || []).length, 2);
+
+  card._solarForecast = forecast.normalizeForecast({
+    usable: true, time_zone: 'UTC',
+    days: [
+      { date: today.date, start: '2026-10-15T00:00:00Z', end: '2026-10-16T00:00:00Z' },
+      { date: tomorrow.date, start: '2026-10-16T00:00:00Z', end: '2026-10-17T00:00:00Z' },
+    ],
+    intervals: [{ start: '2026-10-15T00:00:00Z', end: '2026-10-15T01:00:00Z', pv_estimate: 1 }],
+  });
+  card._setPlanChartMode('pv');
+  const solar = flush();
+  assert.match(solar, /PV 10%: unavailable - PV: 1\.0 kWh/);
+  assert.doesNotMatch(solar, /class="plan-tariff"/);
+  card._setPlanChartMode('price');
+
+  push({ ...states, [chargePlan]: { state: 'ready', attributes: { plan: [today, { ...tomorrow, price: null }] } } });
+  assert.match(flush(), /Tomorrow — prices not yet available/);
+  push({ ...states, [chargePlan]: { state: 'ready', attributes: { plan: [{ ...today, price: null }] } } });
+  assert.match(flush(), /No EPEX price data available/);
+  assert.doesNotMatch(flush(), /class="plan-tariff"/);
+});
