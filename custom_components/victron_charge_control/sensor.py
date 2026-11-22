@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from math import isfinite
 
 from homeassistant.components.sensor import (
     RestoreSensor,
@@ -166,11 +167,10 @@ class VictronCCBaseRestoreSensor(
     @staticmethod
     def _as_float(value: object) -> float | None:
         try:
-            if value in (None, "unknown", "unavailable"):
-                return None
-            return float(value)
-        except (TypeError, ValueError):
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
             return None
+        return parsed if isfinite(parsed) else None
 
     @staticmethod
     def _as_datetime(value: object) -> datetime | None:

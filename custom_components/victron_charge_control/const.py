@@ -23,11 +23,13 @@ CONF_GRID_FEED_IN_ENERGY_ENTITY = "grid_feed_in_energy_entity"
 CONF_SOLAR_SURPLUS_ENTITY = "solar_surplus_entity"
 CONF_DC_COUPLED_PV_FEED_IN_ENTITY = "dc_coupled_pv_feed_in_entity"
 
-# --- Config options keys (from options flow) ---
+# --- Config options keys ---
 CONF_SAFETY_STARTUP_GRACE_SECONDS = "safety_startup_grace_seconds"
 CONF_USE_SOLCAST_FORECAST = "use_solcast_forecast"
 CONF_POWER_LIMIT = "power_limit"
 CONF_IDLE_SETPOINT_LIMIT = "idle_setpoint_limit"
+CONF_BUY_PRICE = "buy_price"
+CONF_SELL_PRICE = "sell_price"
 
 # --- Control modes ---
 MODE_OFF = "off"

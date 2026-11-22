@@ -436,17 +436,20 @@ class TestGridEnergyCostSensor:
         assert cost.unique_id == f"{entry.entry_id}_grid_energy_cost"
         assert revenue.unique_id == f"{entry.entry_id}_grid_energy_revenue"
 
-    @pytest.mark.asyncio
-    async def test_restore_state_updates_coordinator(self, coordinator):
+    @pytest.mark.parametrize(
+        ("native_value", "state", "expected_total"),
+        [(7.5, "NaN", 7.5), (float("nan"), "7.5", 7.5), (float("inf"), "-inf", 0.0)],
+    )
+    async def test_restore_state_updates_coordinator(self, coordinator, native_value, state, expected_total):
         coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
         entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
         sensor = GridEnergyCostSensor(coordinator, entry, "grid_cost")
         sensor.async_get_last_sensor_data = AsyncMock(
-            return_value=SimpleNamespace(native_value=7.5)
+            return_value=SimpleNamespace(native_value=native_value)
         )
         sensor.async_get_last_state = AsyncMock(
             return_value=SimpleNamespace(
-                state="7.5",
+                state=state,
                 attributes={
                     "last_grid_consumption_kwh": 123.4,
                     "last_grid_feed_in_kwh": 45.6,
@@ -457,7 +460,7 @@ class TestGridEnergyCostSensor:
 
         await sensor._restore_cost_state()
 
-        assert coordinator.grid_energy_cost == 7.5
+        assert coordinator.grid_energy_cost == expected_total
         assert coordinator.last_grid_consumption_kwh == 123.4
         assert coordinator.last_grid_feed_in_kwh == 45.6
         coordinator.hass.async_create_task.assert_not_called()
@@ -500,17 +503,20 @@ class TestGridEnergySensor:
         assert imported.unique_id == f"{entry.entry_id}_grid_energy_import"
         assert exported.unique_id == f"{entry.entry_id}_grid_energy_export"
 
-    @pytest.mark.asyncio
-    async def test_restore_state_updates_coordinator(self, coordinator):
+    @pytest.mark.parametrize(
+        ("native_value", "state", "expected_total"),
+        [(7.5, "NaN", 7.5), (float("nan"), "7.5", 7.5), (float("inf"), "-inf", 0.0)],
+    )
+    async def test_restore_state_updates_coordinator(self, coordinator, native_value, state, expected_total):
         coordinator.update_entity_references(MOCK_CONFIG_DATA_WITH_COST)
         entry = MockConfigEntry(data=dict(MOCK_CONFIG_DATA_WITH_COST))
         sensor = GridEnergySensor(coordinator, entry, "grid_import")
         sensor.async_get_last_sensor_data = AsyncMock(
-            return_value=SimpleNamespace(native_value=7.5)
+            return_value=SimpleNamespace(native_value=native_value)
         )
         sensor.async_get_last_state = AsyncMock(
             return_value=SimpleNamespace(
-                state="7.5",
+                state=state,
                 attributes={
                     "last_grid_consumption_kwh": 123.4,
                     "last_grid_feed_in_kwh": 45.6,
@@ -521,7 +527,7 @@ class TestGridEnergySensor:
 
         await sensor._restore_energy_state()
 
-        assert coordinator.grid_energy_import == 7.5
+        assert coordinator.grid_energy_import == expected_total
         assert coordinator.last_grid_consumption_kwh == 123.4
         assert coordinator.last_grid_feed_in_kwh == 45.6
         coordinator.hass.async_create_task.assert_not_called()

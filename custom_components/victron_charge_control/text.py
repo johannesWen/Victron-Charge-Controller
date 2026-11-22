@@ -8,13 +8,22 @@ import re
 from homeassistant.components.text import TextEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEFAULT_BLOCKED_CHARGING_HOURS, DEFAULT_BLOCKED_DISCHARGING_HOURS, DEFAULT_REPLAN_HOURS, DOMAIN
+from .const import (
+    CONF_BUY_PRICE,
+    CONF_SELL_PRICE,
+    DEFAULT_BLOCKED_CHARGING_HOURS,
+    DEFAULT_BLOCKED_DISCHARGING_HOURS,
+    DEFAULT_REPLAN_HOURS,
+    DOMAIN,
+)
 from .coordinator import VictronChargeControlCoordinator
+from .energy import parse_tariff_eur_per_kwh
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +62,47 @@ async def async_setup_entry(
         BlockedChargingHoursText(coordinator, entry),
         BlockedDischargingHoursText(coordinator, entry),
         ReplanHoursText(coordinator, entry),
+        TariffText(entry, CONF_BUY_PRICE),
+        TariffText(entry, CONF_SELL_PRICE),
     ])
+
+
+class TariffText(TextEntity):
+    """A fixed History tariff persisted in the config entry options."""
+
+    _attr_has_entity_name = True
+    _attr_unit_of_measurement = "ct/kWh"
+
+    def __init__(self, entry: ConfigEntry, key: str) -> None:
+        self._entry = entry
+        self._key = key
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{entry.entry_id}_{key}_text"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Victron Charge Control",
+            manufacturer="Victron Energy",
+            entry_type=DeviceEntryType.SERVICE,
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the fixed price in ct/kWh, or an empty string for EPEX."""
+        value = self._entry.options.get(self._key, "")
+        return value if parse_tariff_eur_per_kwh(value) is not None else ""
+
+    async def async_set_value(self, value: str) -> None:
+        """Save a fixed price or clear it to restore EPEX accounting."""
+        value = value.strip()
+        if value and parse_tariff_eur_per_kwh(value) is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_tariff",
+            )
+        self.hass.config_entries.async_update_entry(
+            self._entry, options={**self._entry.options, self._key: value},
+        )
+        self.async_write_ha_state()
 
 
 class BlockedChargingHoursText(

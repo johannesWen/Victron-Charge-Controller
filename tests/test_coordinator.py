@@ -16,8 +16,10 @@ from custom_components.victron_charge_control.const import (
     ACTION_DISCHARGE,
     ACTION_IDLE,
     ACTION_PV_CHARGE,
+    CONF_BUY_PRICE,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
+    CONF_SELL_PRICE,
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_USE_SOLCAST_FORECAST,
     DEFAULT_CHARGE_POWER,
@@ -573,6 +575,36 @@ class TestCostTracking:
         assert coord.grid_energy_import == pytest.approx(1.0)
         assert coord.last_grid_consumption_kwh == 101
 
+    @pytest.mark.parametrize(
+        ("buy", "sell", "epex", "cost", "revenue"),
+        [
+            ("-12.5", "", 0.30, 0.0, 0.55),
+            ("", "+.5", 0.30, 0.60, 0.005),
+            ("12.5", "", None, 0.25, 0.0),
+            ("", "-7.5", None, 0.075, 0.0),
+            ("", "", None, 0.0, 0.0),
+        ],
+    )
+    def test_fixed_tariffs_fall_back_independently(self, mock_hass, buy, sell, epex, cost, revenue):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord.config_entry.options.update({CONF_BUY_PRICE: buy, CONF_SELL_PRICE: sell})
+        meters = {
+            "sensor.grid_consumption_kwh": MockState("100"),
+            "sensor.grid_feed_in_kwh": MockState("20"),
+        }
+        coord.hass.states.get.side_effect = meters.get
+        coord._update_cost_tracking(epex)
+        meters["sensor.grid_consumption_kwh"].state = "102"
+        meters["sensor.grid_feed_in_kwh"].state = "21"
+
+        coord._update_cost_tracking(epex)
+        assert coord.grid_energy_cost == pytest.approx(cost)
+        assert coord.grid_energy_revenue == pytest.approx(revenue)
+        assert coord.grid_energy_import == 2
+        assert coord.grid_energy_export == 1
+        assert coord.last_grid_consumption_kwh == 102
+        assert coord.last_grid_feed_in_kwh == 21
+
     def test_invalid_meter_state_skips_cost_tracking(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)
         coord._last_grid_consumption_kwh = 100
@@ -585,6 +617,34 @@ class TestCostTracking:
 
         assert coord.grid_energy_cost == 0.0
         assert coord.last_grid_consumption_kwh == 100
+
+    @pytest.mark.parametrize("invalid", ["NaN", "inf", "-inf"])
+    def test_nonfinite_meters_recover_with_fixed_tariffs(self, mock_hass, invalid):
+        coord = self._make_cost_coordinator(mock_hass)
+        coord.config_entry.options.update({CONF_BUY_PRICE: "25", CONF_SELL_PRICE: "10"})
+
+        def sample(imported, exported):
+            coord.hass.states.get.side_effect = {
+                "sensor.grid_consumption_kwh": MockState(imported),
+                "sensor.grid_feed_in_kwh": MockState(exported),
+            }.get
+            coord._update_cost_tracking(None)
+            return (
+                coord.grid_energy_cost, coord.grid_energy_revenue,
+                coord.grid_energy_import, coord.grid_energy_export,
+            )
+
+        assert sample("100", "20") == (0, 0, 0, 0)
+        assert sample("102", "22") == pytest.approx((0.5, 0.2, 2, 2))
+        assert sample(invalid, invalid) == pytest.approx((0.5, 0.2, 2, 2))
+        assert coord.last_grid_consumption_kwh == 102
+        assert coord.last_grid_feed_in_kwh == 22
+        assert sample("103", "23") == pytest.approx((0.75, 0.3, 3, 3))
+        assert sample("104", "24") == pytest.approx((1, 0.4, 4, 4))
+
+        coord._last_grid_consumption_kwh = coord._last_grid_feed_in_kwh = float(invalid)
+        assert sample("105", "25") == pytest.approx((1, 0.4, 4, 4))
+        assert sample("106", "26") == pytest.approx((1.25, 0.5, 5, 5))
 
     def test_restore_cost_state(self, mock_hass):
         coord = self._make_cost_coordinator(mock_hass)

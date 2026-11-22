@@ -527,6 +527,48 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   assert.equal(label.childNodes[1], textNode);
 });
 
+for (const update of ['tariff expands scale', 'spot expands scale', 'tariff fits scale']) {
+  test(`threshold pointer-up after ${update} and before render`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const templates = [], calls = [], instance = card({ templates });
+    delete instance._state;
+    delete instance._val;
+    instance.setConfig({ view: 'plan', entity_prefix: 'garage' });
+    instance.classList = { add() {}, remove() {} };
+    instance._clientToSvgY = y => y;
+    const plan = [{ date: '2026-10-15', hour: 1, price: 0 }, { date: '2026-10-16', hour: 1, price: 20 }];
+    const planId = 'sensor.garage_charge_plan', buyId = 'text.garage_buy_price';
+    const states = {
+      [planId]: { state: 'ready', attributes: { plan } },
+      [buyId]: { state: '' },
+      'number.garage_charge_price_threshold': { state: '4' },
+    };
+    instance.hass = { states, callService: (...args) => calls.push(args) };
+    instance._renderAutoPlanContent();
+    const threshold = nodes(templates, 'threshold-line-group').find(node =>
+      node.strings.some(string => string.endsWith('@pointerdown=')) && node.rendered.includes('data-type="charge"'));
+    const group = { classList: instance.classList, closest: () => ({}), querySelectorAll: () => [], querySelector: () => null };
+    handler(threshold, 'pointerdown')(event({}, { currentTarget: group, pointerId: 1 }));
+    t.mock.timers.tick(1000);
+    instance._onThresholdPointerMove(event({}, { clientY: 140, pointerId: 1 }));
+    const value = instance._thresholdDrag.value;
+    assert.notEqual(value, null);
+    assert.equal(instance._thresholdDrag.scale.scaleMax, 22);
+
+    const changed = update === 'spot expands scale'
+      ? { [planId]: { state: 'ready', attributes: { plan: [plan[0], { ...plan[1], price: 35 }] } } }
+      : { [buyId]: { state: update === 'tariff expands scale' ? '50' : '10' } };
+    instance.hass = { ...instance.hass, states: { ...states, ...changed } };
+    instance._onThresholdPointerUp(event({}, { type: 'pointerup', pointerId: 1 }));
+
+    assert.equal(instance._thresholdDrag, null);
+    assert.deepEqual(calls.map(([domain, service, data]) => [domain, service, { ...data }]),
+      update === 'tariff fits scale'
+        ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: Math.round(value * 100) / 100 }]]
+        : []);
+  });
+}
+
 
 function openHour(instance, plan = pricedPeriods(), index = 0, view = 'price', templates = []) {
   published(instance, plan);

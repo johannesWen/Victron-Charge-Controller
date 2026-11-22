@@ -10,6 +10,7 @@ import { ForecastPoller, buildForecastCharts, forecastAreas, forecastTime, norma
 const CARD_TAG = 'victron-charge-controller-card';
 const EDITOR_TAG = 'victron-charge-controller-card-editor';
 const DEFAULT_PREFIX = 'victron_charge_control';
+const TARIFF_DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 const CONTROL_MODES = ['off', 'auto', 'manual', 'force_charge', 'force_discharge'];
 
@@ -53,6 +54,7 @@ const HELP_TEXT = {
     { heading: 'Change a setting', items: [
       'Press and hold a slider knob to unlock it, then move it to the value you want. Its help dialog shows the smallest value, largest value and step size.',
       'Example: Charge Duration moves in 0.25-hour steps. A value of 1.5 h means 1 hour and 30 minutes.',
+      'Set Buy price for grid imports and Sell price for grid exports in ct/kWh. Press Enter or leave the field to save. Clear either field to use the EPEX spot price for that direction.',
       'Choose a mode to decide when the controller runs. Auto chooses times by price; Manual follows your choices in the Plan card. Battery level limits and permission switches still apply.',
     ] },
     { heading: 'Understand the numbers', items: [
@@ -71,6 +73,7 @@ const HELP_TEXT = {
         'In Price and PV forecast views, each bar shows the scheduled action for one price period (today + tomorrow).',
         'Tap a Price bar to see price details for that period. The full day fits the card width. Hour blocks contain one hourly bar or four separate 15-minute columns.',
         'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
+        'Blue dashed lines in Price view show the fixed Buy and Sell prices from Settings. The lines are read-only and the bars show EPEX spot prices.',
       ] },
     { heading: 'Price cutoffs', items: [
       'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charge and Discharge Durations limit the selected periods; charging wins overlaps. Permissions and SOC protection still apply.',
@@ -137,6 +140,7 @@ const HELP_TEXT = {
     { heading: 'What it shows',
       items: [
         'Aggregated cost and energy statistics for the selected period.',
+        'Import cost uses Buy price and export revenue uses Sell price when set. A blank rate uses the EPEX spot price for that direction. Rate changes apply going forward.',
       ] },
     { heading: 'Navigation',
       items: [
@@ -149,6 +153,11 @@ const HELP_TEXT = {
 // Settings help uses UI entity keys, with separate topics for the two Auto modes.
 // Numeric limits are read from the same live entity attributes as the sliders.
 const SETTINGS_HELP = {
+  fixed_prices: [
+    'History uses Buy price for electricity you import and Sell price for electricity you export. Leave either field empty to use the EPEX spot price for that direction.',
+    'Example: at a Buy price of 25 ct/kWh, importing 2 kWh adds €0.50 to your cost. Enter 0 for a free rate. Negative rates are also supported.',
+    'Changes apply from the next meter reading. The Plan chart marks fixed prices with dashed blue lines. Scheduling and feed-in control use EPEX spot prices.',
+  ],
   control_mode: [
     { heading: 'Off', items: ['Uses Idle Setpoint as the grid power target. It does not turn off your Victron system or stop battery use controlled by Victron.', 'Example: with Idle Setpoint at 0 W, the controller asks for no net grid import or export. This is a target, not a guarantee.'] },
     { heading: 'Auto', items: ['Chooses charging and discharging times from the available electricity prices. Absolute mode uses fixed price limits; Relative mode uses price differences. Both use Charge and Discharge Durations.', 'Example: set Charge Price Threshold to 10 ct/kWh and Charge Duration to 2 h. Auto chooses up to 2 hours of the cheapest available times at 10 ct/kWh or less.', 'Blocked hours are skipped. Your fixed plan or changes in the Plan card can replace the automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.'] },
@@ -453,7 +462,15 @@ class VictronChargeControllerCard extends LitElement {
     const changed = !previousSnapshot || previousSnapshot.prefix !== snapshot.prefix
       || previousSnapshot.entities.size !== snapshot.entities.size
       || [...snapshot.entities].some(([id, state]) => previousSnapshot.entities.get(id) !== state);
-    if (changed) this._entityAliases = {};
+    if (changed) {
+      this._entityAliases = {};
+      if (this._thresholdDrag) {
+        // Pointer-up can arrive before the queued render.
+        const { scaleMin, scaleMax } = this._thresholdDrag.scale;
+        const chart = this._priceChartData();
+        if (chart?.scaleMin !== scaleMin || chart?.scaleMax !== scaleMax) this._finishThresholdDrag(false);
+      }
+    }
     this._hassContext = context;
     if (this.config?.view !== 'plan' || changed || !previousContext
       || context.some((item, index) => item !== previousContext[index])) {
@@ -635,6 +652,53 @@ class VictronChargeControllerCard extends LitElement {
 
   _val(domain, key) {
     return this._state(domain, key)?.state;
+  }
+
+  _tariffState(key) {
+    const value = this._val('text', key);
+    return value == null || value === 'unknown' || value === 'unavailable' ? null : value;
+  }
+
+  _setTariff(key, input) {
+    const current = this._tariffState(key);
+    if (current === null) {
+      input.value = '';
+      return;
+    }
+    const draft = input.value;
+    const value = draft.trim().replace(',', '.');
+    if (draft !== '' && (!TARIFF_DECIMAL.test(value) || !Number.isFinite(Number(value)))) {
+      input.setCustomValidity('Enter a signed decimal price in ct/kWh, or clear the field.');
+      input.setAttribute('aria-invalid', 'true');
+      input.reportValidity();
+      return;
+    }
+    if (value === current) {
+      input.value = current;
+      return;
+    }
+    return this._callService('text', 'set_value', {
+      entity_id: this._eid('text', key),
+      value,
+    }, () => {
+      if (input.value === draft) input.value = this._tariffState(key) ?? '';
+    });
+  }
+
+  _renderTariffField(key, label) {
+    const value = this._tariffState(key);
+    return html`
+      <label class="tariff-field">
+        <span>${label} (ct/kWh)</span>
+        <input type="text" .value=${value ?? ''}
+          ?disabled=${value === null} placeholder=${value === null ? 'Unavailable' : 'Enter fixed price'}
+          @input=${({ target }) => {
+            target.setCustomValidity('');
+            target.removeAttribute('aria-invalid');
+          }}
+          @change=${({ target }) => this._setTariff(key, target)}
+          @keydown=${e => { if (e.key === 'Enter' && !e.isComposing) e.target.blur(); }}>
+      </label>`;
   }
 
   _callService(domain, service, data, onFail) {
@@ -1087,8 +1151,9 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _renderHelpIcon(label, key) {
+    const summary = SETTINGS_HELP[key]?.[0];
     return html`<button type="button" class="setting-help-icon"
-      aria-label=${`Help for ${label}`} title=${`Help for ${label}`} aria-haspopup="dialog"
+      aria-label=${`Help for ${label}`} title=${typeof summary === 'string' ? summary : `Help for ${label}`} aria-haspopup="dialog"
       @click=${(e) => this._openHelp({ key, label }, e.currentTarget)}
     ><ha-icon icon="mdi:help-circle-outline"></ha-icon></button>`;
   }
@@ -1686,6 +1751,11 @@ class VictronChargeControllerCard extends LitElement {
         ${this._renderSlider(this._priceThresholdLabel('discharge'), 'discharge_price_threshold', ' ct/kWh')}
       `)}
 
+      ${this._renderSection('Fixed prices', 'mdi:currency-eur', html`
+        ${this._renderTariffField('buy_price', 'Buy price')}
+        ${this._renderTariffField('sell_price', 'Sell price')}
+      `, 'fixed_prices')}
+
       <!-- Grid Feed-in -->
       ${this._renderSection('Grid Feed-in', 'mdi:solar-power', html`
         ${this._renderTogglePair([
@@ -1737,7 +1807,7 @@ class VictronChargeControllerCard extends LitElement {
 
   // ── Shared chart renderer ────────────────────────────────
 
-  _renderPriceChart(enrichedPlan, { chargeThreshold = null, dischargeThreshold = null, forcedScaleMin = null, forcedScaleMax = null, chartId = 'today' } = {}) {
+  _renderPriceChart(enrichedPlan, { chargeThreshold = null, dischargeThreshold = null, tariffs = [], forcedScaleMin = null, forcedScaleMax = null, chartId = 'today' } = {}) {
     enrichedPlan = normalizePlan(enrichedPlan);
     // Extract prices and determine scale
     const validPrices = enrichedPlan
@@ -1868,6 +1938,17 @@ class VictronChargeControllerCard extends LitElement {
               class="plan-threshold-label" fill="var(--vcc-warning, #ff6600)">${Math.round(dischargeThreshold * 10) / 10}</text>
           </g>`;
         })() : nothing}
+
+        ${tariffs.map(({ label, price }, index) => {
+          const y = yPos(price);
+          return svg`
+            <g class="plan-tariff" pointer-events="none">
+              <line x1="${padL}" y1="${y}" x2="${chartW - padR}" y2="${y}"
+                stroke-width="1.5" stroke-dasharray="4,3" />
+              <text x="${index === 0 ? padL + 6 : chartW - padR - 6}" y="${y - 5}"
+                text-anchor="${index === 0 ? 'start' : 'end'}">${label} ${price}</text>
+            </g>`;
+        })}
 
         <!-- Y-axis unit -->
         <text x="${padL + 12}" y="${padT - 14}" text-anchor="end"
@@ -3114,12 +3195,42 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
+  _priceChartData() {
+    const plan = this._state('sensor', 'charge_plan')?.attributes?.plan;
+    if (!Array.isArray(plan) || plan.length === 0) return null;
+    const [todayDate, tomorrowDate] = [...new Set(plan.map(p => p.date))].sort();
+    const today = plan.filter(p => p.date === todayDate);
+    const tomorrow = tomorrowDate ? plan.filter(p => p.date === tomorrowDate) : [];
+
+    const tariffs = ['Buy', 'Sell'].flatMap(label => {
+      const value = this._tariffState(`${label.toLowerCase()}_price`);
+      const price = Number(value);
+      return TARIFF_DECIMAL.test(value) && Number.isFinite(price) ? [{ label, price }] : [];
+    });
+    if (tariffs.length === 2 && tariffs[0].price === tariffs[1].price) {
+      tariffs[0].label = 'Buy / Sell';
+      tariffs.pop();
+    }
+
+    const prices = [...today, ...tomorrow].map(p => p.price).filter(Number.isFinite);
+    let scaleMin = null;
+    let scaleMax = null;
+    if (prices.length) {
+      const tariffPrices = tariffs.map(({ price }) => price);
+      const min = Math.min(...prices, ...tariffPrices);
+      const max = Math.max(...prices, ...tariffPrices);
+      const range = max - min || 1;
+      scaleMin = Math.min(-1, min);
+      scaleMax = Math.max(1, Math.ceil(max + range * 0.1));
+    }
+    return { todayDate, tomorrowDate, today, tomorrow, tariffs, scaleMin, scaleMax };
+  }
+
   _renderAutoPlanContent() {
     const thresholdContext = this._syncThresholdContext();
-    const planEntity = this._state('sensor', 'charge_plan');
-    const plan = planEntity?.attributes?.plan;
+    const chart = this._priceChartData();
 
-    if (!plan || !Array.isArray(plan) || plan.length === 0) {
+    if (!chart) {
       return html`
         <div class="warning">
           <ha-icon icon="mdi:alert-outline"></ha-icon>
@@ -3127,21 +3238,10 @@ class VictronChargeControllerCard extends LitElement {
         </div>`;
     }
 
-    const priceEntity = this._state('sensor', 'current_price');
-    const currentPrice = priceEntity?.state;
-
-    // --- Split plan by date ---
-    const dates = [...new Set(plan.map(p => p.date))].sort();
-    const todayDate = dates[0];
-    const tomorrowDate = dates.length > 1 ? dates[1] : null;
-
-    let todayPlan = plan.filter(p => p.date === todayDate);
-    const rawTomorrowPlan = tomorrowDate ? plan.filter(p => p.date === tomorrowDate) : [];
-
-    let tomorrowPlan = rawTomorrowPlan;
-
-    todayPlan = this._enrichPlanDisplayState(todayPlan);
-    tomorrowPlan = this._enrichPlanDisplayState(tomorrowPlan);
+    const { todayDate, tomorrowDate, today, tomorrow, tariffs, scaleMin, scaleMax } = chart;
+    const currentPrice = this._val('sensor', 'current_price');
+    const todayPlan = this._enrichPlanDisplayState(today);
+    const tomorrowPlan = this._enrichPlanDisplayState(tomorrow);
 
     const chargeThreshold = parseFloat(this._val('number', 'charge_price_threshold'));
     const dischargeThreshold = parseFloat(this._val('number', 'discharge_price_threshold'));
@@ -3156,28 +3256,13 @@ class VictronChargeControllerCard extends LitElement {
       delete this._pendingThresholds.discharge;
     }
 
-    // Compute shared y-axis scale across both plans
-    const allValidPrices = [...todayPlan, ...tomorrowPlan]
-      .map(p => p.price)
-      .filter(p => p !== null && p !== undefined)
-      .map(Number)
-      .filter(Number.isFinite);
-    let sharedScaleMin = null;
-    let sharedScaleMax = null;
-    if (allValidPrices.length > 0) {
-      const minP = Math.min(...allValidPrices);
-      const maxP = Math.max(...allValidPrices);
-      const pRange = maxP - minP || 1;
-      sharedScaleMin = Math.min(-1, minP);
-      sharedScaleMax = Math.max(1, Math.ceil(maxP + pRange * 0.1));
-    }
-
-    const todayChart = this._renderPriceChart(todayPlan, { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, forcedScaleMin: sharedScaleMin, forcedScaleMax: sharedScaleMax, chartId: 'today' });
+    const chartOptions = { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, tariffs, forcedScaleMin: scaleMin, forcedScaleMax: scaleMax };
+    const todayChart = this._renderPriceChart(todayPlan, chartOptions);
 
     // Tomorrow chart: render if we have plan entries (even without prices, shows actions)
     const tomorrowHasAnyPrices = tomorrowPlan.some(p => p.price !== undefined && p.price !== null);
     const tomorrowChart = tomorrowHasAnyPrices
-      ? this._renderPriceChart(tomorrowPlan, { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, forcedScaleMin: sharedScaleMin, forcedScaleMax: sharedScaleMax, chartId: 'tomorrow' })
+      ? this._renderPriceChart(tomorrowPlan, { ...chartOptions, chartId: 'tomorrow' })
       : null;
 
     if (!todayChart && !tomorrowChart) {
@@ -3664,6 +3749,19 @@ class VictronChargeControllerCard extends LitElement {
       .setpoint-calculation [data-direction="discharge"] :is(dd, strong) { color: var(--vcc-error); }
       .calculation-unavailable { padding: 12px 0; font-size: 0.8em; color: var(--vcc-text2); }
 
+      /* ── Fixed prices ──────────────────────────── */
+      .tariff-field {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 8px; margin: 6px 0;
+      }
+      .tariff-field input {
+        box-sizing: border-box; min-width: 0; width: 9em; min-height: 36px;
+        padding: 4px 8px; font: inherit; color: var(--vcc-text);
+        background: var(--vcc-bg); border: 1px solid var(--vcc-border); border-radius: 6px;
+      }
+      .tariff-field input:focus-visible { outline: 2px solid var(--vcc-accent); }
+      .tariff-field input[aria-invalid="true"] { border-color: var(--vcc-error); }
+
       /* ── Slider ────────────────────────────────── */
       .slider-wrap {
         display: flex; align-items: center; gap: 8px;
@@ -3932,6 +4030,12 @@ class VictronChargeControllerCard extends LitElement {
       .plan-threshold-label {
         font-size: 11px;
         font-weight: 700;
+      }
+      .plan-tariff line { stroke: var(--vcc-info, #2196f3); }
+      .plan-tariff text {
+        fill: var(--vcc-info, #2196f3); stroke: var(--vcc-bg, #fff);
+        stroke-width: 3px; stroke-linejoin: round; paint-order: stroke;
+        font-size: 14px; font-weight: 700;
       }
       .threshold-line-group {
         cursor: grab; touch-action: none;
