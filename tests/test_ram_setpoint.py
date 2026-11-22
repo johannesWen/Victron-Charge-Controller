@@ -422,6 +422,33 @@ async def test_disconnect_trips_watchdog_and_recovery_corrects_idle(consumer, st
     assert coord._ram_timer is None
 
 
+@pytest.mark.parametrize("state", ["NaN", "inf", "-inf", "-0.1", "100.1", "bad"])
+async def test_invalid_soc_stops_force_charge_on_ram_refresh(native_consumer, state):
+    coord, _, clock, _, states = native_consumer
+    assert float(states[RAM].state) == 3000
+    coord.hass.services.async_call.reset_mock()
+    states["sensor.battery_soc"] = MockState(state)
+
+    await clock.advance(5)
+
+    assert writes(coord) == [coord.idle_setpoint]
+    assert coord.control_mode == MODE_OFF
+    assert coord.data.desired_action == ACTION_IDLE
+    assert coord._ram_timer is None
+    states["sensor.battery_soc"] = MockState("50")
+    await coord.async_refresh()
+    await clock.advance(5)
+    assert coord.control_mode == MODE_OFF
+    assert writes(coord) == [coord.idle_setpoint]
+    assert not writes(coord, PERMANENT)
+
+    coord.control_mode = MODE_FORCE_CHARGE
+    coord.action_confirm_seconds = 0
+    await coord.async_refresh()
+    await coord.async_refresh()
+    assert writes(coord) == [coord.idle_setpoint, 3000]
+
+
 async def test_missing_ram_preserves_startup_grace(consumer):
     coord, _, _, _, states = consumer
     deadline = dt_util.now() + timedelta(seconds=90)

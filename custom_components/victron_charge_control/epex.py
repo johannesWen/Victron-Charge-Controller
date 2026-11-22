@@ -110,13 +110,8 @@ def get_current_price_ct(hass: Any, entity_id: str) -> float | None:
 
 def get_battery_soc(hass: Any, entity_id: str) -> float | None:
     """Read the battery SOC, returning ``None`` when unavailable or invalid."""
-    state = hass.states.get(entity_id)
-    if state is None or state.state in ("unavailable", "unknown"):
-        return None
-    try:
-        return float(state.state)
-    except (ValueError, TypeError, OverflowError):
-        return None
+    soc = get_entity_float(hass, entity_id)
+    return soc if soc is not None and 0 <= soc <= 100 else None
 
 
 def get_entity_float(hass: Any, entity_id: str | None) -> float | None:

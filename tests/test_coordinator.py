@@ -701,6 +701,17 @@ class TestDetermineAction:
         coordinator.hass.states.get.return_value = None
         assert coordinator._determine_action() == ACTION_IDLE
 
+    @pytest.mark.parametrize("state", ["NaN", "inf", "-inf", "-0.1", "100.1", "bad"])
+    def test_invalid_soc_preserves_hysteresis(self, coordinator, state):
+        coordinator.control_mode = MODE_FORCE_CHARGE
+        self._set_soc(coordinator, 0)
+        assert coordinator._determine_action() == ACTION_CHARGE
+        self._set_soc(coordinator, state)
+        assert coordinator._determine_action() == ACTION_IDLE
+        assert not coordinator._charge_blocked_by_soc
+        assert coordinator._discharge_blocked_by_soc
+        assert coordinator._discharge_solar_only
+
     def test_force_charge_allowed(self, coordinator):
         coordinator.control_mode = MODE_FORCE_CHARGE
         coordinator.charge_allowed = True
@@ -1971,8 +1982,13 @@ class TestCalculateAutoSchedule:
 class TestSafetyWatchdog:
     """Tests for the safety watchdog."""
 
-    def test_safe_when_entities_available(self, coordinator):
-        coordinator.hass.states.get.return_value = MockState("50")
+    @pytest.mark.parametrize("soc", ["0", "50", "100"])
+    def test_safe_when_entities_available(self, coordinator, soc):
+        coordinator.hass.states.get.side_effect = {
+            "sensor.battery_soc": MockState(soc),
+            "number.ac_grid_setpoint": MockState("unknown"),
+            "number.grid_setpoint": MockState("-500"),
+        }.get
         assert coordinator._get_unsafe_entities() == {}
 
     def test_unsafe_when_soc_unavailable(self, coordinator):
@@ -2187,24 +2203,27 @@ class TestSafetyStartupGrace:
         assert notification_calls == []
 
     @pytest.mark.asyncio
-    async def test_unavailable_during_grace_does_not_switch_off(self, coordinator):
+    @pytest.mark.parametrize("soc", ["unavailable", "NaN"])
+    async def test_invalid_soc_during_grace_does_not_switch_off(self, coordinator, soc):
         """Unavailable critical entities are tolerated while the grace is active."""
         from custom_components.victron_charge_control.coordinator import dt_util
         coordinator._safety_startup_deadline = dt_util.now() + timedelta(seconds=60)
-        coordinator.control_mode = MODE_AUTO
+        coordinator.control_mode = MODE_FORCE_CHARGE
 
         def side_effect(entity_id):
             if entity_id == "sensor.battery_soc":
-                return MockState("unavailable")
+                return MockState(soc)
             return MockState("50")
 
         coordinator.hass.states.get.side_effect = side_effect
         coordinator.async_request_refresh = MagicMock()
         coordinator.hass.services.async_call = AsyncMock()
 
-        await coordinator._async_update_data()
+        data = await coordinator._async_update_data()
 
-        assert coordinator.control_mode == MODE_AUTO
+        assert data.desired_action == ACTION_IDLE
+        assert data.target_setpoint == coordinator.idle_setpoint
+        assert coordinator.control_mode == MODE_FORCE_CHARGE
         # Grace deadline was NOT cleared, so the watchdog stays in grace
         assert coordinator._safety_startup_deadline is not None
         # No persistent notification was raised
@@ -2216,7 +2235,8 @@ class TestSafetyStartupGrace:
         assert notification_calls == []
 
     @pytest.mark.asyncio
-    async def test_unavailable_after_grace_still_switches_off(self, coordinator):
+    @pytest.mark.parametrize("soc", ["unavailable", "NaN"])
+    async def test_invalid_soc_after_grace_still_switches_off(self, coordinator, soc):
         """Once the grace period has elapsed, unavailable entities trip the watchdog."""
         from custom_components.victron_charge_control.coordinator import dt_util
         coordinator._safety_startup_deadline = dt_util.now() - timedelta(seconds=1)
@@ -2224,7 +2244,7 @@ class TestSafetyStartupGrace:
 
         def side_effect(entity_id):
             if entity_id == "sensor.battery_soc":
-                return MockState("unavailable")
+                return MockState(soc)
             return MockState("50")
 
         coordinator.hass.states.get.side_effect = side_effect

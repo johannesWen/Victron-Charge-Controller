@@ -2043,6 +2043,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         unsafe = get_unsafe_entities(
             self.hass, [self._battery_soc_entity, self._grid_setpoint_entity],
         )
+        if self._battery_soc_entity not in unsafe and self._get_battery_soc() is None:
+            unsafe[self._battery_soc_entity] = "invalid SOC (expected 0–100%)"
         # victron_gx uses unknown for an inactive/null RAM value; availability
         # is tracked separately and unavailable still means a lost connection.
         ram_state = self.hass.states.get(self._ac_grid_setpoint_entity)
