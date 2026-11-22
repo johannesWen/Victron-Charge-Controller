@@ -457,7 +457,15 @@ class VictronChargeControllerCard extends LitElement {
     const changed = !previousSnapshot || previousSnapshot.prefix !== snapshot.prefix
       || previousSnapshot.entities.size !== snapshot.entities.size
       || [...snapshot.entities].some(([id, state]) => previousSnapshot.entities.get(id) !== state);
-    if (changed) this._entityAliases = {};
+    if (changed) {
+      this._entityAliases = {};
+      if (this._thresholdDrag) {
+        // Pointer-up can arrive before the queued render.
+        const { scaleMin, scaleMax } = this._thresholdDrag.scale;
+        const chart = this._priceChartData();
+        if (chart?.scaleMin !== scaleMin || chart?.scaleMax !== scaleMax) this._finishThresholdDrag(false);
+      }
+    }
     this._hassContext = context;
     if (this.config?.view !== 'plan' || changed || !previousContext
       || context.some((item, index) => item !== previousContext[index])) {
@@ -677,7 +685,7 @@ class VictronChargeControllerCard extends LitElement {
     return html`
       <label class="tariff-field">
         <span>${label} (ct/kWh)</span>
-        <input type="text" inputmode="decimal" .value=${value ?? ''}
+        <input type="text" .value=${value ?? ''}
           ?disabled=${value === null} placeholder=${value === null ? 'Unavailable' : 'EPEX spot price'}
           @input=${({ target }) => {
             target.setCustomValidity('');
@@ -3181,12 +3189,42 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
+  _priceChartData() {
+    const plan = this._state('sensor', 'charge_plan')?.attributes?.plan;
+    if (!Array.isArray(plan) || plan.length === 0) return null;
+    const [todayDate, tomorrowDate] = [...new Set(plan.map(p => p.date))].sort();
+    const today = plan.filter(p => p.date === todayDate);
+    const tomorrow = tomorrowDate ? plan.filter(p => p.date === tomorrowDate) : [];
+
+    const tariffs = ['Buy', 'Sell'].flatMap(label => {
+      const value = this._tariffState(`${label.toLowerCase()}_price`);
+      const price = Number(value);
+      return TARIFF_DECIMAL.test(value) && Number.isFinite(price) ? [{ label, price }] : [];
+    });
+    if (tariffs.length === 2 && tariffs[0].price === tariffs[1].price) {
+      tariffs[0].label = 'Buy / Sell';
+      tariffs.pop();
+    }
+
+    const prices = [...today, ...tomorrow].map(p => p.price).filter(Number.isFinite);
+    let scaleMin = null;
+    let scaleMax = null;
+    if (prices.length) {
+      const tariffPrices = tariffs.map(({ price }) => price);
+      const min = Math.min(...prices, ...tariffPrices);
+      const max = Math.max(...prices, ...tariffPrices);
+      const range = max - min || 1;
+      scaleMin = Math.min(-1, min);
+      scaleMax = Math.max(1, Math.ceil(max + range * 0.1));
+    }
+    return { todayDate, tomorrowDate, today, tomorrow, tariffs, scaleMin, scaleMax };
+  }
+
   _renderAutoPlanContent() {
     const thresholdContext = this._syncThresholdContext();
-    const planEntity = this._state('sensor', 'charge_plan');
-    const plan = planEntity?.attributes?.plan;
+    const chart = this._priceChartData();
 
-    if (!plan || !Array.isArray(plan) || plan.length === 0) {
+    if (!chart) {
       return html`
         <div class="warning">
           <ha-icon icon="mdi:alert-outline"></ha-icon>
@@ -3194,21 +3232,10 @@ class VictronChargeControllerCard extends LitElement {
         </div>`;
     }
 
-    const priceEntity = this._state('sensor', 'current_price');
-    const currentPrice = priceEntity?.state;
-
-    // --- Split plan by date ---
-    const dates = [...new Set(plan.map(p => p.date))].sort();
-    const todayDate = dates[0];
-    const tomorrowDate = dates.length > 1 ? dates[1] : null;
-
-    let todayPlan = plan.filter(p => p.date === todayDate);
-    const rawTomorrowPlan = tomorrowDate ? plan.filter(p => p.date === tomorrowDate) : [];
-
-    let tomorrowPlan = rawTomorrowPlan;
-
-    todayPlan = this._enrichPlanDisplayState(todayPlan);
-    tomorrowPlan = this._enrichPlanDisplayState(tomorrowPlan);
+    const { todayDate, tomorrowDate, today, tomorrow, tariffs, scaleMin, scaleMax } = chart;
+    const currentPrice = this._val('sensor', 'current_price');
+    const todayPlan = this._enrichPlanDisplayState(today);
+    const tomorrowPlan = this._enrichPlanDisplayState(tomorrow);
 
     const chargeThreshold = parseFloat(this._val('number', 'charge_price_threshold'));
     const dischargeThreshold = parseFloat(this._val('number', 'discharge_price_threshold'));
@@ -3223,34 +3250,7 @@ class VictronChargeControllerCard extends LitElement {
       delete this._pendingThresholds.discharge;
     }
 
-    const tariffs = ['Buy', 'Sell'].flatMap(label => {
-      const value = this._tariffState(`${label.toLowerCase()}_price`);
-      const price = Number(value);
-      return TARIFF_DECIMAL.test(value) && Number.isFinite(price) ? [{ label, price }] : [];
-    });
-    if (tariffs.length === 2 && tariffs[0].price === tariffs[1].price) {
-      tariffs[0].label = 'Buy / Sell';
-      tariffs.pop();
-    }
-
-    // Compute shared y-axis scale across both plans
-    const allValidPrices = [...todayPlan, ...tomorrowPlan]
-      .map(p => p.price)
-      .filter(p => p !== null && p !== undefined)
-      .map(Number)
-      .filter(Number.isFinite);
-    let sharedScaleMin = null;
-    let sharedScaleMax = null;
-    if (allValidPrices.length > 0) {
-      const tariffPrices = tariffs.map(({ price }) => price);
-      const minP = Math.min(...allValidPrices, ...tariffPrices);
-      const maxP = Math.max(...allValidPrices, ...tariffPrices);
-      const pRange = maxP - minP || 1;
-      sharedScaleMin = Math.min(-1, minP);
-      sharedScaleMax = Math.max(1, Math.ceil(maxP + pRange * 0.1));
-    }
-
-    const chartOptions = { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, tariffs, forcedScaleMin: sharedScaleMin, forcedScaleMax: sharedScaleMax };
+    const chartOptions = { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, tariffs, forcedScaleMin: scaleMin, forcedScaleMax: scaleMax };
     const todayChart = this._renderPriceChart(todayPlan, chartOptions);
 
     // Tomorrow chart: render if we have plan entries (even without prices, shows actions)
