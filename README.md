@@ -193,6 +193,7 @@ Zero battery feedback is hidden; older controller calculations without that term
 When a limit caps the target, the original result appears in parentheses, such as `5,000 W (6,000 W)`.
 
 In the Plan card, switch from Price to PV forecast to view expected solar production.
+In Price view, dashed blue lines show any fixed buy and sell tariffs configured in Settings. Equal tariffs share one line.
 The chart shows the main Solcast forecast and a lower estimate, alongside electricity price intervals.
 The existing EPEX Spot input is detected automatically as 15-minute or 60-minute data; hourly prices stay hourly, and mixed feeds keep their actual intervals without averaging. Price input remains the existing EPEX Spot sensor; no other provider adapter or new resolution setting is added.
 In a detected 15-minute feed, entries without `end_time` use the quarter-hour cadence. True hourly periods mixed into that feed require an explicit `end_time`.
@@ -399,6 +400,8 @@ Existing settings and schedules remain saved.
 | Reduced Max Grid Feed-in | Number | Export limit when prices are low. Also limits PV Charge and Discharge targets. |
 | Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
 | Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
+| Buy Price | Text | Fixed tariff for grid import in ct/kWh. Leave empty to use EPEX Spot. |
+| Sell Price | Text | Fixed tariff for grid export in ct/kWh. Leave empty to use EPEX Spot. |
 | Active Fixed Plan | Select | Active plan number, or `off`. |
 | Recalculate Schedule | Button | Rebuilds the schedule from current price data. |
 | Desired Action | Sensor | Current computed action: charge, pv_charge, discharge, or idle. |
@@ -413,8 +416,8 @@ Existing settings and schedules remain saved.
 | Fixed Plans | Sensor | Number of saved plans. Attributes contain the plans and active plan number. |
 | Last Schedule Update | Sensor | Timestamp of the last schedule calculation. |
 | Grid Feed-in Status | Sensor | Current feed-in mode: default or reduced. |
-| Grid Energy Cost | Sensor | Total grid energy cost in EUR, before fees and taxes. |
-| Grid Energy Revenue | Sensor | Total grid energy revenue in EUR, before fees and taxes. |
+| Grid Energy Cost | Sensor | Cumulative grid energy cost in EUR at the applicable buy or sell price. |
+| Grid Energy Revenue | Sensor | Cumulative grid energy revenue in EUR at the applicable buy or sell price. |
 | Grid Energy Import | Sensor | Total tracked grid import in kWh. |
 | Grid Energy Export | Sensor | Total tracked grid export in kWh. |
 | Solar Surplus Mean (15 min) | Sensor | Average spare solar power over 15 minutes, in watts. Requires a solar surplus sensor. |
@@ -511,11 +514,15 @@ A manual change for one date lasts until the next recalculation applies the fixe
 ## Cost And Energy Tracking
 
 For cost tracking, select energy sensors that report total grid import and export.
-The integration tracks cost and revenue separately:
+In dashboard **Settings**, enter a **Buy price** for import, a **Sell price** for export, or both, in ct/kWh. Each field starts empty and uses the current EPEX spot price until you enter a tariff. Enter `0` for a free rate, or clear the field to return to spot pricing.
+
+Each tariff change applies from the next meter delta. Earlier History totals retain the rate used when recorded. If EPEX is unavailable, a fixed tariff still values its direction, and the energy meters continue tracking kWh. Scheduling and feed-in controls use EPEX spot prices.
+
+History tracks cost and revenue separately.
 
 - Positive prices add grid consumption to cost and grid feed-in to revenue.
 - Negative prices add grid consumption to revenue and grid feed-in to cost.
-- Taxes, fixed fees, grid fees, and provider markups are not included.
+- History uses the supplied price as entered and adds no separate fees or taxes.
 
 ## Development
 
