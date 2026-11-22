@@ -286,7 +286,7 @@ test('Settings edits each fixed price independently and rejects invalid drafts w
   const rendered = card.render();
   assert.match(rendered, /<label class="tariff-field">\s*<span>Buy price \(ct\/kWh\)<\/span>\s*<input type="text"[^>]*\.value=24\.75/);
   assert.doesNotMatch(rendered, /<input[^>]*inputmode="decimal"/);
-  assert.match(rendered, /Sell price \(ct\/kWh\)<\/span>\s*<input[^>]*\?disabled=false placeholder=EPEX spot price/);
+  assert.match(rendered, /Sell price \(ct\/kWh\)<\/span>\s*<input[^>]*\?disabled=false placeholder=Enter fixed price/);
 
   const input = {
     value: '',

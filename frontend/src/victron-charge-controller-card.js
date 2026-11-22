@@ -153,6 +153,11 @@ const HELP_TEXT = {
 // Settings help uses UI entity keys, with separate topics for the two Auto modes.
 // Numeric limits are read from the same live entity attributes as the sliders.
 const SETTINGS_HELP = {
+  fixed_prices: [
+    'History uses Buy price for electricity you import and Sell price for electricity you export. Leave either field empty to use the EPEX spot price for that direction.',
+    'Example: at a Buy price of 25 ct/kWh, importing 2 kWh adds €0.50 to your cost. Enter 0 for a free rate. Negative rates are also supported.',
+    'Changes apply from the next meter reading. The Plan chart marks fixed prices with dashed blue lines. Scheduling and feed-in control use EPEX spot prices.',
+  ],
   control_mode: [
     { heading: 'Off', items: ['Uses Idle Setpoint as the grid power target. It does not turn off your Victron system or stop battery use controlled by Victron.', 'Example: with Idle Setpoint at 0 W, the controller asks for no net grid import or export. This is a target, not a guarantee.'] },
     { heading: 'Auto', items: ['Chooses charging and discharging times from the available electricity prices. Absolute mode uses fixed price limits; Relative mode uses price differences. Both use Charge and Discharge Durations.', 'Example: set Charge Price Threshold to 10 ct/kWh and Charge Duration to 2 h. Auto chooses up to 2 hours of the cheapest available times at 10 ct/kWh or less.', 'Blocked hours are skipped. Your fixed plan or changes in the Plan card can replace the automatic choices. Charge Allowed, Discharge Allowed and battery level limits still apply.'] },
@@ -686,7 +691,7 @@ class VictronChargeControllerCard extends LitElement {
       <label class="tariff-field">
         <span>${label} (ct/kWh)</span>
         <input type="text" .value=${value ?? ''}
-          ?disabled=${value === null} placeholder=${value === null ? 'Unavailable' : 'EPEX spot price'}
+          ?disabled=${value === null} placeholder=${value === null ? 'Unavailable' : 'Enter fixed price'}
           @input=${({ target }) => {
             target.setCustomValidity('');
             target.removeAttribute('aria-invalid');
@@ -1146,8 +1151,9 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _renderHelpIcon(label, key) {
+    const summary = SETTINGS_HELP[key]?.[0];
     return html`<button type="button" class="setting-help-icon"
-      aria-label=${`Help for ${label}`} title=${`Help for ${label}`} aria-haspopup="dialog"
+      aria-label=${`Help for ${label}`} title=${typeof summary === 'string' ? summary : `Help for ${label}`} aria-haspopup="dialog"
       @click=${(e) => this._openHelp({ key, label }, e.currentTarget)}
     ><ha-icon icon="mdi:help-circle-outline"></ha-icon></button>`;
   }
@@ -1748,7 +1754,7 @@ class VictronChargeControllerCard extends LitElement {
       ${this._renderSection('Fixed prices', 'mdi:currency-eur', html`
         ${this._renderTariffField('buy_price', 'Buy price')}
         ${this._renderTariffField('sell_price', 'Sell price')}
-      `)}
+      `, 'fixed_prices')}
 
       <!-- Grid Feed-in -->
       ${this._renderSection('Grid Feed-in', 'mdi:solar-power', html`

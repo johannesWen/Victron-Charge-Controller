@@ -501,11 +501,16 @@ for (const relative of ['off', 'on']) test(`every Settings help dialog has an ex
     topics.add(key);
     const rendered = card._renderHelpDialog('settings', 'Settings');
     assert.match(rendered, /Example:/, key);
+    if (key === 'fixed_prices') {
+      assert.match(binding(button, 'title'), /Buy price.*import.*Sell price.*export.*EPEX spot price/);
+      assert.match(rendered, /25 ct\/kWh.*2 kWh.*€0\.50/);
+    }
     if (key === 'control_mode' || key === 'schedule_actions') {
       assert.equal((rendered.match(/Example:/g) || []).length, key === 'control_mode' ? 5 : 2);
     }
   }
-  assert.equal(topics.size, 30, 'all Settings help topics are reachable');
+  assert.ok(topics.has('fixed_prices'));
+  assert.equal(topics.size, 31, 'all Settings help topics are reachable');
   card._helpTopic = null;
   assert.match(card._renderHelpDialog('settings', 'Settings'), /SOC means battery level/);
   assert.equal(calls.length, 0);
