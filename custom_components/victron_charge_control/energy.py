@@ -8,10 +8,22 @@ while the coordinator's public/private surface stays unchanged.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from math import isfinite
 from typing import Any
 
 from .epex import get_entity_float
+
+_TARIFF_PATTERN = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
+
+
+def parse_tariff_eur_per_kwh(value: object) -> float | None:
+    """Convert a signed decimal tariff from ct/kWh to EUR/kWh."""
+    if not isinstance(value, str) or not _TARIFF_PATTERN.fullmatch(value):
+        return None
+    price = float(value)
+    return price / 100 if isfinite(price) else None
 
 
 def read_meter_delta(
@@ -51,7 +63,8 @@ def accumulate_cost_tracking(
     *,
     consumption_delta_kwh: float | None,
     feed_in_delta_kwh: float | None,
-    current_price_eur_per_kwh: float | None,
+    buy_price: float | None,
+    sell_price: float | None,
     cost: float,
     revenue: float,
     import_kwh: float,
@@ -66,24 +79,21 @@ def accumulate_cost_tracking(
     """
     if consumption_delta_kwh is not None:
         import_kwh += consumption_delta_kwh
+        if buy_price is not None:
+            amount = consumption_delta_kwh * buy_price
+            if amount >= 0:
+                cost += amount
+            else:
+                revenue -= amount
+
     if feed_in_delta_kwh is not None:
         export_kwh += feed_in_delta_kwh
-
-    if current_price_eur_per_kwh is not None:
-        price_abs = abs(current_price_eur_per_kwh)
-        if consumption_delta_kwh is not None:
-            amount = consumption_delta_kwh * price_abs
-            if current_price_eur_per_kwh >= 0:
-                cost += amount
-            else:
-                revenue += amount
-
-        if feed_in_delta_kwh is not None:
-            amount = feed_in_delta_kwh * price_abs
-            if current_price_eur_per_kwh >= 0:
+        if sell_price is not None:
+            amount = feed_in_delta_kwh * sell_price
+            if amount >= 0:
                 revenue += amount
             else:
-                cost += amount
+                cost -= amount
 
     baselines_changed = consumption_delta_kwh is not None or feed_in_delta_kwh is not None
     return cost, revenue, import_kwh, export_kwh, baselines_changed

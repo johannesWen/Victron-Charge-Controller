@@ -310,12 +310,21 @@
       },
       "replan_hours": {
         "name": "Replan Hours"
+      },
+      "buy_price": {
+        "name": "Buy Price"
+      },
+      "sell_price": {
+        "name": "Sell Price"
       }
     }
   },
   "exceptions": {
     "ram_setpoint_required": {
       "message": "Reconfigure this integration and select a distinct AC grid setpoint (RAM) number entity. The existing AC power setpoint remains the permanent idle fallback. Schedules and settings are preserved."
+    },
+    "invalid_tariff": {
+      "message": "Enter a decimal price in ct/kWh or leave it blank to use the live EPEX price."
     }
   },
   "services": {

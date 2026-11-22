@@ -35,6 +35,7 @@ from .const import (
     CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
+    CONF_BUY_PRICE,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
@@ -44,6 +45,7 @@ from .const import (
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
+    CONF_SELL_PRICE,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_ACTION_CONFIRM_SECONDS,
     DEFAULT_CHARGE_POWER,
@@ -122,7 +124,7 @@ from .persistence import (
     deserialize_slots,
     serialize_slots,
 )
-from .energy import accumulate_cost_tracking, read_meter_delta
+from .energy import accumulate_cost_tracking, parse_tariff_eur_per_kwh, read_meter_delta
 from .decision import (
     DebounceState,
     DecisionState,
@@ -322,6 +324,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._last_applied_dc_feed_in_state: bool | None = None
 
         # --- Cost tracking from cumulative kWh meters ---
+        self._accounting_ready = False
         self._last_grid_consumption_kwh: float | None = None
         self._last_grid_feed_in_kwh: float | None = None
         self._grid_energy_cost: float = 0.0
@@ -1639,11 +1642,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             last_attr="_last_grid_feed_in_kwh",
         )
 
+        options = self.config_entry.options
+        buy_price = parse_tariff_eur_per_kwh(options.get(CONF_BUY_PRICE, ""))
+        sell_price = parse_tariff_eur_per_kwh(options.get(CONF_SELL_PRICE, ""))
         new_cost, new_revenue, new_import, new_export, baselines_changed = (
             accumulate_cost_tracking(
                 consumption_delta_kwh=consumption_delta_kwh,
                 feed_in_delta_kwh=feed_in_delta_kwh,
-                current_price_eur_per_kwh=current_price_eur_per_kwh,
+                buy_price=current_price_eur_per_kwh if buy_price is None else buy_price,
+                sell_price=current_price_eur_per_kwh if sell_price is None else sell_price,
                 cost=self._grid_energy_cost,
                 revenue=self._grid_energy_revenue,
                 import_kwh=self._grid_energy_import,
@@ -2104,7 +2111,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     current_price_ct, is_reduced, action, setpoint, calculation = decision
         if self._shutdown_requested:
             return self.data
-        self._update_cost_tracking(price_view.eur_per_kwh)
+        if self._accounting_ready:
+            self._update_cost_tracking(price_view.eur_per_kwh)
         return self._build_snapshot(
             action=action,
             setpoint=setpoint,
@@ -2472,6 +2480,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if self._shutdown_requested:
             return
 
+        # Text restore callbacks can refresh before the history sensors restore.
+        self._accounting_ready = True
         self._grid_consumer_ready = True
         await self.async_request_refresh()
         if self._shutdown_requested:
