@@ -61,6 +61,14 @@ instance with different credentials, run it from the editor terminal with
 python dev/bootstrap_home_assistant.py
 ```
 
+If bootstrap reports that Charge Control needs a distinct AC grid setpoint
+(RAM), open **Settings → Devices & services → Victron Charge Control** in Home
+Assistant and choose **Reconfigure**. Select the mock `number.ac_grid_setpoint`
+for **AC grid setpoint** and keep `number.grid_setpoint` as the permanent **AC
+power setpoint** in the mock setup. Save the entry, then rerun
+`python dev/bootstrap_home_assistant.py` from the editor terminal. Bootstrap
+reports the dashboard ready after Home Assistant loads the entry.
+
 The existing integration and dummy configuration mounts are reused.
 Home Assistant's database and onboarding settings persist in the
 `homeassistant-data` Docker volume across rebuilds. Closing the devcontainer stops

@@ -26,21 +26,24 @@ def test_existing_integration_is_not_reconfigured():
 
 def test_new_integration_waits_for_sensors_and_uses_dummy_entities(monkeypatch):
     monkeypatch.setattr(bootstrap.time, "sleep", lambda _: None)
+    monkeypatch.setattr(bootstrap, "authenticate", Mock(return_value="temporary-refresh-token"))
     client = Mock()
     client.request.side_effect = [
+        {"name": "Home Assistant"}, [],
         [],
         [],
         [{"entity_id": entity, "state": "10"} for entity in bootstrap.ENTITIES.values()],
         {"type": "form", "step_id": "user", "flow_id": "new"},
         {"type": "create_entry"},
+        [{"state": "loaded", "disabled_by": None}],
         {"state": "off"},
-        [],
+        None, None,
     ]
 
-    bootstrap.configure_integration(client)
+    bootstrap.bootstrap(client, "dev", "password")
 
     assert call("/api/config/config_entries/flow/new", bootstrap.ENTITIES) in client.request.call_args_list
-    client.request.assert_called_with("/api/services/select/select_option", {
+    assert client.request.call_args_list[-2] == call("/api/services/select/select_option", {
         "entity_id": "select.victron_charge_control_control_mode", "option": "auto",
     })
 
@@ -65,7 +68,7 @@ def test_partial_onboarding_only_completes_pending_steps(monkeypatch):
         {}, {}, [{"state": "loaded"}], None,
     ]
     monkeypatch.setattr(bootstrap, "authenticate", Mock(return_value="temporary-refresh-token"))
-    monkeypatch.setattr(bootstrap, "configure_integration", Mock())
+    monkeypatch.setattr(bootstrap, "configure_integration", Mock(return_value=False))
 
     bootstrap.bootstrap(client, "dev", "password")
 
@@ -77,6 +80,61 @@ def test_partial_onboarding_only_completes_pending_steps(monkeypatch):
     client.request.assert_called_with(
         "/auth/token", {"action": "revoke", "token": "temporary-refresh-token"}, form=True,
     )
+
+
+@pytest.mark.parametrize(("entry", "message"), [
+    ({"state": "setup_error", "reason": "Select a distinct AC grid setpoint"},
+     r"\(setup_error\).*Select a distinct AC grid setpoint"),
+    ({"state": "setup_error", "reason": None}, r"\(setup_error\).*Check.*logs"),
+    ({"state": "migration_error"}, r"\(migration_error\).*Check.*logs"),
+    ({"state": "failed_unload"}, r"\(failed_unload\).*Check.*logs"),
+    ({"state": "not_loaded", "disabled_by": "user"}, "disabled.*Enable it"),
+])
+def test_unusable_saved_entry_fails_immediately_and_revokes_token(monkeypatch, capsys, entry, message):
+    client = Mock()
+    client.request.side_effect = [{"name": "Home Assistant"}, [], [entry], [entry], None]
+    monkeypatch.setattr(bootstrap, "authenticate", Mock(return_value="temporary-refresh-token"))
+    sleep = Mock()
+    monkeypatch.setattr(bootstrap.time, "sleep", sleep)
+
+    with pytest.raises(RuntimeError, match=message):
+        bootstrap.bootstrap(client, "dev", "password")
+
+    sleep.assert_not_called()
+    assert client.request.call_args_list[2:] == [
+        call(bootstrap.ENTRY_PATH), call(bootstrap.ENTRY_PATH),
+        call("/auth/token", {"action": "revoke", "token": "temporary-refresh-token"}, form=True),
+    ]
+    assert "Development dashboard ready" not in capsys.readouterr().out
+
+
+def test_saved_entry_waits_through_transient_states(monkeypatch, capsys):
+    client = Mock()
+    client.request.side_effect = [
+        {"name": "Home Assistant"}, [],
+        [{"state": "not_loaded"}],
+        [],
+        [{"state": "not_loaded"}],
+        [{"state": "setup_in_progress"}],
+        [{"state": "setup_retry", "reason": "Waiting for mock entities"}],
+        [{"state": "setup_retry", "reason": "Waiting for mock entities"}],
+        [{"state": "loaded", "disabled_by": None}],
+        None,
+    ]
+    monkeypatch.setattr(bootstrap, "authenticate", Mock(return_value="temporary-refresh-token"))
+    sleep = Mock()
+    monkeypatch.setattr(bootstrap.time, "sleep", sleep)
+
+    bootstrap.bootstrap(client, "dev", "password")
+
+    assert sleep.call_count == 5
+    output = capsys.readouterr().out
+    assert output.count("Charge Control status: setup_retry") == 1
+    assert output.index("Charge Control status: setup_retry") < output.index("Development dashboard ready")
+    assert client.request.call_args_list[2:] == [
+        *[call(bootstrap.ENTRY_PATH)] * 7,
+        call("/auth/token", {"action": "revoke", "token": "temporary-refresh-token"}, form=True),
+    ]
 
 
 def test_completed_onboarding_route_can_be_missing_and_token_is_revoked_on_failure(monkeypatch):
@@ -95,6 +153,35 @@ def test_completed_onboarding_route_can_be_missing_and_token_is_revoked_on_failu
     client.request.assert_called_with(
         "/auth/token", {"action": "revoke", "token": "temporary-refresh-token"}, form=True,
     )
+
+
+@pytest.mark.parametrize("readiness_error", [
+    RuntimeError("Charge Control failed to load (setup_error). Select a distinct AC grid setpoint."),
+    RuntimeError("Timed out waiting for Charge Control to load"),
+    None,
+])
+def test_revoke_failure_preserves_readiness_error(monkeypatch, capsys, readiness_error):
+    client = Mock()
+    revoke_error = HTTPError("http://localhost/auth/token", 503, "secret-revoke-detail", {}, None)
+    client.request.side_effect = [{"name": "Home Assistant"}, [], revoke_error]
+    monkeypatch.setattr(bootstrap, "authenticate", Mock(return_value="temporary-refresh-token"))
+    monkeypatch.setattr(bootstrap, "configure_integration", Mock(return_value=False))
+    monkeypatch.setattr(bootstrap, "wait_for_integration", Mock(side_effect=readiness_error))
+
+    expected = readiness_error if readiness_error is not None else revoke_error
+    with pytest.raises(type(expected)) as failure:
+        bootstrap.bootstrap(client, "dev", "password")
+
+    assert failure.value is expected
+    client.request.assert_called_with(
+        "/auth/token", {"action": "revoke", "token": "temporary-refresh-token"}, form=True,
+    )
+    output = capsys.readouterr()
+    if readiness_error is not None:
+        assert output.err == "Warning: Could not revoke the temporary Home Assistant token.\n"
+        assert "Development dashboard ready" not in output.out
+    else:
+        assert output.err == ""
 
 
 def test_readiness_timeout_is_bounded(monkeypatch):
@@ -168,7 +255,7 @@ def test_optional_solcast_failure_preserves_victron_and_revokes_token(monkeypatc
         [], {"type": "form", "step_id": "user", "flow_id": "solcast"}, failure,
         None,
     ]
-    configure = Mock()
+    configure = Mock(return_value=False)
     monkeypatch.setattr(bootstrap, "authenticate", Mock(return_value="temporary-refresh-token"))
     monkeypatch.setattr(bootstrap, "configure_integration", configure)
 
