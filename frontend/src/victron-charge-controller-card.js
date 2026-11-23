@@ -54,7 +54,7 @@ const HELP_TEXT = {
     { heading: 'Change a setting', items: [
       'Press and hold a slider knob to unlock it, then move it to the value you want. Its help dialog shows the smallest value, largest value and step size.',
       'Example: Charge Duration moves in 0.25-hour steps. A value of 1.5 h means 1 hour and 30 minutes.',
-      'Set Buy price for grid imports and Sell price for grid exports in ct/kWh. Press Enter or leave the field to save. Clear either field to use the EPEX spot price for that direction.',
+      'Set Buy price for grid imports and Sell price for grid exports in ct/kWh. Press Enter or leave the field to save. Clear either field to use the EPEX spot price with that direction�s formula.',
       'Choose a mode to decide when the controller runs. Auto chooses times by price; Manual follows your choices in the Plan card. Battery level limits and permission switches still apply.',
     ] },
     { heading: 'Understand the numbers', items: [
@@ -73,7 +73,7 @@ const HELP_TEXT = {
         'In Price and PV forecast views, each bar shows the scheduled action for one price period (today + tomorrow).',
         'Tap a Price bar to see price details for that period. The full day fits the card width. Hour blocks contain one hourly bar or four separate 15-minute columns.',
         'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
-        'Blue dashed lines in Price view show the fixed Buy and Sell prices from Settings. The lines are read-only and the bars show EPEX spot prices.',
+        'Blue dashed lines in Price view show the fixed Buy and Sell prices from Settings. The lines are read-only and discharge bars show export prices. Hover over an interval to see both rates when configured.',
       ] },
     { heading: 'Price cutoffs', items: [
       'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charge and Discharge Durations limit the selected periods; charging wins overlaps. Permissions and SOC protection still apply.',
@@ -140,7 +140,7 @@ const HELP_TEXT = {
     { heading: 'What it shows',
       items: [
         'Aggregated cost and energy statistics for the selected period.',
-        'Import cost uses Buy price and export revenue uses Sell price when set. A blank rate uses the EPEX spot price for that direction. Rate changes apply going forward.',
+        'Import cost uses Buy price and export revenue uses Sell price when set. A blank rate uses the EPEX spot price with that direction�s formula. Rate changes apply going forward.',
       ] },
     { heading: 'Navigation',
       items: [
@@ -154,9 +154,9 @@ const HELP_TEXT = {
 // Numeric limits are read from the same live entity attributes as the sliders.
 const SETTINGS_HELP = {
   fixed_prices: [
-    'History uses Buy price for electricity you import and Sell price for electricity you export. Leave either field empty to use the EPEX spot price for that direction.',
+    'History uses Buy price for electricity you import and Sell price for electricity you export. Leave either field empty to use the EPEX spot price with that direction�s formula.',
     'Example: at a Buy price of 25 ct/kWh, importing 2 kWh adds €0.50 to your cost. Enter 0 for a free rate. Negative rates are also supported.',
-    'Changes apply from the next meter reading. The Plan chart marks fixed prices with dashed blue lines. Scheduling and feed-in control use EPEX spot prices.',
+    'Changes apply from the next meter reading. The Plan chart marks fixed prices with dashed blue lines. Charging uses EPEX import prices. Discharging and feed-in control use EPEX export prices.',
   ],
   control_mode: [
     { heading: 'Off', items: ['Uses Idle Setpoint as the grid power target. It does not turn off your Victron system or stop battery use controlled by Victron.', 'Example: with Idle Setpoint at 0 W, the controller asks for no net grid import or export. This is a target, not a guarantee.'] },
@@ -275,17 +275,17 @@ const SETTINGS_HELP = {
     'A value of 0 h selects no automatic discharge. Blocked discharging hours and PV Charge periods are skipped. Changing this setting in Auto rebuilds the schedule. Discharge Allowed and battery level limits still decide whether discharge can run.',
   ],
   charge_price_threshold: [
-    'In Absolute mode, sets the highest spot price Auto may choose for grid charging, in cents per kWh (ct/kWh). A price exactly at the limit is included.',
+    'In Absolute mode, sets the highest import price Auto may choose for grid charging, in cents per kWh (ct/kWh). A price exactly at the limit is included.',
     'Example: at 10 ct/kWh, prices of 8 and 10 can be selected; 12 cannot. Auto picks the cheapest matching periods, up to Charge Duration. Raising this limit allows more periods to match.',
-    'Changing it in Auto rebuilds the schedule. Force Charge and times you choose manually or through a fixed plan do not use this price test. The comparison uses the spot price, not your full electricity bill including taxes and fees.',
+    'Changing it in Auto rebuilds the schedule. Force Charge and times you choose manually or through a fixed plan do not use this price test. The comparison includes your configured import price formula.',
   ],
   discharge_price_threshold: [
-    'In Absolute mode, sets the lowest spot price Auto may choose for discharge, in cents per kWh (ct/kWh). A price exactly at the limit is included.',
+    'In Absolute mode, sets the lowest export price Auto may choose for discharge, in cents per kWh (ct/kWh). A price exactly at the limit is included.',
     'Example: at 20 ct/kWh, prices of 20 and 25 can be selected; 18 cannot. Auto picks the highest matching prices, up to Discharge Duration. Raising this limit makes fewer periods match.',
     'Changing it in Auto rebuilds the schedule. Force Discharge and times you choose manually or through a fixed plan do not use this price test. Discharge Allowed and battery level limits still apply.',
   ],
   grid_feed_in_control: [
-    'Changes the linked Victron export limit based on the current spot price. Below Price Threshold it uses Reduced Max Feed-in. At the threshold or above, it uses Default Max Feed-in.',
+    'Changes the linked Victron export limit based on the current EPEX export price. Below Price Threshold it uses Reduced Max Feed-in. At the threshold or above, it uses Default Max Feed-in.',
     'Example: set Price Threshold to 0 ct/kWh, Default Max Feed-in to 5000 W and Reduced Max Feed-in to 0 W. A price of −1 uses the 0 W limit. A price of exactly 0 uses the 5000 W limit.',
     'During reduced feed-in, this also limits the controller’s Discharge and PV Charge export targets, and export requested by active Battery Power Control. If you turn Feed-in Control off after a reduced limit was applied, the configured default limit is restored when the linked setting is available.',
     'You need a writable maximum feed-in setting and current price data. If the price is unavailable, the controller does not send a new feed-in limit. A limit is not a request to export that amount.',
@@ -296,7 +296,7 @@ const SETTINGS_HELP = {
     'Feed-in Control must be on, the linked switch must be configured and available, and the control mode must not be Off. Turning this option off stops changing the linked switch; it does not put the switch back to its previous state.',
   ],
   grid_feed_in_price_threshold: [
-    'Sets the spot price at which Feed-in Control changes between the normal and reduced export limits. Prices below this value use Reduced Max Feed-in. Prices equal to or above it use Default Max Feed-in.',
+    'Sets the export price at which Feed-in Control changes between the normal and reduced export limits. Prices below this value use Reduced Max Feed-in. Prices equal to or above it use Default Max Feed-in.',
     'Example: with a threshold of 2 ct/kWh, a price of 1.9 uses the reduced limit. A price of exactly 2 uses the default limit.',
     'This only works while Feed-in Control is on. It also decides when the optional DC-coupled feed-in switch is turned on or off.',
   ],
@@ -1641,10 +1641,21 @@ class VictronChargeControllerCard extends LitElement {
       </div>`;
   }
 
+  _currentPricesLabel() {
+    const sensor = this._state('sensor', 'current_price');
+    const attrs = sensor?.attributes;
+    const format = rate => Number.isFinite(rate) ? `${(rate * 100).toFixed(2)} ct/kWh` : '—';
+    if (attrs && 'import_price_eur_per_kwh' in attrs) {
+      const buy = attrs.import_price_eur_per_kwh;
+      const sell = attrs.export_price_eur_per_kwh;
+      return buy === sell ? format(buy) : `Buy ${format(buy)} · Sell ${format(sell)}`;
+    }
+    return format(parseFloat(sensor?.state));
+  }
+
   _renderModeSection(showStatus = false) {
     const mode     = this._val('select', 'control_mode');
     const disabled = !CONTROL_MODES.includes(mode);
-    const spotPrice = this._val('sensor', 'current_price');
 
     return html`
       <!-- Mode & Status -->
@@ -1669,7 +1680,7 @@ class VictronChargeControllerCard extends LitElement {
         ${showStatus ? html`<div class="status-row">
           <div class="status-item">
             <ha-icon icon="mdi:currency-eur"></ha-icon>
-            <span>${spotPrice != null && spotPrice !== 'unavailable' && spotPrice !== 'unknown' ? `${(parseFloat(spotPrice) * 100).toFixed(2)} ct/kWh` : '—'}</span>
+            <span>${this._currentPricesLabel()}</span>
           </div>
         </div>
         ` : nothing}
@@ -2082,7 +2093,13 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _hourPriceDetails(group) {
-    return group.entries.map(entry => `${this._periodLabel(entry)} · Price: ${entry.price == null ? 'unavailable' : `${Number(entry.price).toFixed(2)} ct/kWh`}`);
+    const format = price => price == null ? 'unavailable' : `${Number(price).toFixed(2)} ct/kWh`;
+    return group.entries.map(entry => {
+      const prices = 'export_price' in entry
+        ? `Buy ${format(entry.import_price)} · Sell ${format(entry.export_price)}`
+        : `Price: ${format(entry.price)}`;
+      return `${this._periodLabel(entry)} · ${prices}`;
+    });
   }
 
   _renderHourTooltip(chartId, groups, details = group => this._hourPriceDetails(group)) {
@@ -3239,7 +3256,7 @@ class VictronChargeControllerCard extends LitElement {
     }
 
     const { todayDate, tomorrowDate, today, tomorrow, tariffs, scaleMin, scaleMax } = chart;
-    const currentPrice = this._val('sensor', 'current_price');
+    const currentPrice = this._currentPricesLabel();
     const todayPlan = this._enrichPlanDisplayState(today);
     const tomorrowPlan = this._enrichPlanDisplayState(tomorrow);
 
@@ -3277,10 +3294,10 @@ class VictronChargeControllerCard extends LitElement {
       <div class="plan-chart-container">
         <div class="plan-toolbar">
           <div class="plan-toolbar-left">
-            ${currentPrice != null && currentPrice !== 'unavailable' && currentPrice !== 'unknown' ? html`
+            ${currentPrice !== '—' ? html`
               <div class="plan-current-price">
                 <ha-icon icon="mdi:currency-eur"></ha-icon>
-                <span><strong>${(parseFloat(currentPrice) * 100).toFixed(2)} ct/kWh</strong></span>
+                <span><strong>${currentPrice}</strong></span>
               </div>
             ` : nothing}
           </div>

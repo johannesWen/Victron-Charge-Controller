@@ -48,6 +48,16 @@ function binding(node, name) {
 const modes = templates => templates.filter(node => node.strings.join('').includes('class="mode-btn '));
 const switches = templates => templates.filter(node => node.strings.join('').includes('class="toggle-pair-item"'));
 
+test('directional price labels show signed ct/kWh and unavailable rates', () => {
+  const { card, states, prefix } = setup();
+  const sensor = states[`sensor.${prefix}_current_price`];
+  assert.equal(card._currentPricesLabel(), '10.00 ct/kWh');
+  sensor.attributes = { import_price_eur_per_kwh: 0, export_price_eur_per_kwh: -0.02 };
+  assert.equal(card._currentPricesLabel(), 'Buy 0.00 ct/kWh · Sell -2.00 ct/kWh');
+  const [detail] = card._hourPriceDetails({ entries: [{ hour: 10, import_price: 0, export_price: null }] });
+  assert.match(detail, /Buy 0.00 ct\/kWh · Sell unavailable/);
+});
+
 for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
   test(`Settings Disable Discharge binds ${state} state and the configured prefix`, () => {
     const { card, templates, calls, states, prefix } = setup();

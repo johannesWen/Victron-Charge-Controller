@@ -484,7 +484,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("20"),
         }.get(eid)
 
-        coord._update_cost_tracking(0.25)
+        coord._update_cost_tracking(0.25, 0.25)
 
         assert coord.last_grid_consumption_kwh == 100
         assert coord.last_grid_feed_in_kwh == 20
@@ -502,7 +502,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("21.5"),
         }.get(eid)
 
-        coord._update_cost_tracking(0.20)
+        coord._update_cost_tracking(0.20, 0.20)
 
         assert coord.grid_energy_cost == pytest.approx(1.4)
         assert coord.grid_energy_revenue == pytest.approx(2.3)
@@ -518,7 +518,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("unknown"),
         }.get(eid)
 
-        coord._update_cost_tracking(-0.10)
+        coord._update_cost_tracking(-0.10, -0.10)
 
         assert coord.grid_energy_cost == pytest.approx(0.0)
         assert coord.grid_energy_revenue == pytest.approx(1.1)
@@ -532,7 +532,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("21"),
         }.get(eid)
 
-        coord._update_cost_tracking(0.20)
+        coord._update_cost_tracking(0.20, 0.20)
 
         assert coord.grid_energy_cost == pytest.approx(0.20)
         assert coord.grid_energy_revenue == pytest.approx(0.20)
@@ -542,7 +542,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("22"),
         }.get(eid)
 
-        coord._update_cost_tracking(-0.10)
+        coord._update_cost_tracking(-0.10, -0.10)
 
         assert coord.grid_energy_cost == pytest.approx(0.30)
         assert coord.grid_energy_revenue == pytest.approx(0.30)
@@ -556,7 +556,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("unknown"),
         }.get(eid)
 
-        coord._update_cost_tracking(0.30)
+        coord._update_cost_tracking(0.30, 0.30)
 
         assert coord.grid_energy_cost == 5.0
         assert coord.last_grid_consumption_kwh == 2
@@ -569,7 +569,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("unknown"),
         }.get(eid)
 
-        coord._update_cost_tracking(None)
+        coord._update_cost_tracking(None, None)
 
         assert coord.grid_energy_cost == 0.0
         assert coord.grid_energy_import == pytest.approx(1.0)
@@ -593,11 +593,11 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("20"),
         }
         coord.hass.states.get.side_effect = meters.get
-        coord._update_cost_tracking(epex)
+        coord._update_cost_tracking(epex, epex)
         meters["sensor.grid_consumption_kwh"].state = "102"
         meters["sensor.grid_feed_in_kwh"].state = "21"
 
-        coord._update_cost_tracking(epex)
+        coord._update_cost_tracking(epex, epex)
         assert coord.grid_energy_cost == pytest.approx(cost)
         assert coord.grid_energy_revenue == pytest.approx(revenue)
         assert coord.grid_energy_import == 2
@@ -613,7 +613,7 @@ class TestCostTracking:
             "sensor.grid_feed_in_kwh": MockState("unknown"),
         }.get(eid)
 
-        coord._update_cost_tracking(0.30)
+        coord._update_cost_tracking(0.30, 0.30)
 
         assert coord.grid_energy_cost == 0.0
         assert coord.last_grid_consumption_kwh == 100
@@ -628,7 +628,7 @@ class TestCostTracking:
                 "sensor.grid_consumption_kwh": MockState(imported),
                 "sensor.grid_feed_in_kwh": MockState(exported),
             }.get
-            coord._update_cost_tracking(None)
+            coord._update_cost_tracking(None, None)
             return (
                 coord.grid_energy_cost, coord.grid_energy_revenue,
                 coord.grid_energy_import, coord.grid_energy_export,
@@ -2882,7 +2882,7 @@ class TestPlanPersistenceSave:
             )})
 
             def states_get(entity_id):
-                if entity_id == coordinator._epex_spot_entity:
+                if entity_id == coordinator.epex_spot_entity:
                     return epex_state
                 return MockState("50")  # battery SOC
 

@@ -34,7 +34,7 @@ def start_hass(tmp_path, monkeypatch):
     )
 
     @asynccontextmanager
-    async def start(import_kwh, export_kwh, price):
+    async def start(import_kwh, export_kwh, price, *, pricing=None, sell_back=None):
         hass = HomeAssistant(str(tmp_path))
         hass.config.skip_pip = True
         loader.async_setup(hass)
@@ -46,9 +46,12 @@ def start_hass(tmp_path, monkeypatch):
         hass.states.async_set("sensor.battery_soc", "50")
         hass.states.async_set("number.grid_setpoint", "0")
         hass.states.async_set("number.ac_grid_setpoint", "0")
+        hass.states.async_set("number.max_grid_feed_in", "5000")
         hass.states.async_set("sensor.grid_consumption_kwh", str(import_kwh))
         hass.states.async_set("sensor.grid_feed_in_kwh", str(export_kwh))
         hass.states.async_set("sensor.epex_spot", price, {"unit_of_measurement": "ct/kWh"})
+        if sell_back is not None:
+            hass.states.async_set("sensor.sell_back", sell_back, {"unit_of_measurement": "EUR/kWh"})
 
         async def set_number(call):
             hass.states.async_set(call.data["entity_id"], str(call.data["value"]))
@@ -57,7 +60,15 @@ def start_hass(tmp_path, monkeypatch):
         hass.services.async_register("number", "set_value", set_number)
         entry = None
         try:
-            if not hass.config_entries.async_entries(DOMAIN):
+            if pricing is not None:
+                flow = hass.config_entries.flow
+                form = await flow.async_init(DOMAIN, context={"source": "user"})
+                result = await flow.async_configure(form["flow_id"], {
+                    **MOCK_CONFIG_DATA_WITH_COST, **pricing,
+                })
+                assert result["type"] == "create_entry"
+                entry = result["result"]
+            elif not hass.config_entries.async_entries(DOMAIN):
                 entry = ConfigEntry(
                     domain=DOMAIN, title="Victron Charge Control",
                     data=MOCK_CONFIG_DATA_WITH_COST, options={"use_solcast_forecast": False},
@@ -87,6 +98,42 @@ def _history(hass):
         float(hass.states.get(f"sensor.victron_charge_control_grid_energy_{suffix}").state)
         for suffix in ("cost", "revenue", "import", "export")
     )
+
+
+async def test_same_market_input_values_import_and_export_independently(start_hass):
+    pricing = {"import_price_formula": "(price + 10 + 2) * 1.21"}
+    async with start_hass(100, 20, "8", pricing=pricing) as (hass, coordinator):
+        hass.states.async_set("sensor.grid_consumption_kwh", "101")
+        hass.states.async_set("sensor.grid_feed_in_kwh", "21")
+        await coordinator.async_refresh()
+        assert _history(hass) == pytest.approx((0.242, 0.08, 1, 1))
+        rates = hass.states.get("sensor.victron_charge_control_current_price").attributes
+        assert rates["import_price_eur_per_kwh"] == pytest.approx(0.242)
+        assert rates["export_price_eur_per_kwh"] == pytest.approx(0.08)
+
+        hass.states.async_set("sensor.epex_spot", "-0.02", {"unit_of_measurement": "EUR/kWh"})
+        hass.states.async_set("sensor.grid_consumption_kwh", "102")
+        hass.states.async_set("sensor.grid_feed_in_kwh", "22")
+        await coordinator.async_refresh()
+        # Negative export adds to gross cost, alongside the adjusted import price.
+        assert _history(hass) == pytest.approx((0.242 + 0.121 + 0.02, 0.08, 2, 2))
+
+
+async def test_second_epex_entry_and_fixed_buy_override(start_hass):
+    pricing = {"epex_export_entity": "sensor.sell_back", "export_price_formula": "price / 2"}
+    async with start_hass(100, 20, "30", pricing=pricing, sell_back="0.08") as (hass, coordinator):
+        await hass.services.async_call("text", "set_value", {
+            "entity_id": "text.victron_charge_control_buy_price", "value": "0",
+        }, blocking=True)
+        hass.states.async_set("sensor.grid_consumption_kwh", "101")
+        hass.states.async_set("sensor.grid_feed_in_kwh", "21")
+        await coordinator.async_refresh()
+        assert _history(hass) == pytest.approx((0, 0.04, 1, 1))
+        hass.states.async_set("sensor.sell_back", "unavailable")
+        hass.states.async_set("sensor.grid_feed_in_kwh", "22")
+        await coordinator.async_refresh()
+        assert _history(hass) == pytest.approx((0, 0.04, 1, 2))
+        assert coordinator.data.export_price_eur_per_kwh is None
 
 
 async def test_history_tariffs_apply_to_new_deltas_and_survive_restart(start_hass, monkeypatch):

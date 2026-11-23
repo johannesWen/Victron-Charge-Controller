@@ -194,6 +194,38 @@ async def test_power_limit_validation_in_real_options_flow(flow_hass, key, value
         reload.assert_not_called()
 
 
+@pytest.mark.parametrize("route", ["options", "reconfigure"])
+async def test_edit_and_clear_epex_pricing(flow_hass, route):
+    hass, _ = flow_hass
+    entry = ConfigEntry(
+        domain=DOMAIN, title="Victron Charge Control", data=MOCK_CONFIG_DATA, options={},
+        version=1, minor_version=1, source="user", unique_id=DOMAIN,
+        discovery_keys=MappingProxyType({}), subentries_data=None,
+    )
+    await hass.config_entries.async_add(entry)
+    hass.states.async_set("sensor.sell_back", "0")
+    manager = hass.config_entries.options if route == "options" else hass.config_entries.flow
+
+    async def open_form():
+        if route == "options":
+            return await manager.async_init(entry.entry_id)
+        return await manager.async_init(DOMAIN, context={"source": route, "entry_id": entry.entry_id})
+
+    form = await open_form()
+    settings = {**MOCK_CONFIG_DATA, "epex_export_entity": "sensor.sell_back",
+                "import_price_formula": "price * 1.21", "export_price_formula": "price - 2"}
+    invalid = await manager.async_configure(form["flow_id"], {**settings, "export_price_formula": "round(price)"})
+    assert invalid["errors"] == {"export_price_formula": "invalid_price_formula"}
+    assert entry.data == MOCK_CONFIG_DATA
+    await manager.async_configure(form["flow_id"], settings)
+    await hass.async_block_till_done()
+    assert entry.data == settings
+    form = await open_form()
+    await manager.async_configure(form["flow_id"], dict(MOCK_CONFIG_DATA))
+    await hass.async_block_till_done()
+    assert entry.data == MOCK_CONFIG_DATA
+
+
 class TestConfigFlow:
     """Tests for the initial config flow."""
 
@@ -433,6 +465,7 @@ class TestOptionsFlow:
             CONF_GRID_CONSUMER_ENTITY: "sensor.consumer",
             "max_discharge_power_entity": "number.max_discharge_power",
             "battery_power_entity": "sensor.battery_power",
+            "epex_export_entity": "sensor.epex_export",
         }
         options_flow.hass.states.get.return_value = MockState("50", {"device_class": "power", "unit_of_measurement": "W"})
         options_flow._config_entry.data = {**configured, "unrelated_setting": "preserved"}

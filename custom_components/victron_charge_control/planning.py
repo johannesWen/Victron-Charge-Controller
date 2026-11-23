@@ -9,7 +9,7 @@ from typing import Any
 from homeassistant.util import dt as dt_util
 
 from .const import MODE_AUTO
-from .epex import normalize_price_intervals, price_reference_bounds
+from .epex import PriceInterval
 from .schedule import ScheduleSlot, overlaps, sort_slots
 
 
@@ -22,9 +22,9 @@ def valid_duration(hours: Any) -> bool:
 
 
 def calculate_auto_schedule(
-    hass: Any,
     *,
-    epex_spot_entity: str,
+    import_prices: list[PriceInterval],
+    export_prices: list[PriceInterval],
     control_mode: str,
     cheapest_hours: float,
     expensive_hours: float,
@@ -39,19 +39,18 @@ def calculate_auto_schedule(
     """Select whole source periods within budgets and absolute or relative cutoffs."""
     if control_mode != MODE_AUTO:
         return None
-    state = hass.states.get(epex_spot_entity)
-    if state is None or state.state in ("unavailable", "unknown"):
-        return None
-    prices = [item for item in normalize_price_intervals(state.attributes)
-              if item.end > now.astimezone(timezone.utc)]
-    if not prices:
+    instant = now.astimezone(timezone.utc)
+    import_prices = [item for item in import_prices if item.end > instant]
+    export_prices = [item for item in export_prices if item.end > instant]
+    if not import_prices and not export_prices:
         return None
     if relative_auto_mode:
-        minimum, maximum = price_reference_bounds(prices, now)
-        charge_price_threshold = maximum - charge_price_threshold
-        discharge_price_threshold = minimum + discharge_price_threshold
+        if import_prices:
+            charge_price_threshold = max(item.price for item in import_prices) - charge_price_threshold
+        if export_prices:
+            discharge_price_threshold += min(item.price for item in export_prices)
 
-    def select(hours, blocked, threshold, discharge=False):
+    def select(prices, hours, blocked, threshold, discharge=False):
         if not valid_duration(hours):
             return []
         remaining = hours * 3600
@@ -75,8 +74,10 @@ def calculate_auto_schedule(
             remaining -= duration
         return selected
 
-    charge = select(cheapest_hours, blocked_charging_hours, charge_price_threshold)
-    discharge = select(expensive_hours, blocked_discharging_hours, discharge_price_threshold, True)
+    charge = select(import_prices, cheapest_hours, blocked_charging_hours, charge_price_threshold)
+    discharge = select(export_prices, expensive_hours, blocked_discharging_hours, discharge_price_threshold, True)
     if relative_auto_mode:
-        return sort_slots(charge), sort_slots([slot for slot in discharge if slot not in charge])
-    return sort_slots([slot for slot in charge if slot not in discharge]), sort_slots(discharge)
+        discharge = [slot for slot in discharge if not any(overlaps(slot, other) for other in charge)]
+    else:
+        charge = [slot for slot in charge if not any(overlaps(slot, other) for other in discharge)]
+    return sort_slots(charge), sort_slots(discharge)

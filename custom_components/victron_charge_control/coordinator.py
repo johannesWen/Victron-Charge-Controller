@@ -38,6 +38,9 @@ from .const import (
     CONF_BUY_PRICE,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
+    CONF_EPEX_EXPORT_ENTITY,
+    CONF_IMPORT_PRICE_FORMULA,
+    CONF_EXPORT_PRICE_FORMULA,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -85,13 +88,13 @@ from .const import (
 
 from .solar import sample_solar_surplus
 from .epex import (
+    EpexSource,
+    PriceInterval,
     extract_price_ct,
     find_epex_data,
     get_battery_soc,
-    get_current_price_ct,
     get_entity_float,
     normalize_price_eur_per_kwh,
-    normalize_price_intervals,
     parse_epex_start_time,
     price_reference_bounds,
     price_timeline,
@@ -165,6 +168,7 @@ class EpexPriceView:
     prices_tomorrow: list[dict[str, Any]]
     price_reference_min: float | None = None
     price_reference_max: float | None = None
+    export_eur_per_kwh: float | None = None
 
 
 @dataclass
@@ -194,6 +198,7 @@ class ChargeControlData:
     grid_energy_import: float | None = None
     grid_energy_export: float | None = None
     current_price_eur_per_kwh: float | None = None
+    export_price_eur_per_kwh: float | None = None
     last_schedule_update: datetime | None = None
     last_cost_update: datetime | None = None
     solar_surplus_mean: float | None = None
@@ -231,7 +236,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._battery_soc_entity: str = entry.data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity: str = entry.data[CONF_GRID_SETPOINT_ENTITY]
         self._ac_grid_setpoint_entity: str = entry.data[CONF_AC_GRID_SETPOINT_ENTITY]
-        self._epex_spot_entity: str = entry.data[CONF_EPEX_SPOT_ENTITY]
+        self._set_price_sources(entry.data)
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
         self._max_discharge_power_entity: str | None = entry.data.get(
             CONF_MAX_DISCHARGE_POWER_ENTITY
@@ -711,7 +716,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     @property
     def epex_spot_entity(self) -> str:
-        return self._epex_spot_entity
+        return self._import_source.entity_id
 
     @property
     def max_grid_feed_in_entity(self) -> str:
@@ -801,7 +806,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._battery_soc_entity = data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity = data[CONF_GRID_SETPOINT_ENTITY]
         self._ac_grid_setpoint_entity = data[CONF_AC_GRID_SETPOINT_ENTITY]
-        self._epex_spot_entity = data[CONF_EPEX_SPOT_ENTITY]
+        self._set_price_sources(data)
         self._max_grid_feed_in_entity = data[CONF_MAX_GRID_FEED_IN_ENTITY]
         discharge_entity = data.get(CONF_MAX_DISCHARGE_POWER_ENTITY) or None
         if discharge_entity != self._max_discharge_power_entity:
@@ -1330,11 +1335,24 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             for previous, edited in zip(base, current)
         )
 
+    def _set_price_sources(self, data: dict[str, Any]) -> None:
+        self._import_source = EpexSource(
+            data[CONF_EPEX_SPOT_ENTITY], data.get(CONF_IMPORT_PRICE_FORMULA) or "",
+        )
+        self._export_source = EpexSource(
+            data.get(CONF_EPEX_EXPORT_ENTITY) or self._import_source.entity_id,
+            data.get(CONF_EXPORT_PRICE_FORMULA) or "",
+        )
+
+    def _price_intervals(self) -> tuple[list[PriceInterval], list[PriceInterval]]:
+        buy = self._import_source.intervals(self.hass)
+        if self._export_source == self._import_source:
+            return buy, buy
+        return buy, self._export_source.intervals(self.hass)
+
     def _source_slots(self) -> list[ScheduleSlot]:
-        state = self.hass.states.get(self._epex_spot_entity)
-        if state is None or state.state in ("unavailable", "unknown"):
-            return []
-        return [item.slot for item in normalize_price_intervals(state.attributes)]
+        buy, sell = self._price_intervals()
+        return sort_slots([item.slot for item in buy + sell])
 
     def set_slot_action(self, start_time: str, action: str) -> None:
         """Edit one published priced interval by instant, with no invalid side effects."""
@@ -1559,9 +1577,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._fixed_plan_base_snapshot[2]
             if self._fixed_plan_base_snapshot is not None else self._pv_charge_hours
         )
+        import_prices, export_prices = self._price_intervals()
         result = planning_calculate_auto_schedule(
-            self.hass,
-            epex_spot_entity=self._epex_spot_entity,
+            import_prices=import_prices,
+            export_prices=export_prices,
             control_mode=self.control_mode,
             cheapest_hours=self.cheapest_hours,
             expensive_hours=self.expensive_hours,
@@ -1611,7 +1630,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         setpoint, so the PV-Charge/Discharge setpoints can be clamped to
         the active feed-in limit in the same tick.
         """
-        return get_current_price_ct(self.hass, self._epex_spot_entity)
+        return self._export_source.current_ct(self.hass)
 
     def _get_entity_float(self, entity_id: str | None) -> float | None:
         """Read a numeric entity state, returning None when unavailable or invalid."""
@@ -1631,7 +1650,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return True, delta
         return False, None
 
-    def _update_cost_tracking(self, current_price_eur_per_kwh: float | None) -> None:
+    def _update_cost_tracking(self, import_eur: float | None, export_eur: float | None) -> None:
         """Update cumulative grid energy costs, revenue, and kWh import/export."""
         updated_consumption, consumption_delta_kwh = self._read_meter_delta(
             entity_id=self._grid_consumption_entity,
@@ -1649,8 +1668,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             accumulate_cost_tracking(
                 consumption_delta_kwh=consumption_delta_kwh,
                 feed_in_delta_kwh=feed_in_delta_kwh,
-                buy_price=current_price_eur_per_kwh if buy_price is None else buy_price,
-                sell_price=current_price_eur_per_kwh if sell_price is None else sell_price,
+                buy_price=import_eur if buy_price is None else buy_price,
+                sell_price=export_eur if sell_price is None else sell_price,
                 cost=self._grid_energy_cost,
                 revenue=self._grid_energy_revenue,
                 import_kwh=self._grid_energy_import,
@@ -2114,7 +2133,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         if self._shutdown_requested:
             return self.data
         if self._accounting_ready:
-            self._update_cost_tracking(price_view.eur_per_kwh)
+            self._update_cost_tracking(price_view.eur_per_kwh, price_view.export_eur_per_kwh)
         return self._build_snapshot(
             action=action,
             setpoint=setpoint,
@@ -2305,12 +2324,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def _step_load_epex_view(self) -> EpexPriceView:
         """Read the EPEX state and assemble the today/tomorrow price lists."""
-        epex_state = self.hass.states.get(self._epex_spot_entity)
+        epex_state = self.hass.states.get(self.epex_spot_entity)
         current_price: float | None = None
-        current_price_eur_per_kwh: float | None = None
         epex_attributes: dict[str, Any] = {}
-        prices_today: list[dict[str, Any]] = []
-        prices_tomorrow: list[dict[str, Any]] = []
         if epex_state is not None and epex_state.state not in (
             "unavailable",
             "unknown",
@@ -2321,21 +2337,22 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             except (ValueError, TypeError):
                 pass
             epex_attributes = dict(epex_state.attributes)
-            current_price_eur_per_kwh = self._normalize_price_eur_per_kwh(
-                epex_state.state, epex_attributes
-            )
-        intervals = normalize_price_intervals(epex_attributes)
+        buy_ct = self._import_source.current_ct(self.hass)
+        same_source = self._import_source == self._export_source
+        sell_ct = buy_ct if same_source else self._export_source.current_ct(self.hass)
+        buy, sell = self._price_intervals()
         now = dt_util.now()
-        reference_min, reference_max = price_reference_bounds(intervals, now)
+        _, reference_max = price_reference_bounds(buy, now)
+        reference_min, _ = price_reference_bounds(sell, now)
         schedule = self._charge_hours + self._discharge_hours + self._pv_charge_hours
-        prices_today = price_timeline(intervals, now.date().isoformat(), schedule)
-        prices_tomorrow = price_timeline(intervals, (now + timedelta(days=1)).date().isoformat(), schedule)
+        export_intervals = None if same_source else sell
         return EpexPriceView(
             current_price=current_price,
-            eur_per_kwh=current_price_eur_per_kwh,
+            eur_per_kwh=buy_ct / 100 if buy_ct is not None else None,
+            export_eur_per_kwh=sell_ct / 100 if sell_ct is not None else None,
             attributes=epex_attributes,
-            prices_today=prices_today,
-            prices_tomorrow=prices_tomorrow,
+            prices_today=price_timeline(buy, now.date().isoformat(), schedule, export_intervals),
+            prices_tomorrow=price_timeline(buy, (now + timedelta(days=1)).date().isoformat(), schedule, export_intervals),
             price_reference_min=reference_min,
             price_reference_max=reference_max,
         )
@@ -2394,6 +2411,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             grid_energy_import=self.grid_energy_import,
             grid_energy_export=self.grid_energy_export,
             current_price_eur_per_kwh=price_view.eur_per_kwh,
+            export_price_eur_per_kwh=price_view.export_eur_per_kwh,
             last_schedule_update=self._last_schedule_update,
             last_cost_update=self._last_cost_update,
             solar_surplus_mean=self._solar_surplus_mean,
@@ -2413,8 +2431,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._battery_soc_entity,
             self._grid_setpoint_entity,
             self._ac_grid_setpoint_entity,
-            self._epex_spot_entity,
+            self.epex_spot_entity,
         ]
+        if self._export_source.entity_id != self.epex_spot_entity:
+            entities_to_watch.append(self._export_source.entity_id)
         if self._grid_consumption_entity is not None:
             entities_to_watch.append(self._grid_consumption_entity)
         if self._grid_feed_in_energy_entity is not None:

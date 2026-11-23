@@ -22,6 +22,9 @@ from .const import (
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
+    CONF_EPEX_EXPORT_ENTITY,
+    CONF_IMPORT_PRICE_FORMULA,
+    CONF_EXPORT_PRICE_FORMULA,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -38,6 +41,7 @@ from .const import (
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
 )
+from .price_formula import parse_formula
 
 REQUIRED_ENTITY_KEYS = (
     CONF_AC_GRID_SETPOINT_ENTITY,
@@ -48,6 +52,7 @@ REQUIRED_ENTITY_KEYS = (
 )
 
 OPTIONAL_ENTITY_KEYS = (
+    CONF_EPEX_EXPORT_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
     CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
@@ -56,6 +61,22 @@ OPTIONAL_ENTITY_KEYS = (
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
 )
+
+FORMULA_KEYS = (CONF_IMPORT_PRICE_FORMULA, CONF_EXPORT_PRICE_FORMULA)
+OPTIONAL_DATA_KEYS = OPTIONAL_ENTITY_KEYS + FORMULA_KEYS
+
+
+def _pricing_fields(current: dict[str, Any]) -> dict:
+    fields = {
+        CONF_EPEX_EXPORT_ENTITY: selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor"),
+        ),
+        **{key: selector.TextSelector() for key in FORMULA_KEYS},
+    }
+    return {
+        vol.Optional(key, description={"suggested_value": current.get(key)}): field
+        for key, field in fields.items()
+    }
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -71,6 +92,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_EPEX_SPOT_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor"),
         ),
+        **_pricing_fields({}),
         vol.Required(CONF_MAX_GRID_FEED_IN_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="number"),
         ),
@@ -104,13 +126,18 @@ def _clean_entity_data(user_input: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in user_input.items()
-        if key not in OPTIONAL_ENTITY_KEYS or value not in (None, "")
+        if key not in OPTIONAL_DATA_KEYS or value not in (None, "")
     }
 
 
 def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
     """Validate required entities and optional entities when configured."""
     errors: dict[str, str] = {}
+    for key in FORMULA_KEYS:
+        try:
+            parse_formula(user_input.get(key) or "")
+        except (TypeError, ValueError):
+            errors[key] = "invalid_price_formula"
     for key in REQUIRED_ENTITY_KEYS:
         entity_id = user_input.get(key)
         state = hass.states.get(entity_id) if entity_id else None
@@ -170,7 +197,7 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             data = _clean_entity_data({
-                **{key: value for key, value in entry.data.items() if key not in OPTIONAL_ENTITY_KEYS},
+                **{key: value for key, value in entry.data.items() if key not in OPTIONAL_DATA_KEYS},
                 **user_input,
             })
             errors = _validate_entities(self.hass, data)
@@ -214,7 +241,7 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(STEP_USER_DATA_SCHEMA, user_input or {}),
             errors=errors,
         )
 
@@ -268,7 +295,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 current_data = {
                     key: value
                     for key, value in self._config_entry.data.items()
-                    if key not in OPTIONAL_ENTITY_KEYS
+                    if key not in OPTIONAL_DATA_KEYS
                 }
                 options = {
                     **self._config_entry.options,
@@ -325,6 +352,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor"),
                 ),
+                **_pricing_fields(current),
                 vol.Required(
                     CONF_MAX_GRID_FEED_IN_ENTITY,
                     default=current.get(CONF_MAX_GRID_FEED_IN_ENTITY, ""),
