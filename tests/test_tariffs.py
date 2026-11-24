@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import timedelta
@@ -15,11 +16,12 @@ import pytest
 from homeassistant import auth, loader
 from homeassistant.bootstrap import async_load_base_functionality
 from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigEntryState
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreStateData
+from homeassistant.helpers.storage import Store
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
@@ -45,7 +47,9 @@ def start_hass(tmp_path, monkeypatch, unused_tcp_port):
     )
 
     @asynccontextmanager
-    async def start(import_kwh, export_kwh, price, *, pricing=None, sell_back=None, with_intervals=False):
+    async def start(
+        import_kwh, export_kwh, price, *, pricing=None, sell_back=None, with_intervals=False, max_discharge_power=-1,
+    ):
         hass = HomeAssistant(str(tmp_path))
         hass.config.skip_pip = True
         loader.async_setup(hass)
@@ -58,7 +62,7 @@ def start_hass(tmp_path, monkeypatch, unused_tcp_port):
         hass.states.async_set("number.grid_setpoint", "0")
         hass.states.async_set("number.ac_grid_setpoint", "0")
         hass.states.async_set("number.max_grid_feed_in", "5000")
-        hass.states.async_set("number.max_discharge_power", "-1")
+        hass.states.async_set("number.max_discharge_power", str(max_discharge_power))
         hass.states.async_set("sensor.grid_consumption_kwh", str(import_kwh))
         hass.states.async_set("sensor.grid_feed_in_kwh", str(export_kwh))
         hass.states.async_set("sensor.epex_spot", price, {"unit_of_measurement": "ct/kWh"})
@@ -101,10 +105,11 @@ def start_hass(tmp_path, monkeypatch, unused_tcp_port):
             await coordinator.async_refresh()
             yield hass, coordinator
         finally:
-            if entry is not None and entry.state is ConfigEntryState.LOADED:
-                await RestoreStateData.async_save_persistent_states(hass)
-                await hass.config_entries.async_unload(entry.entry_id)
-            await hass.async_stop(force=True)
+            if hass.state is not CoreState.stopped:
+                if entry is not None and entry.state is ConfigEntryState.LOADED:
+                    await RestoreStateData.async_save_persistent_states(hass)
+                    await hass.config_entries.async_unload(entry.entry_id)
+                await hass.async_stop(force=True)
 
     return start
 
@@ -530,6 +535,77 @@ async def test_tariff_edits_queued_behind_another_store_writer(start_hass, mock_
         await hass.async_block_till_done()
         assert writes == ["-2"]
         assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+
+
+@pytest.mark.parametrize(("held", "cleanup_fails"), [(False, False), (True, False), (True, True)])
+async def test_ha_stop_during_tariff_write_preserves_discharge_ownership(start_hass, monkeypatch, held, cleanup_fails):
+    ram = "number.ac_grid_setpoint"
+    limit = "number.max_discharge_power"
+    marker = "discharge_release_entity"
+    monkeypatch.setattr("custom_components.victron_charge_control.coordinator.Store", Store)
+    pricing = {"max_discharge_power_entity": limit, "import_price_formula": "5" if held else "25"}
+    async with start_hass(100, 20, "5", pricing=pricing, max_discharge_power=800) as (hass, coordinator):
+        hour = dt_util.now().replace(minute=0, second=0, microsecond=0)
+        hass.states.async_set("sensor.epex_spot", "5", {
+            "unit_of_measurement": "ct/kWh",
+            "data": [{"start_time": hour.isoformat(), "price_ct_per_kwh": 5}],
+        })
+        await set_tariff(hass, "text.victron_charge_control_blocked_charging_hours", "")
+        coordinator.action_confirm_seconds = 0
+        await hass.services.async_call("switch", "turn_on", {
+            "entity_id": "switch.victron_charge_control_disable_discharge",
+        }, blocking=True)
+        await select_mode(hass, "auto")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert float(hass.states.get(limit).state) == (0 if held else 800)
+
+        started, release, idle = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        written = []
+        store = coordinator._store
+        write = store._async_write_data
+
+        async def stall_write(data):
+            written.append(data["data"][marker])
+            started.set()
+            await release.wait()
+            if held and data["data"][marker] is None:
+                assert hass.state is CoreState.final_write
+                if cleanup_fails:
+                    return
+            await write(data)
+
+        monkeypatch.setattr(store, "_async_write_data", stall_write)
+        try:
+            await set_tariff(hass, BUY, "1")
+            await asyncio.wait_for(started.wait(), 2)
+            await coordinator.async_refresh()
+            assert float(hass.states.get(ram).state) == 3000
+            assert float(hass.states.get(limit).state) == (0 if held else 800)
+
+            @callback
+            def observe_ram(event):
+                if float(event.data["new_state"].state) == 0:
+                    idle.set()
+
+            async_track_state_change_event(hass, [ram], observe_ram)
+            stop = asyncio.create_task(hass.async_stop(force=True))
+            await asyncio.wait_for(idle.wait(), 3)
+            assert float(hass.states.get(limit).state) == (-1 if held else 800)
+            assert not stop.done()
+        finally:
+            release.set()
+        await asyncio.wait_for(stop, 5)
+        if not held:
+            assert limit not in written
+        expected_marker = limit if cleanup_fails else None
+        assert json.loads(Path(store.path).read_text())["data"][marker] == expected_marker
+        assert coordinator._discharge_release_entity == expected_marker
+
+    # Boot after the Charge window. Only a failed durable cleanup should replay a release.
+    monkeypatch.setattr(dt_util, "now", lambda time_zone=None: (hour + timedelta(hours=2)).astimezone(time_zone))
+    async with start_hass(100, 20, "5", max_discharge_power=800) as (hass, _):
+        assert float(hass.states.get(limit).state) == (-1 if cleanup_fails else 800)
 
 
 @pytest.mark.parametrize("discharge_limit", ["unused", "held", "new_hold"])

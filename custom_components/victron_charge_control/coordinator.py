@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import (
@@ -1595,12 +1595,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def _tariff_save_in_progress(self) -> bool:
         return self._tariff_save_task is not None and not self._tariff_save_task.done()
 
-    async def _async_save_discharge_obligation(self) -> bool:
+    def _defer_discharge_save(self) -> bool:
         """Keep the previous release marker until storage is available for verification."""
         if self._tariff_save_request is not None or self._tariff_save_in_progress():
             self._discharge_save_deferred = True
-            return False
-        return await self._async_save_schedule(verify=True)
+            return True
+        return False
 
     async def _async_load_schedule(self) -> bool:
         """Restore the plan and finish any tariff change that required a reload."""
@@ -2067,8 +2067,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                         self._discharge_release_pending = True
                         continue
                     return
+                if self._defer_discharge_save():
+                    return
                 self._discharge_release_entity = entity
-                if not await self._async_save_discharge_obligation():
+                if not await self._async_save_schedule(verify=True):
                     self._discharge_last_attempt = (entity, value, self.hass.loop.time())
                     return
                 # Mode, schedule, toggle or configuration may change during disk I/O.
@@ -2090,18 +2092,27 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     continue
                 return
             if value == -1:
-                self._discharge_release_entity = None
-                if not await self._async_save_discharge_obligation():
-                    self._discharge_release_entity = entity
+                if shutdown or self.hass.state is CoreState.stopping or self._defer_discharge_save():
+                    self._discharge_may_be_applied = False
                     return
-                self._discharge_release_pending = False
-                self._discharge_may_be_applied = False
-                # A fresh window may start even on the same entity after cleanup.
-                self._discharge_last_attempt = None
+                if not await self._async_clear_discharge_obligation():
+                    return
             elif self._desired_discharge_entity() == entity:
                 return
         if not self._shutdown_requested:
             self._debounced_refresh.async_schedule_call()
+
+    async def _async_clear_discharge_obligation(self, _event: Any = None) -> bool:
+        """Verify that the released device is no longer recorded for startup cleanup."""
+        entity = self._discharge_release_entity
+        self._discharge_release_entity = None
+        if not await self._async_save_schedule(verify=True):
+            self._discharge_release_entity = entity
+            return False
+        self._discharge_release_pending = False
+        self._discharge_may_be_applied = False
+        self._discharge_last_attempt = None
+        return True
 
     @callback
     def _schedule_ram_refresh(self, needed: bool) -> None:
@@ -2687,3 +2698,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         await asyncio.gather(*self._schedule_save_tasks)
         if self._tariff_save_task is not None:
             await self._tariff_save_task
+        if self._discharge_release_pending and not self._discharge_may_be_applied:
+            if self.hass.state is CoreState.stopping:
+                # HA Store buffers saves until final_write, so verify the release there.
+                self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_FINAL_WRITE, self._async_clear_discharge_obligation,
+                )
+            else:
+                await self._async_clear_discharge_obligation()
