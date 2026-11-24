@@ -104,11 +104,15 @@ No YAML configuration is needed.
 
 ### EPEX price formulas
 
-In setup or **Configure**, enter a separate formula for each direction. The variable `price` is that direction’s sensor value in **ct/kWh**, including when the sensor reports EUR/kWh. The result is also in ct/kWh. Use numbers with a decimal point, parentheses, and the arithmetic operators `+`, `-`, `*`, and `/`. Multiplication and division take precedence over addition and subtraction. The maximum length is 128 characters. Leave a formula empty, or enter `price`, to use the sensor value directly.
+Enter an import and an export formula during setup, in **Configure**, or on the card under **Settings → Price formulas**. These all edit the same two tariffs. Enter `25` for a fixed rate of 25 ct/kWh, or leave a field empty to use its sensor price. Saving a formula updates the effective price and recalculates the schedule in Auto mode.
+
+The variable `price` is that direction’s sensor value in **ct/kWh**, including when the sensor reports EUR/kWh. The result is also in ct/kWh. Use numbers with a decimal point, parentheses, and the arithmetic operators `+`, `-`, `*`, and `/`. Multiplication and division take precedence over addition and subtraction. The maximum length is 128 characters.
 
 For example, suppose your import contract adds an energy tax of 10 ct/kWh and a supplier fee of 2 ct/kWh before applying 21% VAT. Set the import formula to `(price + 10 + 2) * 1.21`. For export at the raw market price, use the same market sensor and leave the export formula empty. A market price of 8 ct/kWh then gives **24.20 ct/kWh for import** and **8.00 ct/kWh for export**. Substitute your own contract rates. If a second EPEX sensor already calculates your sell-back rate, select it as the export sensor and leave its formula empty.
 
-Charging uses the import forecast. Discharging uses the export forecast, and feed-in control uses the current export price. A missing sensor or an undefined formula result (such as division by a zero market price) makes that direction’s price unavailable for the affected reading. Zero and negative prices are valid.
+Charging uses the import forecast. Discharging uses the export forecast, and feed-in control uses the current export price. A constant gives a current tariff even during a sensor outage. Formulas that use `price` need a valid reading and can be unavailable, for example when dividing by a zero market price. Auto schedules only published price intervals. Zero and negative prices are valid.
+
+**Upgrading from fixed History prices.** Each existing import or export formula takes precedence. If a direction’s formula was blank, its old fixed Buy or Sell price becomes the formula for that direction. That fixed rate now also drives battery control. For example, a migrated Buy price of `25` makes all published import intervals cost 25 ct/kWh to Auto. Existing Buy and Sell text entity IDs continue to work for automations.
 
 ### Upgrade from a version before v2.2.1
 
@@ -204,7 +208,7 @@ When a limit caps the target, the original result appears in parentheses, such a
 
 With an import or export price formula configured, the Plan card’s **Price** view shows two plots per day. **Import · Charging** shows the import forecast, charging cutoff and selected charging intervals. **Export · Discharging** shows the corresponding export values. For example, a fixed export formula of `100` appears at 100 ct/kWh for every interval with an export price. The highlighted intervals show when discharge is planned. The plots align by time. Each direction uses its own ct/kWh scale across Today and Tomorrow. Hover over or tap an hour to see both prices and the planned action for each interval. Missing prices appear as gaps.
 
-Without a price formula, Price view shows one combined plot per day. If a separate export sensor is selected, discharge bars use its price. Fixed Buy and Sell tariffs from Settings appear as dashed accounting lines on their respective plots. Equal tariffs share a line in the combined plot.
+Without a price formula, Price view shows one combined plot per day. If a separate export sensor is selected, discharge bars use its price.
 
 Switch to **PV forecast** to see the main Solcast forecast and a lower estimate alongside electricity price intervals.
 Each EPEX Spot input is detected automatically as 15-minute or 60-minute data. The planner ranks each direction’s whole source intervals, including when the two sensors have different resolutions.
@@ -412,8 +416,8 @@ Existing settings and schedules remain saved.
 | Reduced Max Grid Feed-in | Number | Export limit when prices are low. Also limits PV Charge and Discharge targets. |
 | Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
 | Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
-| Buy Price | Text | Fixed tariff for grid import in ct/kWh. Leave empty to use EPEX Spot. |
-| Sell Price | Text | Fixed tariff for grid export in ct/kWh. Leave empty to use EPEX Spot. |
+| Import price formula (Buy Price) | Text | Tariff for buying electricity in ct/kWh, such as `25` or `price + 5`. |
+| Export price formula (Sell Price) | Text | Tariff for selling electricity in ct/kWh, such as `8` or `price - 2`. |
 | Active Fixed Plan | Select | Active plan number, or `off`. |
 | Recalculate Schedule | Button | Rebuilds the schedule from current price data. |
 | Desired Action | Sensor | Current computed action: charge, pv_charge, discharge, or idle. |
@@ -526,9 +530,7 @@ A manual change for one date lasts until the next recalculation applies the fixe
 ## Cost And Energy Tracking
 
 For cost tracking, select energy sensors that report total grid import and export.
-In dashboard **Settings**, enter a fixed **Buy price** for import, a fixed **Sell price** for export, or both, in ct/kWh. Each empty field uses its direction’s EPEX sensor and formula. Enter `0` for a free rate, or clear the field to return to EPEX pricing.
-
-Each fixed tariff applies from the next meter delta. Earlier History totals retain the rate used when recorded. If EPEX is unavailable, a fixed tariff still values its direction, and the energy meters continue tracking kWh. Scheduling and feed-in controls use the configured EPEX rates.
+History uses the same import and export tariffs as battery control. A tariff change applies from the next meter reading. Earlier History totals retain the rate used when recorded. During a price outage, the energy meters continue tracking kWh, and History can still value each direction that has a constant tariff.
 
 History tracks cost and revenue separately.
 

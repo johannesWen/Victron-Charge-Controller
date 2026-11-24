@@ -22,4 +22,7 @@ def test_runtime_arithmetic_and_missing_readings():
     assert apply_formula("1 / price", -2) == -0.5
     assert apply_formula("price * 1e200", 1e200) is None
     assert apply_formula("1 / (price * 1e200)", 1e200) is None
-    assert apply_formula("0", None) is None
+    assert apply_formula("0", None) == 0
+    assert apply_formula("-(2 + 3.5)", None) == -5.5
+    assert apply_formula("price * 0", None) is None
+    assert apply_formula("", None) is None

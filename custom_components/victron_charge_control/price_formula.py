@@ -60,9 +60,12 @@ def parse_formula(formula: str) -> Term:
 
 def apply_formula(formula: str, price: float | None) -> float | None:
     """Return the effective ct/kWh price, or None for an undefined result."""
-    if price is None or not isfinite(price):
-        return None
     try:
-        return _value(parse_formula(formula), price)
+        term = parse_formula(formula)
+        if not callable(term):
+            return term
+        if price is None or not isfinite(price):
+            return None
+        return term(price)
     except (ValueError, ArithmeticError):
         return None
