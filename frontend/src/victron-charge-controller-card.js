@@ -70,10 +70,10 @@ const HELP_TEXT = {
   plan: [
     { heading: 'Reading the chart',
       items: [
-        'In Price and PV forecast views, each bar shows the scheduled action for one price period (today + tomorrow).',
-        'Tap a Price bar to see price details for that period. The full day fits the card width. Hour blocks contain one hourly bar or four separate 15-minute columns.',
+        'With a price formula configured, Price shows aligned Import · Charging and Export · Discharging plots for each day. Each direction uses its own ct/kWh scale across both days and highlights its matching scheduled actions. Without a formula, all actions appear on one price plot.',
+        'Hover, tap or keyboard-focus a time slot to see interval prices. In the two-plot view either plot shows both directional prices and the planned action. The full day fits the card width. Hour blocks contain one hourly bar or four separate 15-minute columns.',
         'Times use the Home Assistant time zone; tooltip and picker UTC offsets distinguish repeated times when daylight saving ends.',
-        'Blue dashed lines in Price view show the fixed Buy and Sell prices from Settings. The lines are read-only and discharge bars show export prices. Hover over an interval to see both rates when configured.',
+        'Blue dashed lines show the read-only fixed Buy and Sell accounting rates from Settings. Buy appears on the import plot and Sell on the export plot when the plots are separate.',
       ] },
     { heading: 'Price cutoffs', items: [
       'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charge and Discharge Durations limit the selected periods; charging wins overlaps. Permissions and SOC protection still apply.',
@@ -90,7 +90,7 @@ const HELP_TEXT = {
       items: [
         'On the automatic Plan page, use the Price / PV forecast toggle below Charge Allowed and Discharge Allowed to switch views. Today and Tomorrow use the Home Assistant time zone.',
         'The light-yellow area shows the central Solcast estimate (pv_estimate). The yellow area shows the lower, 10th-percentile estimate (pv_estimate10), not 10% of the central value. Both show power in kW on the right axis; the areas overlap and are not added together.',
-        'Price interval bars use the same action colors, blocked-hour hatching and past-hour styling as Price. The current price period has a dashed outline and highlighted label. Bars and forecast curves share the same zero line, with negative prices below it. Price thresholds are shown only in Price view.',
+        'Price interval bars show all scheduled actions, with blocked-hour hatching and muted past hours. The current price period has a dashed outline and highlighted label. Bars and forecast curves share the same zero line, with negative prices below it. Price thresholds are shown only in Price view.',
         'Each title shows PV 10% and PV energy in kWh, calculated from the available forecast intervals for that day. These are forecast totals, not measured production; missing intervals are not counted as zero. A missing day or missing lower estimates is shown as unavailable.',
         'Hover, tap or keyboard-focus a time slot to see its time, price and PV estimates in the top-left tooltip. Half-hour forecasts are preserved, and missing values remain gaps. Prices can be unavailable while the PV forecast is still shown.',
         'Right-click or hold a current or future priced period to change its action, or focus its time slot and press Enter or Space. Periods without prices are read-only. The view returns to Price if the forecast becomes unusable. Switching views does not enable PV charging or alter charging permissions.',
@@ -466,9 +466,9 @@ class VictronChargeControllerCard extends LitElement {
       this._entityAliases = {};
       if (this._thresholdDrag) {
         // Pointer-up can arrive before the queued render.
-        const { scaleMin, scaleMax } = this._thresholdDrag.scale;
-        const chart = this._priceChartData();
-        if (chart?.scaleMin !== scaleMin || chart?.scaleMax !== scaleMax) this._finishThresholdDrag(false);
+        const { scaleMin, scaleMax, direction } = this._thresholdDrag.scale;
+        const plot = this._priceChartData()?.plots.find(plot => plot.direction === direction);
+        if (plot?.scale?.scaleMin !== scaleMin || plot?.scale?.scaleMax !== scaleMax) this._finishThresholdDrag(false);
       }
     }
     this._hassContext = context;
@@ -1818,36 +1818,25 @@ class VictronChargeControllerCard extends LitElement {
 
   // ── Shared chart renderer ────────────────────────────────
 
-  _renderPriceChart(enrichedPlan, { chargeThreshold = null, dischargeThreshold = null, tariffs = [], forcedScaleMin = null, forcedScaleMax = null, chartId = 'today' } = {}) {
+  _renderPriceChart(enrichedPlan, { chargeThreshold = null, dischargeThreshold = null, tariffs = [],
+    scale = null, chartId = 'today', direction, priceKey = 'price' } = {}) {
     enrichedPlan = normalizePlan(enrichedPlan);
-    // Extract prices and determine scale
-    const validPrices = enrichedPlan
-      .map(p => p.price)
-      .filter(p => p !== null && p !== undefined)
-      .map(Number)
-      .filter(Number.isFinite);
-    if (validPrices.length === 0) return null;
+    const prices = enrichedPlan.map(entry => entry[priceKey]).filter(Number.isFinite);
+    if (!direction && !prices.length) return null;
     this._chartPeriods[chartId] = enrichedPlan;
     const groups = this._planHourGroups(enrichedPlan);
+    const details = group => this._hourPriceDetails(group, direction !== undefined);
+    const patternSuffix = direction ? `-${chartId}` : '';
 
-    let scaleMin, scaleMax;
-    if (forcedScaleMin !== null && forcedScaleMax !== null) {
-      scaleMin = forcedScaleMin;
-      scaleMax = forcedScaleMax;
-    } else {
-      const minPrice = Math.min(...validPrices);
-      const maxPrice = Math.max(...validPrices);
-      const priceRange = maxPrice - minPrice || 1;
-      scaleMin = Math.min(-1, minPrice);
-      scaleMax = Math.max(1, Math.ceil(maxPrice + priceRange * 0.1));
-    }
+    scale ??= this._priceChartScale(prices, tariffs);
+    const { scaleMin = -1, scaleMax = 1 } = scale ?? {};
     const scaleRange = scaleMax - scaleMin || 1;
 
     const now = Date.now();
 
     // SVG dimensions
     const chartW = 600;
-    const chartH = 280;
+    const chartH = direction ? 210 : 280;
     const padL = 50;
     const padR = 40;
     const padT = 38;
@@ -1861,17 +1850,17 @@ class VictronChargeControllerCard extends LitElement {
     const columnW = i => timed ? (enrichedPlan[i].end - enrichedPlan[i].start) / (timelineEnd - timelineStart) * plotW : plotW / barCount;
 
     const yPos = (price) => padT + plotH - ((price - scaleMin) / scaleRange) * plotH;
-    const zeroInRange = scaleMin <= 0 && scaleMax >= 0;
+    const zeroInRange = scale && scaleMin <= 0 && scaleMax >= 0;
 
-    const tickCount = 5;
-    const yTicks = Array.from({ length: tickCount + 1 }, (_, i) => {
+    const tickCount = direction ? 4 : 5;
+    const yTicks = Array.from({ length: scale ? tickCount + 1 : 0 }, (_, i) => {
       const val = scaleMin + (scaleRange * i) / tickCount;
       return { val: Math.round(val * 10) / 10, y: yPos(scaleMin + (scaleRange * i) / tickCount) };
     });
 
     return svg`
       <svg class="plan-chart" viewBox="0 0 ${chartW} ${chartH}" preserveAspectRatio="xMidYMid meet">
-        ${this._renderPlanPatterns()}
+        ${this._renderPlanPatterns(patternSuffix)}
 
         <!-- Grid lines -->
         ${yTicks.map(t => svg`
@@ -1888,20 +1877,21 @@ class VictronChargeControllerCard extends LitElement {
 
         <!-- Bars -->
         ${enrichedPlan.map((entry, i) => {
-          const price = Number(entry.price);
-          if (entry.price == null || !Number.isFinite(price)) return nothing;
+          const price = entry[priceKey];
+          if (!Number.isFinite(price)) return nothing;
           const colX = columnX(i);
           const colW = columnW(i);
           const { x, w } = this._planBarGeometry(entry, colX, colW);
           const barTop = yPos(price);
           const barBase = zeroInRange ? yPos(0) : padT + plotH;
-          const barY = Math.min(barTop, barBase);
-          const barH = Math.abs(barTop - barBase) || 1;
+          const barH = Math.abs(barTop - barBase) || (direction ? 2 : 1);
+          const barY = direction && price === 0 ? barBase - barH : Math.min(barTop, barBase);
           const isPast = Number.isFinite(entry.end) && entry.end <= now;
           const isCurrent = entry.start <= now && now < entry.end;
           return svg`
             <g pointer-events="none">
-              ${this._renderPlanBar(entry, { x, w, colX, colW, padT, plotH, barY, barH, isPast, isCurrent })}
+              ${this._renderPlanBar(entry, { x, w, colX, colW, padT, plotH, barY, barH, isPast, isCurrent,
+                price, direction, patternSuffix })}
             </g>
           `;
         })}
@@ -1910,7 +1900,7 @@ class VictronChargeControllerCard extends LitElement {
           x: timed ? padL + (group.start - timelineStart) / (timelineEnd - timelineStart) * plotW : columnX(group.index),
           width: timed ? 3600000 / (timelineEnd - timelineStart) * plotW : columnW(group.index),
           top: padT, height: plotH,
-        }))}
+        }, details(group)))}
 
         <!-- Y-axis labels -->
         ${yTicks.map(t => svg`
@@ -1919,9 +1909,9 @@ class VictronChargeControllerCard extends LitElement {
         `)}
 
         <!-- Charge threshold line (interactive) -->
-        ${chargeThreshold !== null && chargeThreshold >= scaleMin && chargeThreshold <= scaleMax ? (() => {
+        ${scale && direction !== 'discharge' && chargeThreshold !== null && chargeThreshold >= scaleMin && chargeThreshold <= scaleMax ? (() => {
           const chargeStep = this._state('number', 'charge_price_threshold')?.attributes?.step ?? 0.01;
-          const chargeScale = { scaleMin, scaleMax, scaleRange, padT, plotH, padL, padR, chartW, step: chargeStep };
+          const chargeScale = { scaleMin, scaleMax, scaleRange, padT, plotH, padL, padR, chartW, step: chargeStep, direction };
           return svg`
           <g class="threshold-line-group" data-type="charge"
             @pointerdown=${(e) => this._onThresholdPointerDown(e, 'charge', chargeScale)}>
@@ -1935,9 +1925,9 @@ class VictronChargeControllerCard extends LitElement {
         })() : nothing}
 
         <!-- Discharge threshold line (interactive) -->
-        ${dischargeThreshold !== null && dischargeThreshold >= scaleMin && dischargeThreshold <= scaleMax ? (() => {
+        ${scale && direction !== 'charge' && dischargeThreshold !== null && dischargeThreshold >= scaleMin && dischargeThreshold <= scaleMax ? (() => {
           const dischargeStep = this._state('number', 'discharge_price_threshold')?.attributes?.step ?? 0.01;
-          const dischargeScale = { scaleMin, scaleMax, scaleRange, padT, plotH, padL, padR, chartW, step: dischargeStep };
+          const dischargeScale = { scaleMin, scaleMax, scaleRange, padT, plotH, padL, padR, chartW, step: dischargeStep, direction };
           return svg`
           <g class="threshold-line-group" data-type="discharge"
             @pointerdown=${(e) => this._onThresholdPointerDown(e, 'discharge', dischargeScale)}>
@@ -1978,7 +1968,7 @@ class VictronChargeControllerCard extends LitElement {
           `;
         })}
 
-        ${this._renderHourTooltip(chartId, groups)}
+        ${this._renderHourTooltip(chartId, groups, details)}
       </svg>
     `;
   }
@@ -2020,25 +2010,26 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _renderPlanPatterns() {
+  _renderPlanPatterns(suffix = '') {
     return svg`
       <defs>
-        <pattern id="plan-hatch-blocked-charging" patternUnits="userSpaceOnUse" width="10" height="10">
+        <pattern id="plan-hatch-blocked-charging${suffix}" patternUnits="userSpaceOnUse" width="10" height="10">
           <path d="M-2,12 L12,-2"
             stroke="var(--vcc-blocked-charging, #2e7d32)" stroke-width="1.8" opacity="0.95" />
         </pattern>
-        <pattern id="plan-hatch-blocked-discharging" patternUnits="userSpaceOnUse" width="10" height="10">
+        <pattern id="plan-hatch-blocked-discharging${suffix}" patternUnits="userSpaceOnUse" width="10" height="10">
           <path d="M-2,12 L12,-2"
             stroke="var(--vcc-blocked-discharging, #ef6c00)" stroke-width="1.8" opacity="0.95" />
         </pattern>
-        <pattern id="plan-hatch-blocked-both" patternUnits="userSpaceOnUse" width="10" height="10">
+        <pattern id="plan-hatch-blocked-both${suffix}" patternUnits="userSpaceOnUse" width="10" height="10">
           <path d="M-2,12 L12,-2"
             stroke="var(--vcc-bg, #fff)" stroke-width="1.8" opacity="0.95" />
         </pattern>
       </defs>`;
   }
 
-  _renderPlanBar(entry, { x, w, colX, colW, padT, plotH, barY, barH, isPast, isCurrent }) {
+  _renderPlanBar(entry, { x, w, colX, colW, padT, plotH, barY, barH, isPast, isCurrent,
+    price = entry.price, direction, patternSuffix = '' }) {
     const actionColor = (action) => {
       switch (action) {
         case 'charge':              return 'var(--vcc-success, #4caf50)';
@@ -2050,13 +2041,16 @@ class VictronChargeControllerCard extends LitElement {
     };
 
     const blockedOverlayFill = (entry) => {
-      if (entry.blockedCharging && entry.blockedDischarging) return 'url(#plan-hatch-blocked-both)';
-      if (entry.blockedCharging) return 'url(#plan-hatch-blocked-charging)';
-      if (entry.blockedDischarging) return 'url(#plan-hatch-blocked-discharging)';
+      if (entry.blockedCharging && entry.blockedDischarging) return `url(#plan-hatch-blocked-both${patternSuffix})`;
+      if (entry.blockedCharging) return `url(#plan-hatch-blocked-charging${patternSuffix})`;
+      if (entry.blockedDischarging) return `url(#plan-hatch-blocked-discharging${patternSuffix})`;
       return null;
     };
 
-    const displayAction = entry.displayAction || entry.action;
+    const action = entry.displayAction || entry.action;
+    const matchingAction = !direction || action === direction || action === 'blocked'
+      || (direction === 'charge' && action === 'pv_charge');
+    const displayAction = matchingAction ? action : 'idle';
     const overlayFill = isPast ? null : blockedOverlayFill(entry);
     const isPvCharge = !isPast && displayAction === 'pv_charge';
     // Price bar stays grey on PV-charge hours; the light-orange background
@@ -2070,13 +2064,13 @@ class VictronChargeControllerCard extends LitElement {
           fill="var(--vcc-pv-charge, #ffb74d)" opacity="0.10" rx="1.5"
           pointer-events="none" />
       ` : nothing}
-      ${entry.price != null ? svg`<rect class="plan-price-bar"
+      ${price != null ? svg`<rect class="plan-price-bar"
         x="${x}" y="${barY}" width="${w}" height="${barH}"
         fill="${barFillColor}"
         opacity="${isPast ? 0.35 : (isCurrent ? 1 : 0.7)}"
         rx="1.5"
       />` : nothing}
-      ${entry.price != null && overlayFill ? svg`
+      ${price != null && overlayFill ? svg`
         <rect
           x="${x}" y="${barY}" width="${w}" height="${barH}"
           fill="${overlayFill}"
@@ -2092,9 +2086,15 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _hourPriceDetails(group) {
+  _hourPriceDetails(group, directional = false) {
     const format = price => price == null ? 'unavailable' : `${Number(price).toFixed(2)} ct/kWh`;
     return group.entries.map(entry => {
+      if (directional) {
+        const rate = value => format(Number.isFinite(value) ? value : null);
+        const action = entry.displayAction || entry.action;
+        const planned = ACTION_META[action]?.label || (action === 'blocked' ? 'Blocked' : 'Idle');
+        return `${this._periodLabel(entry)} · Import ${rate(entry.import_price)} · Export ${rate(entry.export_price)} · ${planned}`;
+      }
       const prices = 'export_price' in entry
         ? `Buy ${format(entry.import_price)} · Sell ${format(entry.export_price)}`
         : `Price: ${format(entry.price)}`;
@@ -3213,7 +3213,7 @@ class VictronChargeControllerCard extends LitElement {
   }
 
   _priceChartData() {
-    const plan = this._state('sensor', 'charge_plan')?.attributes?.plan;
+    const { plan, price_formula_configured } = this._state('sensor', 'charge_plan')?.attributes ?? {};
     if (!Array.isArray(plan) || plan.length === 0) return null;
     const [todayDate, tomorrowDate] = [...new Set(plan.map(p => p.date))].sort();
     const today = plan.filter(p => p.date === todayDate);
@@ -3224,23 +3224,47 @@ class VictronChargeControllerCard extends LitElement {
       const price = Number(value);
       return TARIFF_DECIMAL.test(value) && Number.isFinite(price) ? [{ label, price }] : [];
     });
-    if (tariffs.length === 2 && tariffs[0].price === tariffs[1].price) {
+    const directional = price_formula_configured === true;
+    if (!directional && tariffs.length === 2 && tariffs[0].price === tariffs[1].price) {
       tariffs[0].label = 'Buy / Sell';
       tariffs.pop();
     }
 
-    const prices = [...today, ...tomorrow].map(p => p.price).filter(Number.isFinite);
-    let scaleMin = null;
-    let scaleMax = null;
-    if (prices.length) {
-      const tariffPrices = tariffs.map(({ price }) => price);
-      const min = Math.min(...prices, ...tariffPrices);
-      const max = Math.max(...prices, ...tariffPrices);
-      const range = max - min || 1;
-      scaleMin = Math.min(-1, min);
-      scaleMax = Math.max(1, Math.ceil(max + range * 0.1));
-    }
-    return { todayDate, tomorrowDate, today, tomorrow, tariffs, scaleMin, scaleMax };
+    const plots = directional ? [
+      { direction: 'charge', label: 'Import · Charging', unavailable: 'Import prices unavailable', priceKey: 'import_price', tariffLabel: 'Buy' },
+      { direction: 'discharge', label: 'Export · Discharging', unavailable: 'Export prices unavailable', priceKey: 'export_price', tariffLabel: 'Sell' },
+    ] : [{ priceKey: 'price' }];
+    const periods = [...today, ...tomorrow];
+    return { todayDate, tomorrowDate, today, tomorrow, directional, plots: plots.map(plot => {
+      const prices = periods.map(entry => entry[plot.priceKey]).filter(Number.isFinite);
+      const plotTariffs = directional
+        ? tariffs.filter(tariff => tariff.label === plot.tariffLabel).map(tariff => ({ ...tariff, label: `${tariff.label} accounting` }))
+        : tariffs;
+      const scale = prices.length || directional ? this._priceChartScale(prices, plotTariffs) : null;
+      return { ...plot, tariffs: plotTariffs, scale };
+    }) };
+  }
+
+  _priceChartScale(prices, tariffs) {
+    const values = [...prices, ...tariffs.map(({ price }) => price)];
+    if (!values.length) return null;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    return { scaleMin: Math.min(-1, min), scaleMax: Math.max(1, Math.ceil(max + range * 0.1)) };
+  }
+
+  _renderPriceDay(plan, chartId, { plots, directional }, cutoffs) {
+    const available = plots.map(plot => plan.some(entry => Number.isFinite(entry[plot.priceKey])));
+    if (!available.some(Boolean)) return null;
+    if (!directional) return this._renderPriceChart(plan, { ...plots[0], ...cutoffs, chartId });
+    return html`<div class="plan-price-plots">
+      ${plots.map((plot, index) => html`<div role="group" aria-label=${plot.label}>
+        <div class="plan-price-plot-title">${plot.label}</div>
+        ${available[index] ? nothing : html`<div class="forecast-status">${plot.unavailable}</div>`}
+        ${this._renderPriceChart(plan, { ...plot, ...cutoffs, chartId: `${chartId}-${plot.direction}` })}
+      </div>`)}
+    </div>`;
   }
 
   _renderAutoPlanContent() {
@@ -3255,7 +3279,7 @@ class VictronChargeControllerCard extends LitElement {
         </div>`;
     }
 
-    const { todayDate, tomorrowDate, today, tomorrow, tariffs, scaleMin, scaleMax } = chart;
+    const { todayDate, tomorrowDate, today, tomorrow, directional } = chart;
     const currentPrice = this._currentPricesLabel();
     const todayPlan = this._enrichPlanDisplayState(today);
     const tomorrowPlan = this._enrichPlanDisplayState(tomorrow);
@@ -3273,14 +3297,9 @@ class VictronChargeControllerCard extends LitElement {
       delete this._pendingThresholds.discharge;
     }
 
-    const chartOptions = { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge, tariffs, forcedScaleMin: scaleMin, forcedScaleMax: scaleMax };
-    const todayChart = this._renderPriceChart(todayPlan, chartOptions);
-
-    // Tomorrow chart: render if we have plan entries (even without prices, shows actions)
-    const tomorrowHasAnyPrices = tomorrowPlan.some(p => p.price !== undefined && p.price !== null);
-    const tomorrowChart = tomorrowHasAnyPrices
-      ? this._renderPriceChart(tomorrowPlan, { ...chartOptions, chartId: 'tomorrow' })
-      : null;
+    const cutoffs = { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge };
+    const todayChart = this._renderPriceDay(todayPlan, 'today', chart, cutoffs);
+    const tomorrowChart = this._renderPriceDay(tomorrowPlan, 'tomorrow', chart, cutoffs);
 
     if (!todayChart && !tomorrowChart) {
       return html`
@@ -3326,7 +3345,7 @@ class VictronChargeControllerCard extends LitElement {
         ${todayChart ? html`
           <div class="plan-chart-label">Today <span class="plan-chart-date">${todayDate}</span></div>
           ${todayChart}
-        ` : nothing}
+        ` : directional ? html`<div class="plan-chart-label plan-chart-label-muted">Today — prices unavailable</div>` : nothing}
 
         ${tomorrowChart ? html`
           <div class="plan-chart-label">Tomorrow <span class="plan-chart-date">${tomorrowDate}</span></div>
@@ -4036,6 +4055,8 @@ class VictronChargeControllerCard extends LitElement {
         display: block; width: 100%; height: auto; min-width: 0;
         font-family: inherit;
       }
+      .plan-price-plots { display: flex; flex-direction: column; gap: 6px; }
+      .plan-price-plot-title { font-size: 0.8em; font-weight: 600; color: var(--vcc-text2); }
       .plan-axis-label {
         font-size: 16px;
         fill: var(--vcc-text2, #757575);
@@ -4115,6 +4136,7 @@ class VictronChargeControllerCard extends LitElement {
         font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums;
         display: flex; flex-direction: column; gap: 2px;
       }
+      .plan-price-plots .plan-hour-details { font-size: 15px; line-height: 1.1; }
       .vcc-help-dialog.plan-picker { width: min(340px, calc(100vw - 24px)); padding: 8px; gap: 4px; }
       .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
       .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }

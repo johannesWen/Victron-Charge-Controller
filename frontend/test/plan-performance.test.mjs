@@ -378,3 +378,122 @@ test('Plan shows fixed rate lines on the shared Price scale and preserves missin
   assert.match(flush(), /No EPEX price data available/);
   assert.doesNotMatch(flush(), /class="plan-tariff"/);
 });
+
+function directionalPlan(date = '2026-10-15') {
+  const period = (minute, action, prices) => ({ date, hour: 1, minute, action, ...prices,
+    start_time: `${date}T01:${String(minute).padStart(2, '0')}:00Z`,
+    end_time: `${date}T${minute === 45 ? '02:00' : `01:${minute + 15}`}:00Z`,
+  });
+  return [
+    period(0, 'charge', { price: 4, import_price: 4, export_price: -5 }),
+    period(15, 'discharge', { price: 7, import_price: 10, export_price: 7 }),
+    period(30, 'pv_charge', { price: 12, import_price: 0, export_price: 12 }),
+    period(45, 'idle', { price: 0, import_price: null, export_price: 0 }),
+  ];
+}
+
+const priceCharts = rendered => [...rendered.matchAll(/<svg class="plan-chart".*?<\/svg>/gs)].map(match => match[0]);
+const axisValues = chart => [...chart.matchAll(/class="plan-axis-label">([^<]+)<\/text>/g)].map(match => Number(match[1]));
+const priceBars = chart => [...chart.matchAll(/class="plan-price-bar"\s+x="([^"]+)" y="([^"]+)" width="[^"]+" height="([^"]+)"\s+fill="([^"]+)"/g)]
+  .map(([, x, y, height, fill]) => ({ x: Number(x), y: Number(y), height: Number(height), fill }));
+
+test('Formula plots align times and share scales across days by direction, with matching actions and price lines', () => {
+  const { card, push, flush } = setup();
+  const today = directionalPlan();
+  const tomorrow = directionalPlan('2026-10-16');
+  tomorrow[0] = { ...tomorrow[0], price: 17, import_price: 17, export_price: -20 };
+  const states = {
+    ...card.hass.states,
+    'text.garage_sell_price': { state: '100' },
+    'switch.garage_relative_auto_mode': { state: 'on' },
+    'number.garage_charge_price_threshold': { state: '11' },
+    'number.garage_discharge_price_threshold': { state: '22' },
+    'sensor.garage_charge_plan': { state: 'ready', attributes: {
+      price_formula_configured: true, price_reference_min: -20, price_reference_max: 17, plan: [...today, ...tomorrow],
+    } },
+  };
+  push(states);
+  const rendered = flush();
+  assert.equal((rendered.match(/>Import · Charging<\/div>/g) || []).length, 2);
+  assert.equal((rendered.match(/>Export · Discharging<\/div>/g) || []).length, 2);
+  const charts = priceCharts(rendered);
+  assert.equal(charts.length, 4);
+  const [buy, sell, buyTomorrow, sellTomorrow] = charts;
+  assert.ok(charts.every(chart => chart.includes('ct/kWh')));
+  assert.deepEqual(axisValues(buy), axisValues(buyTomorrow));
+  assert.deepEqual(axisValues(sell), axisValues(sellTomorrow));
+  assert.ok(Math.max(...axisValues(buy)) >= 17 && Math.max(...axisValues(buy)) < 20);
+  assert.equal(Math.min(...axisValues(sell)), -20);
+  assert.ok(Math.max(...axisValues(sell)) >= 100);
+  assert.match(sell, />Sell accounting 100<\/text>/);
+  assert.doesNotMatch(buy, /class="plan-tariff"/);
+  assert.match(buy, /data-type="charge"[\s\S]*class="plan-threshold-label"[^>]*>6<\/text>/);
+  assert.match(sell, /data-type="discharge"[\s\S]*class="plan-threshold-label"[^>]*>2<\/text>/);
+  assert.doesNotMatch(buy, /data-type="discharge"/);
+  assert.doesNotMatch(sell, /data-type="charge"/);
+
+  const importBars = priceBars(buy), exportBars = priceBars(sell);
+  assert.equal(importBars.length, 3, 'null import is a gap');
+  assert.equal(exportBars.length, 4);
+  assert.deepEqual(importBars.map(bar => bar.x), exportBars.slice(0, 3).map(bar => bar.x));
+  assert.ok(importBars[1].height > importBars[0].height, 'import uses its own price during discharge');
+  assert.equal(importBars[2].height, 2, 'zero import stays visible');
+  assert.equal(exportBars[3].height, 2, 'zero export stays visible');
+  assert.equal(importBars[0].fill, 'var(--vcc-success, #4caf50)');
+  assert.equal(importBars[1].fill, 'var(--vcc-disabled, #bdbdbd)');
+  assert.equal(exportBars[0].fill, 'var(--vcc-disabled, #bdbdbd)');
+  assert.equal(exportBars[1].fill, '#ff6600');
+  assert.match(buy, /class="plan-pv-column"/);
+  assert.doesNotMatch(sell, /class="plan-pv-column"/);
+
+  const tooltip = chart => chart.match(/<foreignObject.*?<\/foreignObject>/s)?.[0];
+  card._onBarClick({}, 'today-charge', 0);
+  const importDetails = tooltip(priceCharts(flush())[0]);
+  assert.match(importDetails, /01:00.*01:15.*Import 4\.00 ct\/kWh · Export -5\.00 ct\/kWh · Charging/);
+  assert.match(importDetails, /Import 10\.00 ct\/kWh · Export 7\.00 ct\/kWh · Discharging/);
+  assert.match(importDetails, /Import 0\.00 ct\/kWh · Export 12\.00 ct\/kWh · PV Charging/);
+  assert.match(importDetails, /Import unavailable · Export 0\.00 ct\/kWh · Idle/);
+  card._onBarClick({}, 'today-discharge', 0);
+  assert.equal(tooltip(priceCharts(flush())[1]), importDetails);
+
+  const changes = [];
+  card._thresholdDrag = { scale: { ...card._priceChartData().plots[0].scale, direction: 'charge' } };
+  card._finishThresholdDrag = commit => { changes.push(commit); card._thresholdDrag = null; };
+  push({ ...states, 'text.garage_sell_price': { state: '200' } });
+  assert.deepEqual(changes, [], 'export scale changes preserve an import drag');
+  push({ ...card.hass.states, 'text.garage_buy_price': { state: '200' } });
+  assert.deepEqual(changes, [false], 'import scale changes cancel an import drag');
+});
+
+test('Price respects the explicit formula flag, zero accounting rates and missing sides or days', () => {
+  const { card, push, flush } = setup();
+  const entity = 'sensor.garage_charge_plan';
+  const states = { ...card.hass.states, 'text.garage_buy_price': { state: '0' }, 'text.garage_sell_price': { state: '0' } };
+  const today = directionalPlan().map(({ export_price, ...entry }) => entry);
+  const missing = { date: '2026-10-16', hour: 1, action: 'idle' };
+  const publish = (attrs, plan = [...today, missing]) => push({ ...states, [entity]: { state: 'ready', attributes: { ...attrs, plan } } });
+
+  for (const attrs of [{}, { price_formula_configured: false }, { price_formula_configured: 'true' }]) {
+    publish(attrs, directionalPlan());
+    const rendered = flush();
+    assert.equal(priceCharts(rendered).length, 1);
+    assert.doesNotMatch(rendered, /Import · Charging|Export · Discharging/);
+    assert.match(rendered, />Buy \/ Sell 0<\/text>/);
+    assert.match(rendered, /fill="#ff6600"/);
+  }
+
+  const attrs = { price_formula_configured: true };
+  publish(attrs);
+  const rendered = flush();
+  const [buy, sell] = priceCharts(rendered);
+  assert.equal(axisValues(buy).length, 5);
+  assert.match(buy, />Buy accounting 0<\/text>/);
+  assert.match(sell, />Sell accounting 0<\/text>/);
+  assert.equal(priceBars(sell).length, 0);
+  assert.match(rendered, /Export prices unavailable/);
+  assert.match(rendered, /Tomorrow — prices not yet available/);
+  assert.match(sell, /Import 0\.00 ct\/kWh · Export unavailable · PV Charging/);
+  publish(attrs, [missing, { ...missing, date: today[0].date, price: 45 }]);
+  assert.match(flush(), /No EPEX price data available/);
+  assert.equal(priceCharts(flush()).length, 0);
+});
