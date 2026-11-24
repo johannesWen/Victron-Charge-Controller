@@ -1920,7 +1920,7 @@ class VictronChargeControllerCard extends LitElement {
           x: timed ? padL + (group.start - timelineStart) / (timelineEnd - timelineStart) * plotW : columnX(group.index),
           width: timed ? 3600000 / (timelineEnd - timelineStart) * plotW : columnW(group.index),
           top: padT, height: plotH,
-        }, details(group)))}
+        }, details(group), !direction))}
 
         <!-- Y-axis labels -->
         ${yTicks.map(t => svg`
@@ -1988,7 +1988,7 @@ class VictronChargeControllerCard extends LitElement {
           `;
         })}
 
-        ${this._renderHourTooltip(chartId, groups, details)}
+        ${this._renderHourTooltip(chartId, groups, details, direction)}
       </svg>
     `;
   }
@@ -2126,10 +2126,26 @@ class VictronChargeControllerCard extends LitElement {
     });
   }
 
-  _renderHourTooltip(chartId, groups, details = group => this._hourPriceDetails(group)) {
+  _renderHourTooltip(chartId, groups, details = group => this._hourPriceDetails(group), direction) {
     if (this._pickerBar || this._tooltipBar?.chartId !== chartId) return nothing;
     const group = groups.find(group => group.index === this._tooltipBar.index);
     if (!group) return nothing;
+    if (direction) {
+      const rate = price => Number.isFinite(price) ? price.toFixed(2) : '—';
+      return svg`<foreignObject class="plan-hour-tooltip" x=${group.hour < 12 ? 306 : 54} y="40" width="250" height="136" pointer-events="none" aria-hidden="true">
+        ${html`<div class="plan-hour-details plan-price-details">
+          <strong>${this._periodLabel(group)} · ct/kWh</strong>
+          <table>
+            <thead><tr><th>From</th><th>Import</th><th>Export</th><th>Plan</th></tr></thead>
+            <tbody>${group.entries.map(entry => {
+              const action = entry.displayAction || entry.action;
+              const start = `${String(entry.hour).padStart(2, '0')}:${String(entry.minute || 0).padStart(2, '0')}`;
+              return html`<tr><td>${start}</td><td>${rate(entry.import_price)}</td><td>${rate(entry.export_price)}</td><td>${ACTION_META[action]?.label || (action === 'blocked' ? 'Blocked' : 'Idle')}</td></tr>`;
+            })}</tbody>
+          </table>
+        </div>`}
+      </foreignObject>`;
+    }
     return svg`<foreignObject class="plan-hour-tooltip" x="56" y="40" width="488" height="210" pointer-events="none" aria-hidden="true">
       ${html`<div class="plan-hour-details">
         <strong>${this._periodLabel(group)}</strong>
@@ -2138,7 +2154,7 @@ class VictronChargeControllerCard extends LitElement {
     </foreignObject>`;
   }
 
-  _renderHourTarget(group, chartId, { x, width, top, height }, details = this._hourPriceDetails(group)) {
+  _renderHourTarget(group, chartId, { x, width, top, height }, details = this._hourPriceDetails(group), nativeTitle = true) {
     const show = () => {
       if (this._pickerBar) return;
       clearTimeout(this._tooltipHideTimer);
@@ -2164,7 +2180,7 @@ class VictronChargeControllerCard extends LitElement {
       @pointermove=${e => this._onBarPointerMove(e)} @pointerup=${e => this._onBarPointerUp(e)}
       @pointercancel=${e => this._onBarPointerUp(e)} @pointerleave=${e => this._onBarPointerUp(e)}>
       <rect class="plan-bar-hit" x=${x} y=${top} width=${width} height=${height} fill="transparent" pointer-events="all" />
-      <title>${this._periodLabel(group)} · ${detailLabel}${editable ? ' · Click for information; hold or right-click to choose intervals and action' : ''}</title>
+      ${nativeTitle ? svg`<title>${this._periodLabel(group)} · ${detailLabel}${editable ? ' · Click for information; hold or right-click to choose intervals and action' : ''}</title>` : nothing}
     </g>`;
   }
 
@@ -4160,7 +4176,10 @@ class VictronChargeControllerCard extends LitElement {
         font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums;
         display: flex; flex-direction: column; gap: 2px;
       }
-      .plan-price-plots .plan-hour-details { font-size: 15px; line-height: 1.1; }
+      .plan-price-details { padding: 4px 6px; font-size: 14px; line-height: 1.12; }
+      .plan-price-details table { border-collapse: collapse; font: inherit; white-space: nowrap; }
+      .plan-price-details :is(th, td) { padding: 0 7px 0 0; text-align: right; }
+      .plan-price-details :is(th, td):last-child { padding: 0; text-align: left; }
       .vcc-help-dialog.plan-picker { width: min(340px, calc(100vw - 24px)); padding: 8px; gap: 4px; }
       .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
       .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }

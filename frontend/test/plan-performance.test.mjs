@@ -449,10 +449,16 @@ test('Formula plots align times and share scales across days by direction, with 
   const tooltip = chart => chart.match(/<foreignObject.*?<\/foreignObject>/s)?.[0];
   card._onBarClick({}, 'today-charge', 0);
   const importDetails = tooltip(priceCharts(flush())[0]);
-  assert.match(importDetails, /01:00.*01:15.*Import 4\.00 ct\/kWh · Export -5\.00 ct\/kWh · Charging/);
-  assert.match(importDetails, /Import 10\.00 ct\/kWh · Export 7\.00 ct\/kWh · Discharging/);
-  assert.match(importDetails, /Import 0\.00 ct\/kWh · Export 12\.00 ct\/kWh · PV Charging/);
-  assert.match(importDetails, /Import unavailable · Export 0\.00 ct\/kWh · Idle/);
+  assert.equal((importDetails.match(/ct\/kWh/g) || []).length, 1);
+  assert.match(importDetails, /<th>From<\/th><th>Import<\/th><th>Export<\/th><th>Plan<\/th>/);
+  for (const cells of [
+    ['01:00', '4.00', '-5.00', 'Charging'],
+    ['01:15', '10.00', '7.00', 'Discharging'],
+    ['01:30', '0.00', '12.00', 'PV Charging'],
+    ['01:45', '—', '0.00', 'Idle'],
+  ]) assert.ok(importDetails.includes(`<tr>${cells.map(cell => `<td>${cell}</td>`).join('')}</tr>`));
+  assert.doesNotMatch(buy, /<title>/);
+  assert.match(buy, /Import 4\.00 ct\/kWh · Export -5\.00 ct\/kWh · Charging/);
   card._onBarClick({}, 'today-discharge', 0);
   assert.equal(tooltip(priceCharts(flush())[1]), importDetails);
 

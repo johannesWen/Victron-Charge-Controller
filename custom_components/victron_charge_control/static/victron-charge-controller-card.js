@@ -271,7 +271,7 @@ const e=globalThis,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
             </g>
           `})}
 
-        ${c.map(e=>this._renderHourTarget(e,s,{x:C?_+(e.start-k)/(P-k)*y:S(e.index),width:C?36e5/(P-k)*y:A(e.index),top:x,height:w},d(e)))}
+        ${c.map(e=>this._renderHourTarget(e,s,{x:C?_+(e.start-k)/(P-k)*y:S(e.index),width:C?36e5/(P-k)*y:A(e.index),top:x,height:w},d(e),!o))}
 
         <!-- Y-axis labels -->
         ${E.map(e=>V`
@@ -322,7 +322,7 @@ const e=globalThis,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
             >${String(e.hour).padStart(2,"0")}</text>
           `})}
 
-        ${this._renderHourTooltip(s,c,d)}
+        ${this._renderHourTooltip(s,c,d,o)}
       </svg>
     `}_renderPlanActionLegend(){return L`
       <div class="plan-legend-item">
@@ -398,15 +398,23 @@ const e=globalThis,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
           fill="none" stroke="var(--vcc-accent, #03a9f4)"
           stroke-width="1.5" stroke-dasharray="4,3" rx="2" />
       `:j}
-    `}_directionalPriceDetails(e){const t=e=>Number.isFinite(e)?`${e.toFixed(2)} ct/kWh`:"unavailable";return`Import ${t(e.import_price)} · Export ${t(e.export_price)}`}_hourPriceDetails(e,t=!1){const i=e=>null==e?"unavailable":`${Number(e).toFixed(2)} ct/kWh`;return e.entries.map(e=>{if(t){const t=e.displayAction||e.action,i=Te[t]?.label||("blocked"===t?"Blocked":"Idle");return`${this._periodLabel(e)} · ${this._directionalPriceDetails(e)} · ${i}`}const r="export_price"in e?`Buy ${i(e.import_price)} · Sell ${i(e.export_price)}`:`Price: ${i(e.price)}`;return`${this._periodLabel(e)} · ${r}`})}_renderHourTooltip(e,t,i=e=>this._hourPriceDetails(e)){if(this._pickerBar||this._tooltipBar?.chartId!==e)return j;const r=t.find(e=>e.index===this._tooltipBar.index);return r?V`<foreignObject class="plan-hour-tooltip" x="56" y="40" width="488" height="210" pointer-events="none" aria-hidden="true">
+    `}_directionalPriceDetails(e){const t=e=>Number.isFinite(e)?`${e.toFixed(2)} ct/kWh`:"unavailable";return`Import ${t(e.import_price)} · Export ${t(e.export_price)}`}_hourPriceDetails(e,t=!1){const i=e=>null==e?"unavailable":`${Number(e).toFixed(2)} ct/kWh`;return e.entries.map(e=>{if(t){const t=e.displayAction||e.action,i=Te[t]?.label||("blocked"===t?"Blocked":"Idle");return`${this._periodLabel(e)} · ${this._directionalPriceDetails(e)} · ${i}`}const r="export_price"in e?`Buy ${i(e.import_price)} · Sell ${i(e.export_price)}`:`Price: ${i(e.price)}`;return`${this._periodLabel(e)} · ${r}`})}_renderHourTooltip(e,t,i=e=>this._hourPriceDetails(e),r){if(this._pickerBar||this._tooltipBar?.chartId!==e)return j;const a=t.find(e=>e.index===this._tooltipBar.index);if(!a)return j;if(r){const e=e=>Number.isFinite(e)?e.toFixed(2):"—";return V`<foreignObject class="plan-hour-tooltip" x=${a.hour<12?306:54} y="40" width="250" height="136" pointer-events="none" aria-hidden="true">
+        ${L`<div class="plan-hour-details plan-price-details">
+          <strong>${this._periodLabel(a)} · ct/kWh</strong>
+          <table>
+            <thead><tr><th>From</th><th>Import</th><th>Export</th><th>Plan</th></tr></thead>
+            <tbody>${a.entries.map(t=>{const i=t.displayAction||t.action,r=`${String(t.hour).padStart(2,"0")}:${String(t.minute||0).padStart(2,"0")}`;return L`<tr><td>${r}</td><td>${e(t.import_price)}</td><td>${e(t.export_price)}</td><td>${Te[i]?.label||("blocked"===i?"Blocked":"Idle")}</td></tr>`})}</tbody>
+          </table>
+        </div>`}
+      </foreignObject>`}return V`<foreignObject class="plan-hour-tooltip" x="56" y="40" width="488" height="210" pointer-events="none" aria-hidden="true">
       ${L`<div class="plan-hour-details">
-        <strong>${this._periodLabel(r)}</strong>
-        ${i(r).map(e=>L`<div>${e}</div>`)}
+        <strong>${this._periodLabel(a)}</strong>
+        ${i(a).map(e=>L`<div>${e}</div>`)}
       </div>`}
-    </foreignObject>`:j}_renderHourTarget(e,t,{x:i,width:r,top:a,height:s},o=this._hourPriceDetails(e)){const n=()=>{this._pickerBar||(clearTimeout(this._tooltipHideTimer),this._tooltipHideTimer=null,this._tooltipBar={chartId:t,index:e.index},this.requestUpdate())},l=()=>{this._tooltipBar?.chartId===t&&this._tooltipBar.index===e.index&&(this._tooltipBar=null,this.requestUpdate())},c=o.join(" · "),d=e.entries.some(t=>this._editablePeriod(t,e));return V`<g class="plan-bar-group" tabindex="0" role=${d?"button":"img"}
-      data-past=${e.end<=Date.now()?"true":"false"} data-readonly=${String(!d)}
-      aria-label=${`${this._periodLabel(e)} · ${d?"Click for information; hold, right-click or press Enter or Space to choose intervals and action":"No editable price intervals"} · ${c}`}
-      @mouseenter=${n} @focus=${n} @mouseleave=${l} @blur=${l}
+    </foreignObject>`}_renderHourTarget(e,t,{x:i,width:r,top:a,height:s},o=this._hourPriceDetails(e),n=!0){const l=()=>{this._pickerBar||(clearTimeout(this._tooltipHideTimer),this._tooltipHideTimer=null,this._tooltipBar={chartId:t,index:e.index},this.requestUpdate())},c=()=>{this._tooltipBar?.chartId===t&&this._tooltipBar.index===e.index&&(this._tooltipBar=null,this.requestUpdate())},d=o.join(" · "),h=e.entries.some(t=>this._editablePeriod(t,e));return V`<g class="plan-bar-group" tabindex="0" role=${h?"button":"img"}
+      data-past=${e.end<=Date.now()?"true":"false"} data-readonly=${String(!h)}
+      aria-label=${`${this._periodLabel(e)} · ${h?"Click for information; hold, right-click or press Enter or Space to choose intervals and action":"No editable price intervals"} · ${d}`}
+      @mouseenter=${l} @focus=${l} @mouseleave=${c} @blur=${c}
       @keydown=${i=>this._onBarKeyDown(i,t,e.index)}
       @click=${i=>this._onBarClick(i,t,e.index)}
       @contextmenu=${i=>this._onBarContextMenu(i,t,e.index)}
@@ -414,7 +422,7 @@ const e=globalThis,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
       @pointermove=${e=>this._onBarPointerMove(e)} @pointerup=${e=>this._onBarPointerUp(e)}
       @pointercancel=${e=>this._onBarPointerUp(e)} @pointerleave=${e=>this._onBarPointerUp(e)}>
       <rect class="plan-bar-hit" x=${i} y=${a} width=${r} height=${s} fill="transparent" pointer-events="all" />
-      <title>${this._periodLabel(e)} · ${c}${d?" · Click for information; hold or right-click to choose intervals and action":""}</title>
+      ${n?V`<title>${this._periodLabel(e)} · ${d}${h?" · Click for information; hold or right-click to choose intervals and action":""}</title>`:j}
     </g>`}_pickerRows(e){return(e.entries.some(e=>e.end-e.start===9e5)&&e.entries.every(t=>!Number.isFinite(t.start)||(t.start-e.start)%9e5==0)?[0,1,2,3].map(t=>{const i=e.start+9e5*t;return e.entries.find(e=>e.start===i)||{start:i,end:i+9e5,price:null}}).filter((e,t,i)=>!i.slice(0,t).some(t=>t.end>e.start)):e.entries).map(t=>t.start<e.start||t.end>e.end?{start:Math.max(t.start,e.start),end:Math.min(t.end,e.end),price:null,unavailableReason:"Source interval spans another hour"}:t)}_currentPickerPeriod(e){const t=this._pickerBar;if(!t)return null;const i=this._chartPeriods[t.chartId]?.find(t=>this._periodIdentity(t)===this._periodIdentity(e));if(!i||!this._editablePeriod(i,t.group))return null;const r=this._state("sensor","charge_plan"),a=r?.attributes?.plan;if(!r?.state||["unknown","unavailable"].includes(r.state)||!Array.isArray(a))return null;const s=xe(a).find(t=>this._periodIdentity(t)===this._periodIdentity(e));return s&&this._editablePeriod(s,t.group)?i:null}_togglePickerPeriod(e){if(this._pickerApplying||!this._currentPickerPeriod(e))return;const t=this._periodIdentity(e),i=this._pickerBar.selected;i.has(t)?i.delete(t):i.add(t),this.requestUpdate()}async _applyPickerAction(e){const t=this._pickerBar;if(!t||this._pickerApplying||!["charge","pv_charge","discharge","idle"].includes(e))return;const i=t.rows.filter(e=>t.selected.has(this._periodIdentity(e)));if(!i.length)return;const r=i.map(e=>this._currentPickerPeriod(e)).filter(Boolean);this._pickerApplying=!0,t.result="",this.requestUpdate();const a=await Promise.all(r.map(t=>this._setPlanSlotAction(t,e)));if(this._pickerApplying=!1,this._pickerBar!==t)return void this.requestUpdate();const s=a.filter(Boolean).length;s!==i.length?(t.selected.clear(),t.result=`${s} of ${i.length} intervals updated. ${i.length-r.length} unavailable; ${a.filter(e=>!e).length} failed. Select available intervals to try again.`,this.requestUpdate()):this._closePicker()}_renderPlanPicker(){const e=this._pickerBar;if(!e)return j;const t=/^(today|tomorrow)-(charge|discharge)$/.test(e.chartId),i=e.rows.filter(t=>e.selected.has(this._periodIdentity(t))&&this._currentPickerPeriod(t)).length;return L`<div class="vcc-help-overlay" role="presentation"
       @click=${e=>{e.target===e.currentTarget&&this._closePicker()}}>
       <div class="vcc-help-dialog plan-picker" role="dialog" aria-modal="true" aria-labelledby="plan-picker-title">
@@ -1536,7 +1544,10 @@ const e=globalThis,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
         font-size: 12px; line-height: 1.25; font-variant-numeric: tabular-nums;
         display: flex; flex-direction: column; gap: 2px;
       }
-      .plan-price-plots .plan-hour-details { font-size: 15px; line-height: 1.1; }
+      .plan-price-details { padding: 4px 6px; font-size: 14px; line-height: 1.12; }
+      .plan-price-details table { border-collapse: collapse; font: inherit; white-space: nowrap; }
+      .plan-price-details :is(th, td) { padding: 0 7px 0 0; text-align: right; }
+      .plan-price-details :is(th, td):last-child { padding: 0; text-align: left; }
       .vcc-help-dialog.plan-picker { width: min(340px, calc(100vw - 24px)); padding: 8px; gap: 4px; }
       .plan-picker [role="status"] { margin: 0; font-size: .78em; line-height: 1.3; color: var(--vcc-text2); }
       .plan-picker-periods, .plan-picker-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
