@@ -86,7 +86,9 @@ Select these entities during setup. Leave optional fields empty if you do not us
 | Battery SOC sensor | Yes | Battery charge percentage. Example: GX Device - DC battery charge. |
 | AC power setpoint | Yes | Permanent idle target in watts. Example: GX Device - AC power setpoint. |
 | AC grid setpoint | Yes | Temporary target in watts, stored in RAM. Example: GX Device - AC grid setpoint. |
-| EPEX Spot price sensor | Yes | Hourly or 15-minute prices. Example: EPEX Spot Data - Market Price. |
+| EPEX import price sensor | Yes | Current and forecast prices for buying electricity. Example: EPEX Spot Data - Market Price. |
+| EPEX export price sensor | No | Select a second EPEX sensor for selling electricity, or leave empty to use the import sensor for both directions. |
+| Import and export price formulas | No | Adjust each direction's sensor price in ct/kWh. See [EPEX price formulas](#epex-price-formulas). |
 | Max grid feed-in entity | Yes | Writable export limit in watts. Example: GX Device - ESS max feed-in power. |
 | Maximum discharge power entity | No | Writable number in W that accepts `0` to prevent battery discharge and `−1` for unlimited discharge. Required for [Disable Discharge](#disable-discharge). |
 | Grid consumption energy sensor | No | Total grid import in kWh, for cost tracking. |
@@ -99,6 +101,18 @@ Select these entities during setup. Leave optional fields empty if you do not us
 Select different writable number entities for AC power setpoint and AC grid setpoint.
 You can change entity selections under Settings → Devices & Services → Victron Charge Control → Configure.
 No YAML configuration is needed.
+
+### EPEX price formulas
+
+Enter an import and an export formula during setup, in **Configure**, or on the card under **Settings → Price formulas**. These all edit the same two tariffs. Enter `25` for a fixed rate of 25 ct/kWh, or leave a field empty to use its sensor price. Saving a formula updates the effective price and recalculates the schedule in Auto mode.
+
+The variable `price` is that direction’s sensor value in **ct/kWh**, including when the sensor reports EUR/kWh. The result is also in ct/kWh. Use numbers with a decimal point, parentheses, and the arithmetic operators `+`, `-`, `*`, and `/`. Multiplication and division take precedence over addition and subtraction. The maximum length is 128 characters.
+
+For example, suppose your import contract adds an energy tax of 10 ct/kWh and a supplier fee of 2 ct/kWh before applying 21% VAT. Set the import formula to `(price + 10 + 2) * 1.21`. For export at the raw market price, use the same market sensor and leave the export formula empty. A market price of 8 ct/kWh then gives **24.20 ct/kWh for import** and **8.00 ct/kWh for export**. Substitute your own contract rates. If a second EPEX sensor already calculates your sell-back rate, select it as the export sensor and leave its formula empty.
+
+Charging uses the import forecast. Discharging uses the export forecast, and feed-in control uses the current export price. A constant gives a current tariff even during a sensor outage. Formulas that use `price` need a valid reading and can be unavailable, for example when dividing by a zero market price. Auto schedules only published price intervals. Zero and negative prices are valid.
+
+**Upgrading from fixed History prices.** Each existing import or export formula takes precedence. If a direction’s formula was blank, its old fixed Buy or Sell price becomes the formula for that direction. That fixed rate now also drives battery control. For example, a migrated Buy price of `25` makes all published import intervals cost 25 ct/kWh to Auto. Existing Buy and Sell text entity IDs continue to work for automations.
 
 ### Upgrade from a version before v2.2.1
 
@@ -192,10 +206,12 @@ Overview shows how mode power, solar power, Grid Consumer, and signed battery fe
 Zero battery feedback is hidden; older controller calculations without that term remain supported.
 When a limit caps the target, the original result appears in parentheses, such as `5,000 W (6,000 W)`.
 
-In the Plan card, switch from Price to PV forecast to view expected solar production.
-In Price view, dashed blue lines show any fixed buy and sell tariffs configured in Settings. Equal tariffs share one line.
-The chart shows the main Solcast forecast and a lower estimate, alongside electricity price intervals.
-The existing EPEX Spot input is detected automatically as 15-minute or 60-minute data; hourly prices stay hourly, and mixed feeds keep their actual intervals without averaging. Price input remains the existing EPEX Spot sensor; no other provider adapter or new resolution setting is added.
+With an import or export price formula configured, the Plan card’s **Price** view shows two plots per day. **Import · Charging** shows the import forecast, charging cutoff and selected charging intervals. **Export · Discharging** shows the corresponding export values. For example, a fixed export formula of `100` appears at 100 ct/kWh for every interval with an export price. The highlighted intervals show when discharge is planned. The plots align by time. Each direction uses its own ct/kWh scale across Today and Tomorrow. Hover over or tap an hour to see both prices and the planned action for each interval. Missing prices appear as gaps.
+
+Without a price formula, Price view shows one combined plot per day. If a separate export sensor is selected, discharge bars use its price.
+
+Switch to **PV forecast** to see the main Solcast forecast and a lower estimate alongside electricity price intervals.
+Each EPEX Spot input is detected automatically as 15-minute or 60-minute data. The planner ranks each direction’s whole source intervals, including when the two sensors have different resolutions.
 In a detected 15-minute feed, entries without `end_time` use the quarter-hour cadence. True hourly periods mixed into that feed require an explicit `end_time`.
 It uses the Home Assistant time zone even when your browser uses a different zone. Tooltip and picker times include UTC offsets to distinguish repeated times when daylight saving ends. Spring and fall days retain their actual 23 or 25 hours.
 
@@ -231,13 +247,13 @@ Deltas are signed and may be negative:
 - Discharge when `price >= price_reference_min + Discharge Price Delta`.
 - Charging wins if both comparisons qualify.
 
-The references are the minimum and maximum of all normalized current and future price intervals, including tomorrow or later, before blocked-hour and PV Charge exclusions.
+The charge reference is the maximum import price. The discharge reference is the minimum export price. Both span current and future price intervals, including tomorrow or later, before blocked-hour and PV Charge exclusions.
 A negative charge delta places its cutoff above the maximum; a negative discharge delta places its cutoff below the minimum.
-Charge Duration and Discharge Duration limit Relative Auto Mode as well as Absolute Auto Mode. Auto independently chooses the cheapest qualifying charge periods and the most expensive qualifying discharge periods, up to each duration across available current and future prices. It takes whole price periods without exceeding either budget; 0 h selects none for that action. For example, a 1 h charge budget can select four qualifying 15-minute periods even when 3 hours qualify. If both selections include the same period, charging wins and discharge time is not refilled.
+Charge Duration and Discharge Duration limit Relative Auto Mode as well as Absolute Auto Mode. Auto independently chooses the cheapest qualifying charge periods and the most expensive qualifying discharge periods, up to each duration across available current and future prices. It takes whole price periods without exceeding either budget; 0 h selects none for that action. For example, a 1 h charge budget can select four qualifying 15-minute periods even when 3 hours qualify. If the selected periods overlap, charging wins and discharge time is not refilled.
 Permission switches, SOC protection, recurring blocks, PV Charge exclusions and fixed-plan overrides still apply.
 
 In the Price chart, both days show the same calculated absolute cutoffs using `sensor.<entity_prefix>_charge_plan` attributes `price_reference_min` and `price_reference_max`, in ct/kWh.
-Lines are hidden when the corresponding reference is unavailable or the cutoff is outside the chart scale.
+Each formula plot includes its direction’s cutoff in the scale. The combined plot shows cutoffs within its price scale. A missing reference hides the corresponding relative cutoff.
 Hold and drag a cutoff line to edit its delta; the delta is limited to the existing number entity's range and step before the displayed cutoff is calculated.
 Changing relative mode or its reference prices cancels an active drag without saving it.
 
@@ -400,13 +416,13 @@ Existing settings and schedules remain saved.
 | Reduced Max Grid Feed-in | Number | Export limit when prices are low. Also limits PV Charge and Discharge targets. |
 | Blocked Charging Hours | Text | Comma-separated hours excluded from charging. |
 | Blocked Discharging Hours | Text | Comma-separated hours excluded from discharging. |
-| Buy Price | Text | Fixed tariff for grid import in ct/kWh. Leave empty to use EPEX Spot. |
-| Sell Price | Text | Fixed tariff for grid export in ct/kWh. Leave empty to use EPEX Spot. |
+| Import price formula (Buy Price) | Text | Tariff for buying electricity in ct/kWh, such as `25` or `price + 5`. |
+| Export price formula (Sell Price) | Text | Tariff for selling electricity in ct/kWh, such as `8` or `price - 2`. |
 | Active Fixed Plan | Select | Active plan number, or `off`. |
 | Recalculate Schedule | Button | Rebuilds the schedule from current price data. |
 | Desired Action | Sensor | Current computed action: charge, pv_charge, discharge, or idle. |
 | Target Setpoint | Sensor | Current computed grid setpoint in watts. |
-| Current Price | Sensor | Current EPEX Spot price. |
+| Current Price | Sensor | Primary EPEX sensor reading with effective `import_price_eur_per_kwh` and `export_price_eur_per_kwh` attributes. |
 | Charge Hours | Sensor | Scheduled charging slots, with dates. |
 | Discharge Hours | Sensor | Scheduled discharging slots, with dates. |
 | PV Charge Hours | Sensor | Scheduled solar charging slots, with dates. |
@@ -514,9 +530,7 @@ A manual change for one date lasts until the next recalculation applies the fixe
 ## Cost And Energy Tracking
 
 For cost tracking, select energy sensors that report total grid import and export.
-In dashboard **Settings**, enter a **Buy price** for import, a **Sell price** for export, or both, in ct/kWh. Each field starts empty and uses the current EPEX spot price until you enter a tariff. Enter `0` for a free rate, or clear the field to return to spot pricing.
-
-Each tariff change applies from the next meter delta. Earlier History totals retain the rate used when recorded. If EPEX is unavailable, a fixed tariff still values its direction, and the energy meters continue tracking kWh. Scheduling and feed-in controls use EPEX spot prices.
+History uses the same import and export tariffs as battery control. A tariff change applies from the next meter reading. Earlier History totals retain the rate used when recorded. During a price outage, the energy meters continue tracking kWh, and History can still value each direction that has a constant tariff.
 
 History tracks cost and revenue separately.
 

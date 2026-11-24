@@ -139,8 +139,9 @@ async def test_default_history_fits_ha_output_limit_and_planner_uses_eight_quart
     assert all(isfinite(entry["price_per_kwh"]) for entry in entries)
     assert len(normalize_price_intervals({"data": entries})) == len(entries)
     hass.states.async_set("sensor.epex_spot_price", str(state), {"data": entries})
+    prices = normalize_price_intervals(hass.states.get("sensor.epex_spot_price").attributes)
     charge, discharge = calculate_auto_schedule(
-        hass, epex_spot_entity="sensor.epex_spot_price", control_mode=MODE_AUTO,
+        import_prices=prices, export_prices=prices, control_mode=MODE_AUTO,
         cheapest_hours=2, expensive_hours=0, charge_price_threshold=100,
         discharge_price_threshold=0, blocked_charging_hours=[],
         blocked_discharging_hours=[], pv_charge_hours=[], now=now,

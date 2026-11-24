@@ -8,9 +8,10 @@ backwards-compatibility with tests and existing call sites.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from itertools import chain, pairwise
 from math import isfinite
 from typing import Any
 
@@ -23,6 +24,7 @@ from .const import (
     EPEX_KEY_PRICE_EUR,
     EPEX_KEY_START_TIME,
 )
+from .price_formula import apply_formula
 
 
 def find_epex_data(attributes: dict[str, Any]) -> list[dict[str, Any]]:
@@ -151,6 +153,30 @@ class PriceInterval:
         return self.start, self.end
 
 
+@dataclass(frozen=True)
+class EpexSource:
+    """One direction's market sensor and optional ct/kWh adjustment."""
+
+    entity_id: str
+    formula: str = ""
+
+    def current_ct(self, hass: Any) -> float | None:
+        return apply_formula(self.formula, get_current_price_ct(hass, self.entity_id))
+
+    def intervals(self, hass: Any) -> list[PriceInterval]:
+        state = hass.states.get(self.entity_id)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return []
+        intervals = normalize_price_intervals(state.attributes)
+        if not self.formula:
+            return intervals
+        return [
+            PriceInterval(item.start, item.end, adjusted)
+            for item in intervals
+            if (adjusted := apply_formula(self.formula, item.price)) is not None
+        ]
+
+
 def price_reference_bounds(
     intervals: list[PriceInterval], now: datetime,
 ) -> tuple[float | None, float | None]:
@@ -208,6 +234,7 @@ def normalize_price_intervals(attributes: dict[str, Any]) -> list[PriceInterval]
 def price_timeline(
     intervals: list[PriceInterval], date_str: str,
     schedule: Sequence[tuple[datetime, datetime]] = (),
+    export_intervals: list[PriceInterval] | None = None,
 ) -> list[dict[str, Any]]:
     """Clip source coverage to a civil day and split it at schedule boundaries."""
     from .schedule import slot_attributes
@@ -215,31 +242,35 @@ def price_timeline(
     day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
     start = day.astimezone(timezone.utc)
     end = (day + timedelta(days=1)).astimezone(timezone.utc)
-    periods = [item for item in intervals if item.start < end and item.end > start]
+    all_intervals = intervals + (export_intervals or [])
     cadence = timedelta(minutes=15) if any(
-        item.end - item.start == timedelta(minutes=15) for item in intervals
+        item.end - item.start == timedelta(minutes=15) for item in all_intervals
     ) else timedelta(hours=1)
-    # Retained schedules can have finer action boundaries than the current source prices.
-    boundaries = sorted({instant for slot in schedule for instant in slot if start < instant < end})
+    boundaries = sorted({start, end} | {
+        instant for slot in chain(schedule, (item.slot for item in all_intervals)) for instant in slot
+        if start < instant < end
+    })
 
-    def gap_stop(cursor: datetime, limit: datetime) -> datetime:
-        stop = min(start + ((cursor - start) // cadence + 1) * cadence, limit)
-        return next((boundary for boundary in boundaries if cursor < boundary < stop), stop)
+    def prices_at(periods: list[PriceInterval]) -> Iterator[float | None]:
+        source = iter(periods)
+        item = next(source, None)
+        for begin in boundaries[:-1]:
+            while item is not None and item.end <= begin:
+                item = next(source, None)
+            yield item.price if item is not None and item.start <= begin else None
 
     result = []
-    cursor = start
-    for item in periods:
-        begin, finish = max(start, item.start), min(end, item.end)
-        while cursor < begin:
-            stop = gap_stop(cursor, begin)
-            result.append(slot_attributes((cursor, stop)))
-            cursor = stop
-        splits = [begin, *(boundary for boundary in boundaries if begin < boundary < finish), finish]
-        for left, right in zip(splits, splits[1:]):
-            result.append({**slot_attributes((left, right)), "price": item.price})
-        cursor = finish
-    while cursor < end:
-        stop = gap_stop(cursor, end)
-        result.append(slot_attributes((cursor, stop)))
-        cursor = stop
+    for (begin, finish), buy, sell in zip(
+        pairwise(boundaries), prices_at(intervals), prices_at(export_intervals or []), strict=True,
+    ):
+        if buy is None and sell is None:
+            while begin < finish:
+                stop = min(start + ((begin - start) // cadence + 1) * cadence, finish)
+                result.append(slot_attributes((begin, stop)))
+                begin = stop
+            continue
+        period = {**slot_attributes((begin, finish)), "price": buy if buy is not None else sell}
+        if export_intervals is not None:
+            period.update(import_price=buy, export_price=sell)
+        result.append(period)
     return result

@@ -22,14 +22,18 @@ from custom_components.victron_charge_control.const import (
     CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
+    CONF_EPEX_EXPORT_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
+    CONF_EXPORT_PRICE_FORMULA,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
     CONF_GRID_SETPOINT_ENTITY,
     CONF_IDLE_SETPOINT_LIMIT,
+    CONF_IMPORT_PRICE_FORMULA,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_POWER_LIMIT,
+    CONF_REPLAN_TARIFFS,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_USE_SOLCAST_FORECAST,
@@ -192,6 +196,108 @@ async def test_power_limit_validation_in_real_options_flow(flow_hass, key, value
         assert entry.data == MOCK_CONFIG_DATA
         await hass.async_block_till_done()
         reload.assert_not_called()
+
+
+@pytest.fixture(params=["options", "reconfigure"])
+async def pricing_form(flow_hass, request):
+    hass, _ = flow_hass
+    route = request.param
+    entry = ConfigEntry(
+        domain=DOMAIN, title="Victron Charge Control", data=MOCK_CONFIG_DATA, options={},
+        version=1, minor_version=1, source="user", unique_id=DOMAIN,
+        discovery_keys=MappingProxyType({}), subentries_data=None,
+    )
+    await hass.config_entries.async_add(entry)
+    manager = hass.config_entries.options if route == "options" else hass.config_entries.flow
+
+    async def open_form():
+        if route == "options":
+            return await manager.async_init(entry.entry_id)
+        return await manager.async_init(DOMAIN, context={"source": route, "entry_id": entry.entry_id})
+
+    return hass, entry, manager, open_form
+
+
+async def test_edit_and_clear_epex_pricing(pricing_form):
+    hass, entry, manager, open_form = pricing_form
+    hass.states.async_set("sensor.sell_back", "0")
+    form = await open_form()
+    settings = {**MOCK_CONFIG_DATA, "epex_export_entity": "sensor.sell_back",
+                "import_price_formula": "price * 1.21", "export_price_formula": "price - 2"}
+    invalid = await manager.async_configure(form["flow_id"], {**settings, "export_price_formula": "round(price)"})
+    assert invalid["errors"] == {"export_price_formula": "invalid_price_formula"}
+    assert entry.data == MOCK_CONFIG_DATA
+    await manager.async_configure(form["flow_id"], settings)
+    await hass.async_block_till_done()
+    # The coordinator is stubbed in this flow fixture, so its pending replan remains.
+    assert entry.data == {**settings, CONF_REPLAN_TARIFFS: True}
+    form = await open_form()
+    await manager.async_configure(form["flow_id"], dict(MOCK_CONFIG_DATA))
+    await hass.async_block_till_done()
+    assert entry.data == {**MOCK_CONFIG_DATA, CONF_REPLAN_TARIFFS: True}
+
+
+@pytest.mark.parametrize("edit_export", [False, True])
+async def test_save_stale_form_preserves_concurrent_tariffs(pricing_form, edit_export):
+    hass, entry, manager, open_form = pricing_form
+    # Earlier versions stored formula text with surrounding whitespace.
+    initial = {**MOCK_CONFIG_DATA, CONF_IMPORT_PRICE_FORMULA: " 0 "}
+    hass.config_entries.async_update_entry(entry, data=initial)
+    form = await open_form()
+    current = {**initial, CONF_IMPORT_PRICE_FORMULA: "45"}
+    if not edit_export:
+        current[CONF_EXPORT_PRICE_FORMULA] = "8"
+    hass.config_entries.async_update_entry(entry, data=current)
+
+    hass.states.async_set("sensor.new_soc", "50")
+    submitted = {**initial, CONF_BATTERY_SOC_ENTITY: "sensor.new_soc"}
+    if edit_export:
+        submitted[CONF_EXPORT_PRICE_FORMULA] = "12"
+    result = await manager.async_configure(form["flow_id"], submitted)
+
+    assert result["type"] in ("abort", "create_entry")
+    expected = {**current, CONF_BATTERY_SOC_ENTITY: "sensor.new_soc"}
+    if edit_export:
+        expected.update({CONF_EXPORT_PRICE_FORMULA: "12", CONF_REPLAN_TARIFFS: True})
+    assert entry.data == expected
+
+
+async def test_conflicting_clear_after_validation_error_can_be_retried(pricing_form):
+    hass, entry, manager, open_form = pricing_form
+    initial = {**MOCK_CONFIG_DATA, CONF_IMPORT_PRICE_FORMULA: "25"}
+    hass.config_entries.async_update_entry(entry, data=initial)
+    form = await open_form()
+
+    # Omitting the import field intentionally clears it.
+    invalid = await manager.async_configure(
+        form["flow_id"], {**MOCK_CONFIG_DATA, CONF_EXPORT_PRICE_FORMULA: "invalid"},
+    )
+    assert invalid["errors"] == {CONF_EXPORT_PRICE_FORMULA: "invalid_price_formula"}
+    field = next(key for key in invalid["data_schema"].schema if key == CONF_IMPORT_PRICE_FORMULA)
+    assert not field.description.get("suggested_value")
+
+    current = {**initial, CONF_IMPORT_PRICE_FORMULA: "45", CONF_EXPORT_PRICE_FORMULA: "8"}
+    hass.config_entries.async_update_entry(entry, data=current)
+    conflict = await manager.async_configure(form["flow_id"], dict(MOCK_CONFIG_DATA))
+    assert conflict["errors"] == {CONF_IMPORT_PRICE_FORMULA: "tariff_changed"}
+    assert entry.data == current
+
+    # A second external edit after the warning must be acknowledged too.
+    hass.config_entries.async_update_entry(entry, data={**current, CONF_IMPORT_PRICE_FORMULA: "50"})
+    conflict = await manager.async_configure(form["flow_id"], dict(MOCK_CONFIG_DATA))
+    assert conflict["errors"] == {CONF_IMPORT_PRICE_FORMULA: "tariff_changed"}
+    await manager.async_configure(form["flow_id"], dict(MOCK_CONFIG_DATA))
+    assert entry.data == {**MOCK_CONFIG_DATA, CONF_EXPORT_PRICE_FORMULA: "8", CONF_REPLAN_TARIFFS: True}
+
+
+async def test_concurrent_edits_to_same_rate_converge(pricing_form):
+    hass, entry, manager, open_form = pricing_form
+    form = await open_form()
+    current = {**MOCK_CONFIG_DATA, CONF_EXPORT_PRICE_FORMULA: "12"}
+    hass.config_entries.async_update_entry(entry, data=current)
+    result = await manager.async_configure(form["flow_id"], dict(current))
+    assert result["type"] in ("abort", "create_entry")
+    assert entry.data == current
 
 
 class TestConfigFlow:
@@ -417,7 +523,10 @@ class TestOptionsFlow:
         await options_flow.async_step_init({**MOCK_CONFIG_DATA, optional_key: blank})
 
         saved = options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
-        assert saved == MOCK_CONFIG_DATA
+        expected = dict(MOCK_CONFIG_DATA)
+        if optional_key == CONF_EPEX_EXPORT_ENTITY:
+            expected[CONF_REPLAN_TARIFFS] = True
+        assert saved == expected
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -433,6 +542,7 @@ class TestOptionsFlow:
             CONF_GRID_CONSUMER_ENTITY: "sensor.consumer",
             "max_discharge_power_entity": "number.max_discharge_power",
             "battery_power_entity": "sensor.battery_power",
+            "epex_export_entity": "sensor.epex_export",
         }
         options_flow.hass.states.get.return_value = MockState("50", {"device_class": "power", "unit_of_measurement": "W"})
         options_flow._config_entry.data = {**configured, "unrelated_setting": "preserved"}
@@ -457,6 +567,8 @@ class TestOptionsFlow:
             for key, value in submitted.items()
             if key not in (CONF_SAFETY_STARTUP_GRACE_SECONDS, CONF_USE_SOLCAST_FORECAST)
         }
+        if CONF_EPEX_EXPORT_ENTITY in removed_keys:
+            expected[CONF_REPLAN_TARIFFS] = True
         assert saved == {**expected, "unrelated_setting": "preserved"}
         assert options_flow.async_create_entry.call_args.kwargs["data"] == {
             CONF_POWER_LIMIT: DEFAULT_POWER_LIMIT,

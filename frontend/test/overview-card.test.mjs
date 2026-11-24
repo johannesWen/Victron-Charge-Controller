@@ -18,7 +18,7 @@ function setup({ mode = 'auto', charge = 'on', discharge = 'off', prefix = 'gara
     return rendered;
   };
   const context = vm.createContext({
-    ...forecast, normalizeView, html: template, svg: template, css: template, nothing: '',
+    ...forecast, live: value => value, normalizeView, html: template, svg: template, css: template, nothing: '',
     LitElement: class { requestUpdate() {} dispatchEvent(event) { this.lastEvent = event; } },
     CustomEvent: class { constructor(type, options) { this.type = type; Object.assign(this, options); } },
     document: { addEventListener() {}, removeEventListener() {} },
@@ -47,6 +47,16 @@ function binding(node, name) {
 }
 const modes = templates => templates.filter(node => node.strings.join('').includes('class="mode-btn '));
 const switches = templates => templates.filter(node => node.strings.join('').includes('class="toggle-pair-item"'));
+
+test('directional price labels show signed ct/kWh and unavailable rates', () => {
+  const { card, states, prefix } = setup();
+  const sensor = states[`sensor.${prefix}_current_price`];
+  assert.equal(card._currentPricesLabel(), '10.00 ct/kWh');
+  sensor.attributes = { import_price_eur_per_kwh: 0, export_price_eur_per_kwh: -0.02 };
+  assert.equal(card._currentPricesLabel(), 'Buy 0.00 ct/kWh · Sell -2.00 ct/kWh');
+  const [detail] = card._hourPriceDetails({ entries: [{ hour: 10, import_price: 0, export_price: null }] });
+  assert.match(detail, /Buy 0.00 ct\/kWh · Sell unavailable/);
+});
 
 for (const state of ['on', 'off', 'unknown', 'unavailable', null]) {
   test(`Settings Disable Discharge binds ${state} state and the configured prefix`, () => {
@@ -500,16 +510,16 @@ for (const relative of ['off', 'on']) test(`every Settings help dialog has an ex
     const { key } = card._helpTopic;
     topics.add(key);
     const rendered = card._renderHelpDialog('settings', 'Settings');
-    assert.match(rendered, /Example:/, key);
-    if (key === 'fixed_prices') {
-      assert.match(binding(button, 'title'), /Buy price.*import.*Sell price.*export.*EPEX spot price/);
-      assert.match(rendered, /25 ct\/kWh.*2 kWh.*€0\.50/);
+    assert.match(rendered, /(?:Example:|For example,)/, key);
+    if (key === 'price_formulas') {
+      assert.match(binding(button, 'title'), /Import and Export price formulas.*effective prices/);
+      assert.match(rendered, /\(price \+ 10\) \* 1\.21/);
     }
     if (key === 'control_mode' || key === 'schedule_actions') {
       assert.equal((rendered.match(/Example:/g) || []).length, key === 'control_mode' ? 5 : 2);
     }
   }
-  assert.ok(topics.has('fixed_prices'));
+  assert.ok(topics.has('price_formulas'));
   assert.equal(topics.size, 31, 'all Settings help topics are reachable');
   card._helpTopic = null;
   assert.match(card._renderHelpDialog('settings', 'Settings'), /SOC means battery level/);
@@ -587,9 +597,9 @@ test('both days use global backend references, with delta pending values reconci
   const result = relativeSetup(), { card, states, prefix } = result;
   assert.deepEqual(chartCutoffs(result), [['charge', 20.1], ['discharge', -2.1], ['charge', 20.1], ['discharge', -2.1]]);
   // Neither displayed day's extrema (-20 and 22) equals the backend's full selection horizon.
-  card._pendingThresholds = { charge: 5.25, discharge: -1.5 };
+  card._pendingThresholds = { charge: { value: 5.25 }, discharge: { value: -1.5 } };
   assert.deepEqual(chartCutoffs(result), [['charge', 18.9], ['discharge', -9.6], ['charge', 18.9], ['discharge', -9.6]]);
-  assert.equal(card._pendingThresholds.charge, 5.25);
+  assert.equal(card._pendingThresholds.charge.value, 5.25);
   states[`number.${prefix}_charge_price_threshold`].state = '5.25';
   states[`number.${prefix}_discharge_price_threshold`].state = '-1.5';
   chartCutoffs(result);
@@ -611,7 +621,7 @@ for (const missing of [null, undefined, NaN, Infinity, -Infinity, '24.13']) {
 test('zero references are valid and missing switch preserves absolute lines and clears pending units on mode changes', () => {
   const result = relativeSetup(null), { card, states, prefix } = result;
   assert.deepEqual(chartCutoffs(result), [['charge', 4], ['discharge', 6], ['charge', 4], ['discharge', 6]]);
-  card._pendingThresholds = { charge: 7 };
+  card._pendingThresholds = { charge: { value: 7 } };
   states[`switch.${prefix}_relative_auto_mode`] = { state: 'on', attributes: {} };
   chartCutoffs(result);
   assert.deepEqual(plain(card._pendingThresholds), {});
@@ -619,7 +629,7 @@ test('zero references are valid and missing switch preserves absolute lines and 
   states[`sensor.${prefix}_charge_plan`].attributes.price_reference_max = 0;
   states[`number.${prefix}_charge_price_threshold`].state = '-4';
   assert.deepEqual(chartCutoffs(result), [['charge', 4], ['discharge', 6], ['charge', 4], ['discharge', 6]]);
-  card._pendingThresholds = { discharge: 9 };
+  card._pendingThresholds = { discharge: { value: 9 } };
   states[`switch.${prefix}_relative_auto_mode`].state = 'off';
   chartCutoffs(result);
   assert.deepEqual(plain(card._pendingThresholds), {});
@@ -631,6 +641,7 @@ function startThresholdDrag(result, type, timers) {
   card._addThresholdDragListeners = () => {};
   card._removeThresholdDragListeners = () => {};
   card._clientToSvgY = value => value;
+  templates.length = 0;
   card._renderAutoPlanContent();
   const line = thresholdLines(templates).find(node => node.strings.join('').includes(`data-type="${type}"`));
   assert.ok(line, `${type} line rendered`);
@@ -666,6 +677,99 @@ function startThresholdDrag(result, type, timers) {
   } };
 }
 
+function directionalThresholdSetup({ relative = 'on', type = 'charge', exportPrice = -20, current = 10, max = 100, step = .5 } = {}) {
+  const result = relativeSetup(relative), { states, prefix } = result;
+  const attrs = states[`sensor.${prefix}_charge_plan`].attributes;
+  Object.assign(attrs, { price_formula_configured: true, price_reference_min: exportPrice, price_reference_max: 4 });
+  for (const entry of attrs.plan) Object.assign(entry, { price: exportPrice, import_price: 4, export_price: exportPrice, action: 'discharge' });
+  const entityId = `number.${prefix}_${type}_price_threshold`;
+  states[entityId] = { state: String(current), attributes: { min: -50, max, step } };
+  return { ...result, entityId };
+}
+
+for (const { name, relative, type, exportPrice, current, max, step, target, expected } of [
+  { name: 'moves a relative charge cutoff below the old lower edge', relative: 'on', type: 'charge',
+    exportPrice: -20, current: 10, max: 100, step: .5, target: -7, expected: 11 },
+  { name: 'moves a relative discharge cutoff up a full step with flat negative prices', relative: 'on', type: 'discharge',
+    exportPrice: -2, current: 2, max: 100, step: 4, target: 4, expected: 6 },
+  { name: 'skips a relative charge write when a drag clamps to the current limit', relative: 'on', type: 'charge',
+    exportPrice: -20, current: 10, max: 10, step: .5, target: -7 },
+  { name: 'skips an absolute charge write when a drag clamps to the current limit', relative: 'off', type: 'charge',
+    exportPrice: -20, current: 10, max: 10, step: .5, target: 11 },
+]) {
+  test(`directional threshold drag ${name}`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = directionalThresholdSetup({ relative, type, exportPrice, current, max, step });
+    const { card, entityId, calls } = result;
+
+    const drag = startThresholdDrag(result, type, t.mock.timers);
+    drag.move(target);
+    assert.equal(card._thresholdDrag.value, expected ?? current);
+    card._onThresholdPointerUp(drag.event);
+    assert.deepEqual(plain(calls), expected === undefined ? [] : [['number', 'set_value', { entity_id: entityId, value: expected }]]);
+    assert.equal(card._pendingThresholds[type]?.value, expected);
+    drag.assertRestored();
+  });
+}
+
+for (const synchronous of [false, true]) {
+  test(`directional threshold retries after a ${synchronous ? 'synchronous throw' : 'rejected service promise'}`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = directionalThresholdSetup(), { card, states, entityId } = result;
+    const submitted = [];
+    card.hass.callService = (_domain, _service, { value }) => {
+      submitted.push(value);
+      if (submitted.length > 1) return Promise.resolve();
+      const failure = new Error('Threshold write failed');
+      if (synchronous) throw failure;
+      return Promise.reject(failure);
+    };
+    const dragToNine = () => {
+      const drag = startThresholdDrag(result, 'charge', t.mock.timers);
+      drag.move(-5);
+      card._onThresholdPointerUp(drag.event);
+    };
+
+    dragToNine();
+    assert.equal(card._pendingThresholds.charge?.value, 9);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(card._pendingThresholds.charge, undefined);
+    assert.equal(card._lastServiceError.message, 'Threshold write failed');
+    assert.deepEqual(chartCutoffs(result).filter(([type]) => type === 'charge'), [['charge', -6], ['charge', -6]]);
+
+    dragToNine();
+    assert.deepEqual(submitted, [9, 9]);
+    states[entityId].state = '9';
+    dragToNine();
+    assert.equal(card._pendingThresholds.charge, undefined);
+    assert.deepEqual(submitted, [9, 9], 'the confirmed threshold is a no-op');
+  });
+}
+
+test('an older rejected threshold write leaves a newer optimistic edit of the same value intact', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const result = directionalThresholdSetup(), { card } = result;
+  const attempts = [];
+  card.hass.callService = (_domain, _service, { value }) => new Promise((resolve, reject) => {
+    attempts.push({ value, resolve, reject });
+  });
+  for (const cutoff of [-5, -4, -5]) {
+    const drag = startThresholdDrag(result, 'charge', t.mock.timers);
+    drag.move(cutoff);
+    card._onThresholdPointerUp(drag.event);
+  }
+  assert.deepEqual(attempts.map(({ value }) => value), [9, 8, 9]);
+  const newest = card._pendingThresholds.charge;
+  attempts[1].resolve();
+  attempts[0].reject(new Error('First edit failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(card._pendingThresholds.charge, newest);
+  assert.equal(newest.value, 9);
+  attempts[2].reject(new Error('Newest edit failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(card._pendingThresholds.charge, undefined);
+});
+
 for (const [type, cutoff, delta, shown] of [
   ['charge', 20.02, 4, 20.13], ['charge', 24.5, -.25, 24.38], ['charge', -9, 30, -5.87], ['charge', 40, -10, 34.13],
   ['discharge', -3.02, 5, -3.13], ['discharge', -9.5, -1.25, -9.38], ['discharge', 24, 30, 21.87], ['discharge', -20, -10, -18.13],
@@ -684,7 +788,7 @@ for (const [type, cutoff, delta, shown] of [
     card._onThresholdPointerUp(drag.event);
     assert.equal(card._thresholdDrag, null);
     assert.equal(drag.position.released, 3);
-    assert.equal(card._pendingThresholds[type], delta, 'pending remains in delta units');
+    assert.equal(card._pendingThresholds[type]?.value, delta, 'pending remains in delta units');
     assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_${type}_price_threshold`, value: delta }]]);
     const displayed = chartCutoffs(result).filter(([kind]) => kind === type);
     assert.deepEqual(displayed, [[type, Math.round(shown * 10) / 10], [type, Math.round(shown * 10) / 10]]);
@@ -756,7 +860,7 @@ for (const type of ['charge', 'discharge']) {
     const drag = startThresholdDrag(result, type, t.mock.timers);
     drag.move(7.11);
     card._onThresholdPointerUp(drag.event);
-    assert.equal(card._pendingThresholds[type], 7);
+    assert.equal(card._pendingThresholds[type]?.value, 7);
     assert.deepEqual(plain(calls), [['number', 'set_value', { entity_id: `number.${prefix}_${type}_price_threshold`, value: 7 }]]);
     assert.deepEqual(chartCutoffs(result).filter(([kind]) => kind === type), [[type, 7], [type, 7]]);
   });

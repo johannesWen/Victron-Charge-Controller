@@ -15,6 +15,9 @@ CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
 CONF_GRID_SETPOINT_ENTITY = "grid_setpoint_entity"
 CONF_AC_GRID_SETPOINT_ENTITY = "ac_grid_setpoint_entity"
 CONF_EPEX_SPOT_ENTITY = "epex_spot_entity"
+CONF_EPEX_EXPORT_ENTITY = "epex_export_entity"
+CONF_IMPORT_PRICE_FORMULA = "import_price_formula"
+CONF_EXPORT_PRICE_FORMULA = "export_price_formula"
 CONF_MAX_GRID_FEED_IN_ENTITY = "max_grid_feed_in_entity"
 CONF_MAX_DISCHARGE_POWER_ENTITY = "max_discharge_power_entity"
 CONF_GRID_CONSUMPTION_ENTITY = "grid_consumption_entity"
@@ -30,6 +33,11 @@ CONF_POWER_LIMIT = "power_limit"
 CONF_IDLE_SETPOINT_LIMIT = "idle_setpoint_limit"
 CONF_BUY_PRICE = "buy_price"
 CONF_SELL_PRICE = "sell_price"
+TARIFF_FORMULAS = {
+    CONF_BUY_PRICE: CONF_IMPORT_PRICE_FORMULA,
+    CONF_SELL_PRICE: CONF_EXPORT_PRICE_FORMULA,
+}
+CONF_REPLAN_TARIFFS = "replan_after_tariff_change"
 
 # --- Control modes ---
 MODE_OFF = "off"

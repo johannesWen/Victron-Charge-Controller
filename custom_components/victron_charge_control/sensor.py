@@ -275,6 +275,7 @@ class GridEnergyCostSensor(VictronCCBaseRestoreSensor):
             "current_price_eur_per_kwh": (
                 data.current_price_eur_per_kwh if data else None
             ),
+            "export_price_eur_per_kwh": data.export_price_eur_per_kwh if data else None,
         }
 
     @callback
@@ -504,7 +505,11 @@ class CurrentPriceSensor(VictronCCBaseSensor):
             self._attr_extra_state_attributes = {}
         else:
             self._attr_native_value = data.current_price
-            self._attr_extra_state_attributes = dict(data.epex_attributes)
+            self._attr_extra_state_attributes = {
+                **data.epex_attributes,
+                "import_price_eur_per_kwh": data.current_price_eur_per_kwh,
+                "export_price_eur_per_kwh": data.export_price_eur_per_kwh,
+            }
         self.async_write_ha_state()
 
     @property
@@ -634,7 +639,12 @@ class ChargePlanSensor(VictronCCBaseSensor):
                 discharging = hour in data.blocked_discharging_hours
                 action = ("blocked" if charging and discharging else "blocked_charging" if charging
                           else "blocked_discharging" if discharging else "idle")
-            plan.append({**period, "action": action})
+            entry = {**period, "action": action}
+            if action == "discharge" and "export_price" in period:
+                entry["price"] = period["export_price"]
+            elif action == "charge" and "import_price" in period:
+                entry["price"] = period["import_price"]
+            plan.append(entry)
         return plan
 
     @callback
@@ -650,6 +660,7 @@ class ChargePlanSensor(VictronCCBaseSensor):
             self._attr_native_value = self._plan_summary(data)
             self._attr_extra_state_attributes = {
                 "plan": self._build_plan(data),
+                "price_formula_configured": self.coordinator.price_formula_configured,
                 "time_zone": self.coordinator.hass.config.time_zone,
                 "price_reference_min": data.price_reference_min,
                 "price_reference_max": data.price_reference_max,

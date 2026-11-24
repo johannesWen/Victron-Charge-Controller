@@ -15,7 +15,7 @@ function card({ now = '2026-10-15T00:15:00+02:00', templates = [] } = {}) {
     return rendered;
   };
   const context = vm.createContext({
-    ...forecast, html: render, svg: render, css: template, nothing: '',
+    ...forecast, live: value => value, html: render, svg: render, css: template, nothing: '',
     LitElement: class { requestUpdate() {} disconnectedCallback() {} },
     document: { addEventListener() {}, removeEventListener() {} }, window: { addEventListener() {}, removeEventListener() {} },
     setTimeout, clearTimeout,
@@ -517,17 +517,17 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   else instance._finishThresholdDrag(false);
   assert.equal(instance._thresholdDrag, null);
   assert.equal(JSON.stringify(calls), JSON.stringify(commit ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: 24 }]] : []));
-  assert.equal(instance._pendingThresholds.charge, commit ? 24 : undefined);
-  assert.equal(textNode.nodeValue, commit ? '24' : '10');
-  assert.ok(Math.abs(Number(positions.y) - (commit ? 122.3 : 193)) < 1e-7);
+  assert.equal(instance._pendingThresholds.charge?.value, commit ? 24 : undefined);
+  assert.equal(textNode.nodeValue, '10', 'restore the preview before Lit renders the pending or confirmed cutoff');
+  assert.ok(Math.abs(Number(positions.y) - 193) < 1e-7);
   for (const line of lines) for (const key of ['y1', 'y2']) {
-    assert.ok(Math.abs(Number(line.attributes[key]) - (commit ? 118.8 : 189.5)) < 1e-7);
+    assert.ok(Math.abs(Number(line.attributes[key]) - 189.5) < 1e-7);
   }
   assert.equal(label.childNodes[0], marker);
   assert.equal(label.childNodes[1], textNode);
 });
 
-for (const update of ['tariff expands scale', 'spot expands scale', 'tariff fits scale']) {
+for (const update of ['formula text changes', 'spot expands scale']) {
   test(`threshold pointer-up after ${update} and before render`, t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const templates = [], calls = [], instance = card({ templates });
@@ -557,13 +557,13 @@ for (const update of ['tariff expands scale', 'spot expands scale', 'tariff fits
 
     const changed = update === 'spot expands scale'
       ? { [planId]: { state: 'ready', attributes: { plan: [plan[0], { ...plan[1], price: 35 }] } } }
-      : { [buyId]: { state: update === 'tariff expands scale' ? '50' : '10' } };
+      : { [buyId]: { state: '50' } };
     instance.hass = { ...instance.hass, states: { ...states, ...changed } };
     instance._onThresholdPointerUp(event({}, { type: 'pointerup', pointerId: 1 }));
 
     assert.equal(instance._thresholdDrag, null);
     assert.deepEqual(calls.map(([domain, service, data]) => [domain, service, { ...data }]),
-      update === 'tariff fits scale'
+      update === 'formula text changes'
         ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: Math.round(value * 100) / 100 }]]
         : []);
   });

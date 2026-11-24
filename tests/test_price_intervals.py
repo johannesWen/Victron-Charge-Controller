@@ -71,6 +71,65 @@ def test_missing_ends_quarter_cadence_never_fill_missing_records():
     assert len(gap) == 2 and all("price" not in item for item in gap)
 
 
+@pytest.mark.parametrize(("buy", "sell", "expected"), [
+    ("", "", None),
+    ("price * 2", "", (10, 5)),
+    ("", "100", (5, 100)),
+    ("0", "0", (0, 0)),
+])
+def test_plan_exposes_directional_prices_when_a_formula_is_set(controller, buy, sell, expected):
+    controller.update_entity_references({
+        **controller.config_entry.data, "import_price_formula": buy, "export_price_formula": sell,
+    })
+    publish(controller, [price()])
+    sensor = ChargePlanSensor(controller, MockConfigEntry())
+    sensor.async_write_ha_state = MagicMock()
+    sensor._handle_coordinator_update()
+    attrs = sensor.extra_state_attributes
+    assert attrs["price_formula_configured"] is (expected is not None)
+    period, = [p for p in attrs["plan"] if "price" in p]
+    if expected is None:
+        assert "import_price" not in period and "export_price" not in period
+    else:
+        assert (period["import_price"], period["export_price"]) == expected
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_independent_forecasts_keep_native_budgets_and_resolve_overlaps(controller, relative):
+    controller.update_entity_references({
+        **controller.config_entry.data, "epex_export_entity": "sensor.sell_back",
+        "import_price_formula": "price + 5", "export_price_formula": "-price",
+    })
+    sources = {
+        controller.epex_spot_entity: MockState("0", {"data": [price(minutes=60, value=0)]}),
+        "sensor.sell_back": MockState("0.02", {"unit_of_measurement": "EUR/kWh",
+            "data": [price(START + timedelta(minutes=15), value=-8)]}),
+    }
+    controller.hass.states.get.side_effect = sources.get
+    controller.expensive_hours = .25
+    controller.charge_price_threshold = 0 if relative else 5
+    controller.discharge_price_threshold = 0 if relative else 8
+    controller.relative_auto_mode = relative
+    controller.calculate_auto_schedule()
+    assert controller.charge_hours == ([utc_slot(DAY, 10)] if relative else [])
+    assert controller.discharge_hours == ([] if relative else [utc_slot(DAY, 10, 15, 15)])
+    view = controller._step_load_epex_view()
+    assert (view.price_reference_min, view.price_reference_max) == (8, 5)
+    assert (view.eur_per_kwh, view.export_eur_per_kwh) == (0.05, -0.02)
+    assert [(p["import_price"], p["export_price"]) for p in view.prices_today if "price" in p] == [
+        (5, None), (5, 8), (5, None),
+    ]
+    controller.grid_feed_in_control_enabled = True
+    controller.grid_feed_in_price_threshold = 0
+    assert controller._is_reduced_feed_in_mode(controller._get_current_price_ct())
+    sources.pop("sensor.sell_back")
+    view = controller._step_load_epex_view()
+    assert view.eur_per_kwh == 0.05 and view.export_eur_per_kwh is None
+    assert view.price_reference_min is None and controller._get_current_price_ct() is None
+    controller.calculate_auto_schedule()
+    assert controller.discharge_hours == [] and controller.charge_hours == [utc_slot(DAY, 10)]
+
+
 def test_legacy_hourly_and_explicit_mixed_intervals():
     hourly = normalized([price(START, minutes=60, end=False), price(START + timedelta(hours=2), end=False)])
     assert [item.end - item.start for item in hourly] == [timedelta(hours=1)] * 2

@@ -22,6 +22,7 @@ from .const import (
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
+    CONF_EPEX_EXPORT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -37,7 +38,10 @@ from .const import (
     DEFAULT_POWER_LIMIT,
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
+    CONF_REPLAN_TARIFFS,
+    TARIFF_FORMULAS,
 )
+from .tariffs import validated_formula
 
 REQUIRED_ENTITY_KEYS = (
     CONF_AC_GRID_SETPOINT_ENTITY,
@@ -48,6 +52,7 @@ REQUIRED_ENTITY_KEYS = (
 )
 
 OPTIONAL_ENTITY_KEYS = (
+    CONF_EPEX_EXPORT_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
     CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
@@ -56,6 +61,22 @@ OPTIONAL_ENTITY_KEYS = (
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
 )
+
+FORMULA_KEYS = tuple(TARIFF_FORMULAS.values())
+OPTIONAL_DATA_KEYS = OPTIONAL_ENTITY_KEYS + FORMULA_KEYS
+
+
+def _pricing_fields(current: dict[str, Any]) -> dict:
+    fields = {
+        CONF_EPEX_EXPORT_ENTITY: selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor"),
+        ),
+        **{key: selector.TextSelector() for key in FORMULA_KEYS},
+    }
+    return {
+        vol.Optional(key, description={"suggested_value": current.get(key)}): field
+        for key, field in fields.items()
+    }
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -71,6 +92,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_EPEX_SPOT_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor"),
         ),
+        **_pricing_fields({}),
         vol.Required(CONF_MAX_GRID_FEED_IN_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="number"),
         ),
@@ -104,13 +126,27 @@ def _clean_entity_data(user_input: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in user_input.items()
-        if key not in OPTIONAL_ENTITY_KEYS or value not in (None, "")
+        if key not in OPTIONAL_DATA_KEYS or value not in (None, "")
     }
 
 
+def _replan_if_pricing_changed(entry: ConfigEntry, data: dict[str, Any]) -> None:
+    """Replan once after the form reload has restored Auto and its fixed plan."""
+    if any(entry.data.get(key) != data.get(key) for key in (
+        *FORMULA_KEYS, CONF_EPEX_SPOT_ENTITY, CONF_EPEX_EXPORT_ENTITY,
+    )):
+        data[CONF_REPLAN_TARIFFS] = True
+
+
 def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
-    """Validate required entities and optional entities when configured."""
+    """Validate entity references and normalize the submitted formula text."""
     errors: dict[str, str] = {}
+    for key in FORMULA_KEYS:
+        try:
+            if key in user_input:
+                user_input[key] = validated_formula(user_input[key] or "")
+        except (TypeError, ValueError):
+            errors[key] = "invalid_price_formula"
     for key in REQUIRED_ENTITY_KEYS:
         entity_id = user_input.get(key)
         state = hass.states.get(entity_id) if entity_id else None
@@ -157,10 +193,39 @@ def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
     return errors
 
 
-class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
+class _TariffForm:
+    """Merge edits against the rates shown when this form opened."""
+
+    _original_tariffs: dict[str, str] | None = None
+
+    def _merge_tariffs(
+        self, entry: ConfigEntry, submitted: dict[str, Any] | None, errors: dict[str, str],
+    ) -> dict[str, str]:
+        if submitted is None or self._original_tariffs is None:
+            self._original_tariffs = {
+                key: (entry.data.get(key) or "").strip() for key in FORMULA_KEYS
+            }
+            return {}
+
+        unchanged = {}
+        for key, original in self._original_tariffs.items():
+            saved = entry.data.get(key) or ""
+            current = saved.strip()
+            proposed = submitted.get(key, "")
+            if proposed in (original, current):
+                unchanged[key] = saved
+            elif current != original and key not in errors:
+                errors[key] = "tariff_changed"
+                # The field error lets the user explicitly retry their edit.
+                self._original_tariffs[key] = current
+        return unchanged
+
+
+class VictronChargeControlConfigFlow(_TariffForm, ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Victron Charge Control."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None,
@@ -168,18 +233,22 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
         """Add the RAM actuator without replacing the entry or stored plan."""
         entry = self._get_reconfigure_entry()
         errors = {}
+        data = None
         if user_input is not None:
-            data = _clean_entity_data({
-                **{key: value for key, value in entry.data.items() if key not in OPTIONAL_ENTITY_KEYS},
+            data = {
+                **{key: value for key, value in entry.data.items() if key not in OPTIONAL_DATA_KEYS},
                 **user_input,
-            })
+            }
             errors = _validate_entities(self.hass, data)
-            if not errors:
-                return self.async_update_reload_and_abort(entry, data=data)
+        tariffs = self._merge_tariffs(entry, data, errors)
+        if data is not None and not errors:
+            data = _clean_entity_data({**data, **tariffs})
+            _replan_if_pricing_changed(entry, data)
+            return self.async_update_reload_and_abort(entry, data=data)
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=self.add_suggested_values_to_schema(
-                STEP_USER_DATA_SCHEMA, {**entry.data, **(user_input or {})}
+                STEP_USER_DATA_SCHEMA, entry.data if data is None else data
             ),
             errors=errors,
         )
@@ -214,12 +283,12 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(STEP_USER_DATA_SCHEMA, user_input or {}),
             errors=errors,
         )
 
 
-class VictronChargeControlOptionsFlow(OptionsFlow):
+class VictronChargeControlOptionsFlow(_TariffForm, OptionsFlow):
     """Handle options flow — allows changing entities after setup."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
@@ -230,11 +299,10 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Manage the options — same entity selectors, pre-filled with current values."""
-        errors: dict[str, str] = {}
+        errors = _validate_entities(self.hass, user_input) if user_input is not None else {}
+        tariffs = self._merge_tariffs(self._config_entry, user_input, errors)
 
         if user_input is not None:
-            errors = _validate_entities(self.hass, user_input)
-
             limits = {}
             for key, default, minimum in (
                 (CONF_POWER_LIMIT, DEFAULT_POWER_LIMIT, 1),
@@ -268,7 +336,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 current_data = {
                     key: value
                     for key, value in self._config_entry.data.items()
-                    if key not in OPTIONAL_ENTITY_KEYS
+                    if key not in OPTIONAL_DATA_KEYS
                 }
                 options = {
                     **self._config_entry.options,
@@ -287,9 +355,11 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                         )
                     ),
                 }
+                data = _clean_entity_data({**current_data, **data_update, **tariffs})
+                _replan_if_pricing_changed(self._config_entry, data)
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
-                    data=_clean_entity_data({**current_data, **data_update}),
+                    data=data,
                     options=options,
                 )
                 # Retry failed setup even if a previous submission already saved these values.
@@ -325,6 +395,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor"),
                 ),
+                **_pricing_fields(current),
                 vol.Required(
                     CONF_MAX_GRID_FEED_IN_ENTITY,
                     default=current.get(CONF_MAX_GRID_FEED_IN_ENTITY, ""),

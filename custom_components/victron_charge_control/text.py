@@ -15,15 +15,14 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    CONF_BUY_PRICE,
-    CONF_SELL_PRICE,
     DEFAULT_BLOCKED_CHARGING_HOURS,
     DEFAULT_BLOCKED_DISCHARGING_HOURS,
     DEFAULT_REPLAN_HOURS,
     DOMAIN,
+    TARIFF_FORMULAS,
 )
 from .coordinator import VictronChargeControlCoordinator
-from .energy import parse_tariff_eur_per_kwh
+from .tariffs import validated_formula
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,20 +61,21 @@ async def async_setup_entry(
         BlockedChargingHoursText(coordinator, entry),
         BlockedDischargingHoursText(coordinator, entry),
         ReplanHoursText(coordinator, entry),
-        TariffText(entry, CONF_BUY_PRICE),
-        TariffText(entry, CONF_SELL_PRICE),
+        *(TariffText(coordinator, key) for key in TARIFF_FORMULAS),
     ])
 
 
 class TariffText(TextEntity):
-    """A fixed History tariff persisted in the config entry options."""
+    """Edit the shared import or export tariff using its original entity ID."""
 
     _attr_has_entity_name = True
     _attr_unit_of_measurement = "ct/kWh"
+    _attr_native_max = 128
 
-    def __init__(self, entry: ConfigEntry, key: str) -> None:
-        self._entry = entry
-        self._key = key
+    def __init__(self, coordinator: VictronChargeControlCoordinator, key: str) -> None:
+        self._coordinator = coordinator
+        entry = coordinator.config_entry
+        self._key = TARIFF_FORMULAS[key]
         self._attr_translation_key = key
         self._attr_unique_id = f"{entry.entry_id}_{key}_text"
         self._attr_device_info = DeviceInfo(
@@ -87,21 +87,19 @@ class TariffText(TextEntity):
 
     @property
     def native_value(self) -> str:
-        """Return the fixed price in ct/kWh, or an empty string for EPEX."""
-        value = self._entry.options.get(self._key, "")
-        return value if parse_tariff_eur_per_kwh(value) is not None else ""
+        """Return the configured formula, or an empty string for EPEX."""
+        return self._coordinator.config_entry.data.get(self._key, "")
 
     async def async_set_value(self, value: str) -> None:
-        """Save a fixed price or clear it to restore EPEX accounting."""
-        value = value.strip()
-        if value and parse_tariff_eur_per_kwh(value) is None:
+        """Apply a validated change to the config entry and running controller."""
+        try:
+            value = validated_formula(value)
+        except ValueError as err:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="invalid_tariff",
-            )
-        self.hass.config_entries.async_update_entry(
-            self._entry, options={**self._entry.options, self._key: value},
-        )
+            ) from err
+        await self._coordinator.async_set_tariff(self._key, value)
         self.async_write_ha_state()
 
 

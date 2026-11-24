@@ -10,12 +10,13 @@ import asyncio
 import logging
 import math
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import (
@@ -35,9 +36,11 @@ from .const import (
     CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
-    CONF_BUY_PRICE,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
+    CONF_EPEX_EXPORT_ENTITY,
+    CONF_IMPORT_PRICE_FORMULA,
+    CONF_EXPORT_PRICE_FORMULA,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -45,7 +48,6 @@ from .const import (
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
-    CONF_SELL_PRICE,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_ACTION_CONFIRM_SECONDS,
     DEFAULT_CHARGE_POWER,
@@ -68,6 +70,7 @@ from .const import (
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
+    CONF_REPLAN_TARIFFS,
     EPEX_ATTR_DATA,
     EPEX_KEY_PRICE,
     EPEX_KEY_PRICE_EUR,
@@ -85,13 +88,13 @@ from .const import (
 
 from .solar import sample_solar_surplus
 from .epex import (
+    EpexSource,
+    PriceInterval,
     extract_price_ct,
     find_epex_data,
     get_battery_soc,
-    get_current_price_ct,
     get_entity_float,
     normalize_price_eur_per_kwh,
-    normalize_price_intervals,
     parse_epex_start_time,
     price_reference_bounds,
     price_timeline,
@@ -124,7 +127,7 @@ from .persistence import (
     deserialize_slots,
     serialize_slots,
 )
-from .energy import accumulate_cost_tracking, parse_tariff_eur_per_kwh, read_meter_delta
+from .energy import accumulate_cost_tracking, read_meter_delta
 from .decision import (
     DebounceState,
     DecisionState,
@@ -148,6 +151,19 @@ from .forecast import SolcastForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+type _TariffSaveRequest = tuple[Mapping[str, Any], dict[str, list[str]] | None]
+
+
+def _configured_tariffs(data: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Represent the effective market sources and formulas in the schedule Store."""
+    buy = data[CONF_EPEX_SPOT_ENTITY]
+    return {
+        "import": [buy, data.get(CONF_IMPORT_PRICE_FORMULA) or ""],
+        "export": [
+            data.get(CONF_EPEX_EXPORT_ENTITY) or buy, data.get(CONF_EXPORT_PRICE_FORMULA) or "",
+        ],
+    }
+
 
 @dataclass
 class EpexPriceView:
@@ -165,6 +181,7 @@ class EpexPriceView:
     prices_tomorrow: list[dict[str, Any]]
     price_reference_min: float | None = None
     price_reference_max: float | None = None
+    export_eur_per_kwh: float | None = None
 
 
 @dataclass
@@ -194,6 +211,7 @@ class ChargeControlData:
     grid_energy_import: float | None = None
     grid_energy_export: float | None = None
     current_price_eur_per_kwh: float | None = None
+    export_price_eur_per_kwh: float | None = None
     last_schedule_update: datetime | None = None
     last_cost_update: datetime | None = None
     solar_surplus_mean: float | None = None
@@ -231,7 +249,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._battery_soc_entity: str = entry.data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity: str = entry.data[CONF_GRID_SETPOINT_ENTITY]
         self._ac_grid_setpoint_entity: str = entry.data[CONF_AC_GRID_SETPOINT_ENTITY]
-        self._epex_spot_entity: str = entry.data[CONF_EPEX_SPOT_ENTITY]
+        self._set_price_sources(entry.data)
+        self._planned_tariffs: dict[str, list[str]] | None = None
+        self._tariff_save_failed = False
+        self._tariff_save_request: _TariffSaveRequest | None = None
+        self._tariff_save_task: asyncio.Task[None] | None = None
+        self._discharge_save_deferred = False
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
         self._max_discharge_power_entity: str | None = entry.data.get(
             CONF_MAX_DISCHARGE_POWER_ENTITY
@@ -711,7 +734,11 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     @property
     def epex_spot_entity(self) -> str:
-        return self._epex_spot_entity
+        return self._import_source.entity_id
+
+    @property
+    def price_formula_configured(self) -> bool:
+        return bool(self._import_source.formula.strip() or self._export_source.formula.strip())
 
     @property
     def max_grid_feed_in_entity(self) -> str:
@@ -801,7 +828,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._battery_soc_entity = data[CONF_BATTERY_SOC_ENTITY]
         self._grid_setpoint_entity = data[CONF_GRID_SETPOINT_ENTITY]
         self._ac_grid_setpoint_entity = data[CONF_AC_GRID_SETPOINT_ENTITY]
-        self._epex_spot_entity = data[CONF_EPEX_SPOT_ENTITY]
+        self._set_price_sources(data)
         self._max_grid_feed_in_entity = data[CONF_MAX_GRID_FEED_IN_ENTITY]
         discharge_entity = data.get(CONF_MAX_DISCHARGE_POWER_ENTITY) or None
         if discharge_entity != self._max_discharge_power_entity:
@@ -1330,11 +1357,44 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             for previous, edited in zip(base, current)
         )
 
+    def _set_price_sources(self, data: Mapping[str, Any]) -> None:
+        self._tariffs = _configured_tariffs(data)
+        self._import_source = EpexSource(*self._tariffs["import"])
+        self._export_source = EpexSource(*self._tariffs["export"])
+
+    def _price_intervals(self) -> tuple[list[PriceInterval], list[PriceInterval]]:
+        buy = self._import_source.intervals(self.hass)
+        if self._export_source == self._import_source:
+            return buy, buy
+        return buy, self._export_source.intervals(self.hass)
+
+    def _covered_tariffs(
+        self, buy: list[PriceInterval], sell: list[PriceInterval], now: datetime,
+    ) -> dict[str, list[str]]:
+        return {
+            key: self._tariffs[key] for key, intervals in (("import", buy), ("export", sell))
+            if any(period.end > now for period in intervals)
+        }
+
+    async def async_set_tariff(self, key: str, formula: str) -> None:
+        """Commit a validated tariff between control ticks and publish it now."""
+        async with self._control_lock:
+            data = dict(self.config_entry.data)
+            if formula == data.get(key, ""):
+                return
+            if formula:
+                data[key] = formula
+            else:
+                data.pop(key, None)
+            if self.control_mode == MODE_AUTO:
+                data[CONF_REPLAN_TARIFFS] = True
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            self._set_price_sources(data)
+        await self.async_refresh()
+
     def _source_slots(self) -> list[ScheduleSlot]:
-        state = self.hass.states.get(self._epex_spot_entity)
-        if state is None or state.state in ("unavailable", "unknown"):
-            return []
-        return [item.slot for item in normalize_price_intervals(state.attributes)]
+        buy, sell = self._price_intervals()
+        return sort_slots([item.slot for item in buy + sell])
 
     def set_slot_action(self, start_time: str, action: str) -> None:
         """Edit one published priced interval by instant, with no invalid side effects."""
@@ -1425,10 +1485,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Deserialize an hour-of-day list, dropping any out-of-range value."""
         return deserialize_hours(raw)
 
-    async def _async_save_schedule(self, *, verify_release: bool = False) -> bool:
+    async def _async_save_schedule(
+        self, *, verify: bool = False, tariff_request: _TariffSaveRequest | None = None,
+    ) -> bool:
         """Persist plan and release obligation together, in write order."""
         async with self._store_lock:
             if self._store_load_failed:
+                return False
+            if tariff_request is not None and self._tariff_save_request is not tariff_request:
                 return False
             # Build inside the lock so a queued schedule save cannot erase cleanup.
             payload = build_plan_payload(
@@ -1445,17 +1509,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 payload["fixed_plan_base"] = [serialize_slots(slots) for slots in self._fixed_plan_base_snapshot]
                 payload["fixed_plan_applied"] = serialize_slots(self._fixed_plan_applied_slots)
             payload["discharge_release_entity"] = self._discharge_release_entity
+            if self._planned_tariffs is not None:
+                payload["auto_plan_tariffs"] = self._planned_tariffs
             try:
                 await self._store.async_save(payload)
-                if verify_release:
-                    # HA Store logs some disk failures without raising them.
-                    saved = await self._store.async_load()
-                    if (
-                        not isinstance(saved, dict)
-                        or saved.get("discharge_release_entity") != self._discharge_release_entity
-                    ):
-                        _LOGGER.warning("Discharge release obligation was not persisted — retrying")
-                        return False
+                # HA Store logs some disk failures without raising them.
+                if verify and await self._store.async_load() != payload:
+                    _LOGGER.warning("Charge plan or discharge release obligation was not persisted — retrying")
+                    return False
             except Exception:  # noqa: BLE001
                 _LOGGER.warning("Failed to persist charge plan to Store", exc_info=True)
                 return False
@@ -1479,7 +1540,76 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._schedule_save_tasks.add(task)
         task.add_done_callback(self._schedule_save_tasks.discard)
 
-    async def _async_load_schedule(self) -> None:
+    def _prepare_tariff_replan(self) -> None:
+        """Apply available intervals under the control lock and queue their checkpoint."""
+        entry_data = self.config_entry.data
+        if (
+            not entry_data.get(CONF_REPLAN_TARIFFS) or not self._discharge_storage_ready
+            or self._shutdown_requested or self.hass.state in (CoreState.stopping, CoreState.final_write)
+            or self._tariffs != _configured_tariffs(entry_data)
+        ):
+            return
+        if self.control_mode != MODE_AUTO:
+            if self._tariff_save_request is None or self._tariff_save_request[0] is not entry_data:
+                self._tariff_save_request = (entry_data, None)
+            return
+        buy, sell = self._price_intervals()
+        now = dt_util.now()
+        covered = self._covered_tariffs(buy, sell, now)
+        # The stored directions show which half of a partial plan already survived a save.
+        partial = covered != self._tariffs
+        queued = self._tariff_save_request
+        if queued is not None and queued[0] is entry_data and queued[1] == covered:
+            return
+        if not covered or (partial and covered == self._planned_tariffs and not self._tariff_save_failed):
+            return
+        if self._apply_auto_schedule(buy, sell, now):
+            self._planned_tariffs = covered
+            self._tariff_save_request = (entry_data, covered)
+
+    async def _async_persist_tariffs(self) -> None:
+        """Drain the latest tariff checkpoint without delaying the RAM watchdog."""
+        while (request := self._tariff_save_request) is not None:
+            entry_data, covered = request
+            saved = covered is None or await self._async_save_schedule(verify=True, tariff_request=request)
+            if self._tariff_save_request is not request:
+                continue
+            self._tariff_save_request = None
+            self._tariff_save_failed = not saved
+            running = not self._shutdown_requested and self.hass.state not in (
+                CoreState.stopping, CoreState.final_write,
+            )
+            if (
+                saved and running and self.config_entry.data is entry_data
+                and (self.control_mode != MODE_AUTO or covered == self._planned_tariffs == self._tariffs)
+            ):
+                data = dict(entry_data)
+                data.pop(CONF_REPLAN_TARIFFS, None)
+                self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            if self._discharge_save_deferred:
+                self._discharge_save_deferred = False
+                if saved and running:
+                    self._discharge_last_attempt = None
+                    self.hass.async_create_task(self.async_request_refresh(), eager_start=False)
+
+    def _tariff_save_in_progress(self) -> bool:
+        return self._tariff_save_task is not None and not self._tariff_save_task.done()
+
+    def _defer_discharge_save(self) -> bool:
+        """Keep the previous release marker until storage is available for verification."""
+        if self._tariff_save_request is not None or self._tariff_save_in_progress():
+            self._discharge_save_deferred = True
+            return True
+        return False
+
+    async def _async_load_schedule(self) -> bool:
+        """Restore the plan and finish any tariff change that required a reload."""
+        await self._async_restore_schedule()
+        replan = bool(self.config_entry.data.get(CONF_REPLAN_TARIFFS))
+        self._prepare_tariff_replan()
+        return replan
+
+    async def _async_restore_schedule(self) -> None:
         """Load the plan from the Store and apply it to the coordinator.
 
         If the Store is empty (fresh install, first ever start, or a
@@ -1515,6 +1645,21 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             # RestoreEntity callbacks already populated.
             return
 
+        self._planned_tariffs = data.get("auto_plan_tariffs")
+        entry_data = self.config_entry.data
+        if (
+            self.control_mode == MODE_AUTO and self._planned_tariffs is not None
+            and self._tariffs == _configured_tariffs(entry_data)
+        ):
+            # Config entries and plans are saved separately. Either write may survive a crash.
+            needs_replan = self._planned_tariffs != self._tariffs
+            if needs_replan != bool(entry_data.get(CONF_REPLAN_TARIFFS)):
+                updated = dict(entry_data)
+                if needs_replan:
+                    updated[CONF_REPLAN_TARIFFS] = True
+                else:
+                    del updated[CONF_REPLAN_TARIFFS]
+                self.hass.config_entries.async_update_entry(self.config_entry, data=updated)
         self._charge_hours = applied["charge_hours"]
         self._discharge_hours = applied["discharge_hours"]
         self._pv_charge_hours = applied["pv_charge_hours"]
@@ -1553,15 +1698,30 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Auto schedule calculation from EPEX prices
     # ------------------------------------------------------------------
 
-    def calculate_auto_schedule(self) -> None:
+    def calculate_auto_schedule(self) -> bool:
         """Calculate optimal charge/discharge hours from EPEX spot prices."""
+        buy, sell = self._price_intervals()
+        now = dt_util.now()
+        applied = self._apply_auto_schedule(buy, sell, now)
+        if applied:
+            self._planned_tariffs = (
+                self._covered_tariffs(buy, sell, now)
+                if self.config_entry.data.get(CONF_REPLAN_TARIFFS) else self._tariffs
+            )
+            self._async_schedule_save()
+        return applied
+
+    def _apply_auto_schedule(
+        self, import_prices: list[PriceInterval], export_prices: list[PriceInterval], now: datetime,
+    ) -> bool:
+        """Apply a plan only when the planner has usable current or future intervals."""
         pv_charge = (
             self._fixed_plan_base_snapshot[2]
             if self._fixed_plan_base_snapshot is not None else self._pv_charge_hours
         )
         result = planning_calculate_auto_schedule(
-            self.hass,
-            epex_spot_entity=self._epex_spot_entity,
+            import_prices=import_prices,
+            export_prices=export_prices,
             control_mode=self.control_mode,
             cheapest_hours=self.cheapest_hours,
             expensive_hours=self.expensive_hours,
@@ -1571,10 +1731,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             blocked_charging_hours=self._blocked_charging_hours,
             blocked_discharging_hours=self._blocked_discharging_hours,
             pv_charge_hours=pv_charge,
-            now=dt_util.now(),
+            now=now,
         )
         if result is None:
-            return
+            return False
         charge_slots, discharge_slots = result
         self._charge_hours = charge_slots
         self._discharge_hours = discharge_slots
@@ -1584,8 +1744,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._fixed_plan_applied_slots = []
             # Merge the active fixed plan on top of the fresh auto plan.
             self._apply_fixed_plan(reset_base=True)
-        self._last_schedule_update = dt_util.now()
-        self._async_schedule_save()
+        self._last_schedule_update = now
+        return True
 
     # ------------------------------------------------------------------
     # Decision engine
@@ -1611,7 +1771,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         setpoint, so the PV-Charge/Discharge setpoints can be clamped to
         the active feed-in limit in the same tick.
         """
-        return get_current_price_ct(self.hass, self._epex_spot_entity)
+        return self._export_source.current_ct(self.hass)
 
     def _get_entity_float(self, entity_id: str | None) -> float | None:
         """Read a numeric entity state, returning None when unavailable or invalid."""
@@ -1631,7 +1791,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return True, delta
         return False, None
 
-    def _update_cost_tracking(self, current_price_eur_per_kwh: float | None) -> None:
+    def _update_cost_tracking(self, import_eur: float | None, export_eur: float | None) -> None:
         """Update cumulative grid energy costs, revenue, and kWh import/export."""
         updated_consumption, consumption_delta_kwh = self._read_meter_delta(
             entity_id=self._grid_consumption_entity,
@@ -1642,15 +1802,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             last_attr="_last_grid_feed_in_kwh",
         )
 
-        options = self.config_entry.options
-        buy_price = parse_tariff_eur_per_kwh(options.get(CONF_BUY_PRICE, ""))
-        sell_price = parse_tariff_eur_per_kwh(options.get(CONF_SELL_PRICE, ""))
         new_cost, new_revenue, new_import, new_export, baselines_changed = (
             accumulate_cost_tracking(
                 consumption_delta_kwh=consumption_delta_kwh,
                 feed_in_delta_kwh=feed_in_delta_kwh,
-                buy_price=current_price_eur_per_kwh if buy_price is None else buy_price,
-                sell_price=current_price_eur_per_kwh if sell_price is None else sell_price,
+                buy_price=import_eur,
+                sell_price=export_eur,
                 cost=self._grid_energy_cost,
                 revenue=self._grid_energy_revenue,
                 import_kwh=self._grid_energy_import,
@@ -1910,8 +2067,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                         self._discharge_release_pending = True
                         continue
                     return
+                if self._defer_discharge_save():
+                    return
                 self._discharge_release_entity = entity
-                if not await self._async_save_schedule(verify_release=True):
+                if not await self._async_save_schedule(verify=True):
                     self._discharge_last_attempt = (entity, value, self.hass.loop.time())
                     return
                 # Mode, schedule, toggle or configuration may change during disk I/O.
@@ -1933,18 +2092,27 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     continue
                 return
             if value == -1:
-                self._discharge_release_entity = None
-                if not await self._async_save_schedule(verify_release=True):
-                    self._discharge_release_entity = entity
+                if shutdown or self.hass.state is CoreState.stopping or self._defer_discharge_save():
+                    self._discharge_may_be_applied = False
                     return
-                self._discharge_release_pending = False
-                self._discharge_may_be_applied = False
-                # A fresh window may start even on the same entity after cleanup.
-                self._discharge_last_attempt = None
+                if not await self._async_clear_discharge_obligation():
+                    return
             elif self._desired_discharge_entity() == entity:
                 return
         if not self._shutdown_requested:
             self._debounced_refresh.async_schedule_call()
+
+    async def _async_clear_discharge_obligation(self, _event: Any = None) -> bool:
+        """Verify that the released device is no longer recorded for startup cleanup."""
+        entity = self._discharge_release_entity
+        self._discharge_release_entity = None
+        if not await self._async_save_schedule(verify=True):
+            self._discharge_release_entity = entity
+            return False
+        self._discharge_release_pending = False
+        self._discharge_may_be_applied = False
+        self._discharge_last_attempt = None
+        return True
 
     @callback
     def _schedule_ram_refresh(self, needed: bool) -> None:
@@ -2060,8 +2228,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     async def _async_update_data(self) -> ChargeControlData:
         """Serialize event, timer, and direct refreshes with shutdown."""
-        async with self._control_lock:
-            return await self._async_control_update()
+        try:
+            async with self._control_lock:
+                return await self._async_control_update()
+        finally:
+            if (
+                self._tariff_save_request is not None and not self._control_lock.locked()
+                and not self._tariff_save_in_progress()
+            ):
+                self._tariff_save_task = self.hass.async_create_task(self._async_persist_tariffs())
 
     async def _async_control_update(self) -> ChargeControlData:
         """Run the decision engine and apply the setpoint.
@@ -2083,12 +2258,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """
         if self._shutdown_requested:
             return self.data
+        self._prepare_tariff_replan()
         self._sample_solar_surplus()
         decision = await self._async_reconcile_setpoint()
         if decision is None:
             return self.data
         current_price_ct, is_reduced, action, setpoint, calculation = decision
         inputs = self._setpoint_inputs()
+        price_tariffs = self._tariffs
         price_view = self._step_load_epex_view()
         self._clean_expired_slots()
         try:
@@ -2113,8 +2290,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     current_price_ct, is_reduced, action, setpoint, calculation = decision
         if self._shutdown_requested:
             return self.data
-        if self._accounting_ready:
-            self._update_cost_tracking(price_view.eur_per_kwh)
+        # A pricing form may have scheduled a reload while a device write was pending.
+        # Let the new coordinator account for that meter delta with its saved tariffs.
+        if self._accounting_ready and price_tariffs == _configured_tariffs(self.config_entry.data):
+            self._update_cost_tracking(price_view.eur_per_kwh, price_view.export_eur_per_kwh)
         return self._build_snapshot(
             action=action,
             setpoint=setpoint,
@@ -2305,12 +2484,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     def _step_load_epex_view(self) -> EpexPriceView:
         """Read the EPEX state and assemble the today/tomorrow price lists."""
-        epex_state = self.hass.states.get(self._epex_spot_entity)
+        epex_state = self.hass.states.get(self.epex_spot_entity)
         current_price: float | None = None
-        current_price_eur_per_kwh: float | None = None
         epex_attributes: dict[str, Any] = {}
-        prices_today: list[dict[str, Any]] = []
-        prices_tomorrow: list[dict[str, Any]] = []
         if epex_state is not None and epex_state.state not in (
             "unavailable",
             "unknown",
@@ -2321,21 +2497,22 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             except (ValueError, TypeError):
                 pass
             epex_attributes = dict(epex_state.attributes)
-            current_price_eur_per_kwh = self._normalize_price_eur_per_kwh(
-                epex_state.state, epex_attributes
-            )
-        intervals = normalize_price_intervals(epex_attributes)
+        buy_ct = self._import_source.current_ct(self.hass)
+        same_source = self._import_source == self._export_source
+        sell_ct = buy_ct if same_source else self._export_source.current_ct(self.hass)
+        buy, sell = self._price_intervals()
         now = dt_util.now()
-        reference_min, reference_max = price_reference_bounds(intervals, now)
+        _, reference_max = price_reference_bounds(buy, now)
+        reference_min, _ = price_reference_bounds(sell, now)
         schedule = self._charge_hours + self._discharge_hours + self._pv_charge_hours
-        prices_today = price_timeline(intervals, now.date().isoformat(), schedule)
-        prices_tomorrow = price_timeline(intervals, (now + timedelta(days=1)).date().isoformat(), schedule)
+        export_intervals = sell if self.price_formula_configured or not same_source else None
         return EpexPriceView(
             current_price=current_price,
-            eur_per_kwh=current_price_eur_per_kwh,
+            eur_per_kwh=buy_ct / 100 if buy_ct is not None else None,
+            export_eur_per_kwh=sell_ct / 100 if sell_ct is not None else None,
             attributes=epex_attributes,
-            prices_today=prices_today,
-            prices_tomorrow=prices_tomorrow,
+            prices_today=price_timeline(buy, now.date().isoformat(), schedule, export_intervals),
+            prices_tomorrow=price_timeline(buy, (now + timedelta(days=1)).date().isoformat(), schedule, export_intervals),
             price_reference_min=reference_min,
             price_reference_max=reference_max,
         )
@@ -2394,6 +2571,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             grid_energy_import=self.grid_energy_import,
             grid_energy_export=self.grid_energy_export,
             current_price_eur_per_kwh=price_view.eur_per_kwh,
+            export_price_eur_per_kwh=price_view.export_eur_per_kwh,
             last_schedule_update=self._last_schedule_update,
             last_cost_update=self._last_cost_update,
             solar_surplus_mean=self._solar_surplus_mean,
@@ -2413,8 +2591,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._battery_soc_entity,
             self._grid_setpoint_entity,
             self._ac_grid_setpoint_entity,
-            self._epex_spot_entity,
+            self.epex_spot_entity,
         ]
+        if self._export_source.entity_id != self.epex_spot_entity:
+            entities_to_watch.append(self._export_source.entity_id)
         if self._grid_consumption_entity is not None:
             entities_to_watch.append(self._grid_consumption_entity)
         if self._grid_feed_in_energy_entity is not None:
@@ -2460,32 +2640,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
         )
 
-        # Restore the previous charge plan from the persistent Store. If
-        # the Store is empty (fresh install, first ever start, or a
-        # migration from a pre-persistence version) the coordinator's
-        # in-memory state is left untouched — in particular we
-        # deliberately do NOT call calculate_auto_schedule() here so the
-        # user's previous plan is not silently overwritten on a Home
-        # Assistant restart. The user can still trigger a fresh plan via
-        # the **Recalculate Schedule** button or by waiting for the next
-        # configured replan hour.
-        #
-        # The load is the very first ``await`` in this method on
-        # purpose: it runs before any other code that could yield, and
-        # combined with ``_suspend_save`` (still True at this point) it
-        # guarantees the text entities' ``async_added_to_hass``
-        # restore-setters, which ran earlier during
-        # ``forward_entry_setups``, did not write a stale empty plan
-        # over the user's persisted one.
+        # Restore the plan before enabling saves or applying a tariff edit.
+        # Ordinary restarts keep the stored schedule.
         async with self._control_lock:
-            await self._async_load_schedule()
+            replan = await self._async_load_schedule()
         if self._shutdown_requested:
             return
 
         # Text restore callbacks can refresh before the history sensors restore.
         self._accounting_ready = True
         self._grid_consumer_ready = True
-        await self.async_request_refresh()
+        if replan:
+            await self.async_refresh()
+        else:
+            await self.async_request_refresh()
         if self._shutdown_requested:
             return
 
@@ -2528,3 +2696,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 if await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE, force=True):
                     self._idle_correction_pending = False
         await asyncio.gather(*self._schedule_save_tasks)
+        if self._tariff_save_task is not None:
+            await self._tariff_save_task
+        if self._discharge_release_pending and not self._discharge_may_be_applied:
+            if self.hass.state is CoreState.stopping:
+                # HA Store buffers saves until final_write, so verify the release there.
+                self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_FINAL_WRITE, self._async_clear_discharge_obligation,
+                )
+            else:
+                await self._async_clear_discharge_obligation()

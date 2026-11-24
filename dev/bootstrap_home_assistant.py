@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 DOMAIN = "victron_charge_control"
+ENTRY_PATH = f"/api/config/config_entries/entry?domain={DOMAIN}"
 CLIENT_ID = "http://localhost:8123/"
 ENTITIES = {
     "battery_soc_entity": "sensor.battery_soc",
@@ -90,11 +91,11 @@ def authenticate(client: Client, steps: list, username: str, password: str):
     return tokens["refresh_token"]
 
 
-def configure_integration(client: Client) -> None:
-    entries = client.request(f"/api/config/config_entries/entry?domain={DOMAIN}")
-    if entries:
-        print("Charge Control is already configured; preserving its settings.")
-        return
+def configure_integration(client: Client) -> bool:
+    """Create the mock integration if needed and report whether it was created."""
+    if client.request(ENTRY_PATH):
+        print("Charge Control is already configured; preserving its settings.", flush=True)
+        return False
     wait_for(
         lambda: set(ENTITIES.values()) <= {
             state["entity_id"] for state in client.request("/api/states")
@@ -110,6 +111,42 @@ def configure_integration(client: Client) -> None:
     result = client.request(f"/api/config/config_entries/flow/{flow['flow_id']}", ENTITIES)
     if result.get("type") != "create_entry":
         raise RuntimeError(f"Integration setup failed: {result.get('errors', result.get('reason'))}")
+    return True
+
+
+def wait_for_integration(client: Client) -> None:
+    print("Waiting for Charge Control to load.", flush=True)
+    last_status = None
+
+    def check():
+        nonlocal last_status
+        entries = client.request(ENTRY_PATH)
+        enabled = [entry for entry in entries if entry.get("disabled_by") is None]
+        if entries and not enabled:
+            raise RuntimeError(
+                "Charge Control is disabled. Enable it in Settings → Devices & services "
+                "and rerun the bootstrap."
+            )
+        states = {entry["state"] for entry in enabled}
+        if "loaded" in states:
+            return True
+        if states and states <= {"setup_error", "migration_error", "failed_unload"}:
+            entry = enabled[0]
+            reason = entry.get("reason") or (
+                "Check the Charge Control integration and logs in Home Assistant, "
+                "resolve the setup issue, and rerun the bootstrap."
+            )
+            raise RuntimeError(f"Charge Control failed to load ({entry['state']}). {reason}")
+        status = ", ".join(sorted(states)) or "entry pending"
+        if status != last_status:
+            print(f"Charge Control status: {status}", flush=True)
+            last_status = status
+        return False
+
+    wait_for(check, "Charge Control to load")
+
+
+def enable_auto_mode(client: Client) -> None:
     mode = f"select.{DOMAIN}_control_mode"
     wait_for(
         lambda: client.request(f"/api/states/{mode}").get("state")
@@ -158,23 +195,27 @@ def bootstrap(client: Client, username: str, password: str) -> None:
             raise
         steps = []  # Home Assistant removes onboarding routes after a restart.
     refresh_token = authenticate(client, steps, username, password)
+    completed = False
     try:
         for step in steps:
             if step["done"] or step["step"] == "user":
                 continue
             data = {"client_id": CLIENT_ID, "redirect_uri": CLIENT_ID} if step["step"] == "integration" else {}
             client.request(f"/api/onboarding/{step['step']}", data)
-        configure_integration(client)
-        wait_for(
-            lambda: any(entry["state"] == "loaded" for entry in client.request(
-                f"/api/config/config_entries/entry?domain={DOMAIN}"
-            )),
-            "Charge Control to load",
-        )
+        created = configure_integration(client)
+        wait_for_integration(client)
+        if created:
+            enable_auto_mode(client)
         configure_solcast(client)
         print("Development dashboard ready: http://localhost:8123/victron-dev/settings")
+        completed = True
     finally:
-        client.request("/auth/token", {"action": "revoke", "token": refresh_token}, form=True)
+        try:
+            client.request("/auth/token", {"action": "revoke", "token": refresh_token}, form=True)
+        except BaseException:
+            if completed:
+                raise
+            print("Warning: Could not revoke the temporary Home Assistant token.", file=sys.stderr)
 
 
 if __name__ == "__main__":

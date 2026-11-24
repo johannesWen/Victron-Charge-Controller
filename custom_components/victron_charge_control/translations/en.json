@@ -7,7 +7,7 @@
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
           "grid_setpoint_entity": "AC power setpoint (required, W)",
-          "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
+          "epex_spot_entity": "EPEX import price sensor (ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
           "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional, kWh)",
@@ -16,7 +16,10 @@
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
           "ac_grid_setpoint_entity": "AC grid setpoint (required, W)",
           "max_discharge_power_entity": "Max discharge power entity (optional, W)",
-          "battery_power_entity": "Battery power sensor (optional, W or kW)"
+          "battery_power_entity": "Battery power sensor (optional, W or kW)",
+          "epex_export_entity": "EPEX export price sensor (optional)",
+          "import_price_formula": "Import price formula (ct/kWh)",
+          "export_price_formula": "Export price formula (ct/kWh)"
         },
         "data_description": {
           "battery_soc_entity": "Choose the sensor that shows the battery charge level (0-100%). Used to keep the battery within your charge limits.",
@@ -30,7 +33,10 @@
           "grid_consumer_entity": "Choose the power sensor for a device you want to supply from solar and the grid. When Grid Consumer is enabled, the grid covers the power that unused solar cannot supply, within your set limits. Leave empty to disable this feature.",
           "ac_grid_setpoint_entity": "Choose the AC grid setpoint (RAM) in watts (W) from the built-in Victron GX integration. Active control uses this value. Choose a different entity from the permanent AC power setpoint. If this entity becomes unavailable, the safety watchdog stops control.",
           "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
-          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged."
+          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged.",
+          "epex_export_entity": "Select the sell-back sensor with its forecast. Leave empty to use the import sensor as the market input for both directions.",
+          "import_price_formula": "Price used for charging and import cost, in ct/kWh. Enter a fixed rate such as 25, use a formula such as (price + 12) * 1.21, or leave empty for the sensor price.",
+          "export_price_formula": "Price used for discharging, feed-in control and export revenue, in ct/kWh. Enter a fixed rate such as 8, use a formula such as price - 2, or leave empty for the sensor price."
         }
       },
       "reconfigure": {
@@ -39,7 +45,7 @@
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
           "grid_setpoint_entity": "AC power setpoint (required, W)",
-          "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
+          "epex_spot_entity": "EPEX import price sensor (ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
           "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional, kWh)",
@@ -48,7 +54,10 @@
           "grid_consumer_entity": "Grid Consumer power sensor (optional, W or kW)",
           "ac_grid_setpoint_entity": "AC grid setpoint (required, W)",
           "max_discharge_power_entity": "Max discharge power entity (optional, W)",
-          "battery_power_entity": "Battery power sensor (optional, W or kW)"
+          "battery_power_entity": "Battery power sensor (optional, W or kW)",
+          "epex_export_entity": "EPEX export price sensor (optional)",
+          "import_price_formula": "Import price formula (ct/kWh)",
+          "export_price_formula": "Export price formula (ct/kWh)"
         },
         "data_description": {
           "battery_soc_entity": "Choose the sensor that shows the battery charge level (0-100%). Used to keep the battery within your charge limits.",
@@ -62,7 +71,10 @@
           "grid_consumer_entity": "Choose the power sensor for a device you want to supply from solar and the grid. When Grid Consumer is enabled, the grid covers the power that unused solar cannot supply, within your set limits. Leave empty to disable this feature.",
           "ac_grid_setpoint_entity": "Choose the AC grid setpoint (RAM) in watts (W) from the built-in Victron GX integration. Active control uses this value. Choose a different entity from the permanent AC power setpoint. If this entity becomes unavailable, the safety watchdog stops control.",
           "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
-          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged."
+          "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged.",
+          "epex_export_entity": "Select the sell-back sensor with its forecast. Leave empty to use the import sensor as the market input for both directions.",
+          "import_price_formula": "Price used for charging and import cost, in ct/kWh. Enter a fixed rate such as 25, use a formula such as (price + 12) * 1.21, or leave empty for the sensor price.",
+          "export_price_formula": "Price used for discharging, feed-in control and export revenue, in ct/kWh. Enter a fixed rate such as 8, use a formula such as price - 2, or leave empty for the sensor price."
         }
       }
     },
@@ -71,7 +83,9 @@
       "number_required": "Select a number entity.",
       "distinct_setpoints": "Select different entities for the permanent AC power setpoint and RAM AC grid setpoint.",
       "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit.",
-      "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings."
+      "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings.",
+      "invalid_price_formula": "Use price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero.",
+      "tariff_changed": "This rate changed while the form was open. Submit again to apply your edit, or reopen the form to see the saved rate."
     },
     "abort": {
       "already_configured": "Already configured. Only one instance is supported."
@@ -85,7 +99,7 @@
         "data": {
           "battery_soc_entity": "Battery SOC sensor (required, %)",
           "grid_setpoint_entity": "AC power setpoint (required, W)",
-          "epex_spot_entity": "EPEX Spot price sensor (required, ct/kWh or EUR/kWh)",
+          "epex_spot_entity": "EPEX import price sensor (ct/kWh or EUR/kWh)",
           "max_grid_feed_in_entity": "Max grid feed-in entity (required, W)",
           "grid_consumption_entity": "Grid consumption energy sensor (optional, kWh)",
           "grid_feed_in_energy_entity": "Grid feed-in energy sensor (optional, kWh)",
@@ -98,7 +112,10 @@
           "max_discharge_power_entity": "Max discharge power entity (optional, W)",
           "battery_power_entity": "Battery power sensor (optional, W or kW)",
           "power_limit": "Power range limit (W)",
-          "idle_setpoint_limit": "Idle setpoint range limit (W)"
+          "idle_setpoint_limit": "Idle setpoint range limit (W)",
+          "epex_export_entity": "EPEX export price sensor (optional)",
+          "import_price_formula": "Import price formula (ct/kWh)",
+          "export_price_formula": "Export price formula (ct/kWh)"
         },
         "data_description": {
           "battery_soc_entity": "Choose the sensor that shows the battery charge level (0-100%). Used to keep the battery within your charge limits.",
@@ -116,7 +133,10 @@
           "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
           "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged.",
           "power_limit": "Whole watts, at least 1 (default 15000). Sets the selectable ranges for charge power, discharge power, minimum and maximum grid setpoints, and both grid feed-in limits. Saving reloads the integration and clamps existing settings to the new ranges before control starts. This does not set an operating target or change device limits.",
-          "idle_setpoint_limit": "Whole watts, at least 0 (default 500). Sets the independent Idle Setpoint range from minus this value to plus this value. Set to 0 to allow only 0 W. Saving reloads the integration and clamps the saved idle setpoint to this range."
+          "idle_setpoint_limit": "Whole watts, at least 0 (default 500). Sets the independent Idle Setpoint range from minus this value to plus this value. Set to 0 to allow only 0 W. Saving reloads the integration and clamps the saved idle setpoint to this range.",
+          "epex_export_entity": "Select the sell-back sensor with its forecast. Leave empty to use the import sensor as the market input for both directions.",
+          "import_price_formula": "Price used for charging and import cost, in ct/kWh. Enter a fixed rate such as 25, use a formula such as (price + 12) * 1.21, or leave empty for the sensor price.",
+          "export_price_formula": "Price used for discharging, feed-in control and export revenue, in ct/kWh. Enter a fixed rate such as 8, use a formula such as price - 2, or leave empty for the sensor price."
         }
       }
     },
@@ -127,7 +147,9 @@
       "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit.",
       "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings.",
       "invalid_power_limit": "Enter a finite whole number of watts, at least 1.",
-      "invalid_idle_setpoint_limit": "Enter a finite whole number of watts, at least 0."
+      "invalid_idle_setpoint_limit": "Enter a finite whole number of watts, at least 0.",
+      "invalid_price_formula": "Use price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero.",
+      "tariff_changed": "This rate changed while the form was open. Submit again to apply your edit, or reopen the form to see the saved rate."
     }
   },
   "entity": {
@@ -324,7 +346,7 @@
       "message": "Reconfigure this integration and select a distinct AC grid setpoint (RAM) number entity. The existing AC power setpoint remains the permanent idle fallback. Schedules and settings are preserved."
     },
     "invalid_tariff": {
-      "message": "Enter a decimal price in ct/kWh or leave it blank to use the live EPEX price."
+      "message": "Enter a fixed rate or formula in ct/kWh using price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero, or leave the field empty to use the sensor price."
     }
   },
   "services": {

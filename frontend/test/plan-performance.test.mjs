@@ -12,13 +12,17 @@ const template = (strings, ...values) => strings.reduce((text, string, index) =>
 function setup() {
   let now = Date.parse('2026-10-15T00:59:30Z'), nextTimer = 0;
   const timers = new Map(), listeners = new Map(), requests = [];
+  let formulaField;
   const document = {
     hidden: false,
     addEventListener: (name, callback) => listeners.set(name, callback),
     removeEventListener: name => listeners.delete(name),
   };
   const context = vm.createContext({
-    ...forecast, normalizeView, html: template, svg: template, css: template, nothing: '', document,
+    ...forecast, live: value => value, normalizeView, html: (strings, ...values) => {
+      if (strings[0].includes('class="price-formula-field"')) formulaField = { strings, values };
+      return template(strings, ...values);
+    }, svg: template, css: template, nothing: '', document,
     window: { addEventListener() {}, removeEventListener() {} },
     LitElement: class {
       requestUpdate(...args) { requests.push(args); }
@@ -52,7 +56,7 @@ function setup() {
   };
   const push = (states, context = {}) => { card.hass = { ...card.hass, states, ...context }; };
   requests.length = 0;
-  return { card, requests, timers, document, connect, visibility, advance, flush, push, pollerCalls, now: () => now };
+  return { card, requests, timers, document, connect, visibility, advance, flush, push, pollerCalls, formulaField: () => formulaField, now: () => now };
 }
 
 test('Plan stores every hass object but only integration entity identities and context request an update', () => {
@@ -160,7 +164,7 @@ test('pending actions, fixed hours, names and activation expire at their own ten
   card._pendingFixedPlanNames[1] = { value: 'Evening', ts: now() };
   card._pendingFixedPlanHours[1] = { 3: { action: 'charge', ts: now() } };
   card._pendingActiveFixedPlan = { value: 1, ts: now() };
-  card._pendingThresholds.charge = 8;
+  card._pendingThresholds.charge = { value: 8 };
   flush();
   advance(4000);
   card._pendingPlanActions.second = { action: 'discharge', ts: now() };
@@ -173,7 +177,7 @@ test('pending actions, fixed hours, names and activation expire at their own ten
   assert.equal(Object.keys(card._pendingFixedPlanNames).length, 0);
   assert.equal(Object.keys(card._pendingFixedPlanHours).length, 0);
   assert.equal(card._pendingActiveFixedPlan, undefined);
-  assert.equal(card._pendingThresholds.charge, 8, 'threshold pending semantics stay separate');
+  assert.equal(card._pendingThresholds.charge.value, 8, 'threshold pending semantics stay separate');
   flush(); advance(4000); flush();
   assert.equal(Object.keys(card._pendingPlanActions).length, 0);
   assert.equal(timers.size, 1, 'only the minute timer remains');
@@ -274,58 +278,67 @@ test('each chart computes hour groups once and a late source removal prevents a 
   assert.equal(groups, 2, 'PV also computes each chart group once');
 });
 
-test('Settings edits each fixed price independently and rejects invalid drafts without clearing the saved rate', async () => {
-  const { card, push } = setup();
+test('Settings sends formula text, uses the latest entity state, and preserves edits after a rejected save', async () => {
+  const { card, push, flush, formulaField } = setup();
   card.setConfig({ view: 'settings', entity_prefix: 'garage' });
   const buy = 'text.cellar_garage_buy_price_2';
   const sell = 'text.garage_sell_price';
   const calls = [];
-  push({ ...card.hass.states, [buy]: { state: '24.75' }, [sell]: { state: '' } }, {
-    callService: (domain, service, data) => calls.push([domain, service, { ...data }]),
+  let rejectSave;
+  push({ ...card.hass.states, [buy]: { state: 'price + 5' }, [sell]: { state: '' } }, {
+    callService: (domain, service, data) => {
+      calls.push([domain, service, { ...data }]);
+      if (data.value === 'price / 0') return new Promise((resolve, reject) => { rejectSave = reject; });
+    },
   });
-  const rendered = card.render();
-  assert.match(rendered, /<label class="tariff-field">\s*<span>Buy price \(ct\/kWh\)<\/span>\s*<input type="text"[^>]*\.value=24\.75/);
-  assert.doesNotMatch(rendered, /<input[^>]*inputmode="decimal"/);
-  assert.match(rendered, /Sell price \(ct\/kWh\)<\/span>\s*<input[^>]*\?disabled=false placeholder=Enter fixed price/);
+  let rendered = flush();
+  assert.match(rendered, /Import price formula \(ct\/kWh\)<\/span>\s*<input[^>]*\.value=price \+ 5/);
+  assert.match(rendered, /Export price formula \(ct\/kWh\)<\/span>\s*<input[^>]*\?disabled=false placeholder=Market price/);
 
-  const input = {
-    value: '',
-    setCustomValidity(message) { this.message = message; },
-    setAttribute(key, value) { this[key] = value; },
-    reportValidity() { this.reported = true; },
+  const field = (key, label) => card._renderPriceFormulaField(key, label);
+  const fire = (name, event) => {
+    const { strings, values } = formulaField();
+    return values[strings.findIndex(part => part.endsWith('@' + name + '='))](event);
   };
-  for (const value of ['-', ' ', '2,5.7', 'NaN', '0x10', '1e2']) {
-    input.value = value;
-    card._setTariff('buy_price', input);
-    assert.equal(input.value, value);
-  }
-  assert.deepEqual(calls, []);
-  assert.equal(input['aria-invalid'], 'true');
-  assert.equal(input.reported, true);
-
-  input.value = '0';
-  await card._setTariff('buy_price', input);
-  input.value = ' -2,5 ';
-  await card._setTariff('sell_price', input);
-  input.value = '';
-  await card._setTariff('buy_price', input);
+  const edit = value => fire('input', { target: { value } });
+  field('sell_price', 'Export price formula');
+  edit(' -2,5 ');
+  await fire('blur');
+  field('buy_price', 'Import price formula');
+  edit('  ');
+  await fire('blur');
+  edit('price / 0');
+  const rejected = fire('blur');
+  edit(' (price + 3) * 1.25 ');
+  push({ ...card.hass.states, [buy]: { state: 'price + 7' } });
+  rejectSave(new Error('Invalid price formula'));
+  await rejected;
+  rendered = flush();
+  assert.match(rendered, /Service call failed: Invalid price formula/);
+  assert.match(rendered, /\.value= \(price \+ 3\) \* 1\.25 /);
+  field('buy_price', 'Import price formula');
+  await fire('blur');
+  push({ ...card.hass.states, [buy]: { state: '(price + 3) * 1.25' } });
+  assert.match(flush(), /\.value=\(price \+ 3\) \* 1\.25/);
+  push({ ...card.hass.states, [buy]: { state: 'price + 9' }, [sell]: { state: '-3' } });
+  rendered = flush();
+  assert.match(rendered, /\.value=price \+ 9/);
+  assert.match(rendered, /\.value=-3/);
   assert.deepEqual(calls, [
-    ['text', 'set_value', { entity_id: buy, value: '0' }],
     ['text', 'set_value', { entity_id: sell, value: '-2.5' }],
     ['text', 'set_value', { entity_id: buy, value: '' }],
+    ['text', 'set_value', { entity_id: buy, value: 'price / 0' }],
+    ['text', 'set_value', { entity_id: buy, value: '(price + 3) * 1.25' }],
   ]);
 
   for (const state of ['unknown', 'unavailable', undefined]) {
     push({ ...card.hass.states, [buy]: state === undefined ? undefined : { state } });
-    assert.match(card._renderTariffField('buy_price', 'Buy price'), /\?disabled=true placeholder=Unavailable/);
-    input.value = '15';
-    card._setTariff('buy_price', input);
-    assert.equal(input.value, '');
+    assert.match(field('buy_price', 'Import price formula'), /\?disabled=true placeholder=Unavailable/);
   }
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
 });
 
-test('Plan shows fixed rate lines on the shared Price scale and preserves missing spot data and controls', () => {
+test('Formula text leaves the shared Price scale, missing spot data, and controls unchanged', () => {
   const { card, push, flush } = setup();
   const buy = 'text.garage_buy_price';
   const sell = 'text.garage_sell_price';
@@ -341,22 +354,15 @@ test('Plan shows fixed rate lines on the shared Price scale and preserves missin
   };
   push(states);
   const rendered = flush();
-  const ys = [...rendered.matchAll(/class="plan-tariff" pointer-events="none">\s*<line [^>]*y1="([^"]+)"[^>]*stroke-dasharray="4,3"/g)]
-    .map(match => Number(match[1]));
-  assert.equal(ys.length, 4);
-  assert.deepEqual(ys.slice(0, 2), ys.slice(2));
-  assert.ok(ys[0] >= 38 && ys[0] < ys[1] && ys[1] <= 250);
-  assert.equal((rendered.match(/>Buy 50<\/text>/g) || []).length, 2);
-  assert.equal((rendered.match(/>Sell -10<\/text>/g) || []).length, 2);
+  const [todayChart, tomorrowChart] = priceCharts(rendered);
+  assert.deepEqual(axisValues(todayChart), axisValues(tomorrowChart));
+  assert.equal(Math.max(...axisValues(todayChart)), 5);
+  assert.doesNotMatch(rendered, /class="plan-tariff"/);
   assert.match(rendered, /class="threshold-line-group" data-type="charge"/);
   assert.match(rendered, /class="plan-bar-hit"/);
 
-  push({ ...states, [buy]: { state: '0' }, [sell]: { state: '0.0' } });
-  assert.equal((flush().match(/>Buy \/ Sell 0<\/text>/g) || []).length, 2);
-  push({ ...states, [buy]: { state: 'unavailable' }, [sell]: { state: '0' } });
-  assert.equal((flush().match(/>Sell 0<\/text>/g) || []).length, 2);
-  push({ ...states, [buy]: { state: '0' }, [sell]: { state: '' } });
-  assert.equal((flush().match(/>Buy 0<\/text>/g) || []).length, 2);
+  push({ ...states, [buy]: { state: '0' }, [sell]: { state: 'price - 5' } });
+  assert.equal(flush(), rendered);
 
   card._solarForecast = forecast.normalizeForecast({
     usable: true, time_zone: 'UTC',
@@ -377,4 +383,199 @@ test('Plan shows fixed rate lines on the shared Price scale and preserves missin
   push({ ...states, [chargePlan]: { state: 'ready', attributes: { plan: [{ ...today, price: null }] } } });
   assert.match(flush(), /No EPEX price data available/);
   assert.doesNotMatch(flush(), /class="plan-tariff"/);
+});
+
+function directionalPlan(date = '2026-10-15') {
+  const period = (minute, action, prices) => ({ date, hour: 1, minute, action, ...prices,
+    start_time: `${date}T01:${String(minute).padStart(2, '0')}:00Z`,
+    end_time: `${date}T${minute === 45 ? '02:00' : `01:${minute + 15}`}:00Z`,
+  });
+  return [
+    period(0, 'charge', { price: 4, import_price: 4, export_price: -5 }),
+    period(15, 'discharge', { price: 7, import_price: 10, export_price: 7 }),
+    period(30, 'pv_charge', { price: 12, import_price: 0, export_price: 12 }),
+    period(45, 'idle', { price: 0, import_price: null, export_price: 0 }),
+  ];
+}
+
+const priceCharts = rendered => [...rendered.matchAll(/<svg class="plan-chart".*?<\/svg>/gs)].map(match => match[0]);
+const axisValues = chart => [...chart.matchAll(/class="plan-axis-label">([^<]+)<\/text>/g)].map(match => Number(match[1]));
+const priceBars = chart => [...chart.matchAll(/class="plan-price-bar"\s+x="([^"]+)" y="([^"]+)" width="[^"]+" height="([^"]+)"\s+fill="([^"]+)"/g)]
+  .map(([, x, y, height, fill]) => ({ x: Number(x), y: Number(y), height: Number(height), fill }));
+
+test('Formula plots align times and share scales across days by direction, with matching actions and price lines', () => {
+  const { card, push, flush } = setup();
+  const today = directionalPlan();
+  const tomorrow = directionalPlan('2026-10-16');
+  tomorrow[0] = { ...tomorrow[0], price: 17, import_price: 17, export_price: -20 };
+  const states = {
+    ...card.hass.states,
+    'text.garage_sell_price': { state: '100' },
+    'switch.garage_relative_auto_mode': { state: 'on' },
+    'number.garage_charge_price_threshold': { state: '11' },
+    'number.garage_discharge_price_threshold': { state: '22' },
+    'sensor.garage_charge_plan': { state: 'ready', attributes: {
+      price_formula_configured: true, price_reference_min: -20, price_reference_max: 17, plan: [...today, ...tomorrow],
+    } },
+  };
+  push(states);
+  const rendered = flush();
+  assert.equal((rendered.match(/>Import · Charging<\/div>/g) || []).length, 2);
+  assert.equal((rendered.match(/>Export · Discharging<\/div>/g) || []).length, 2);
+  const charts = priceCharts(rendered);
+  assert.equal(charts.length, 4);
+  const [buy, sell, buyTomorrow, sellTomorrow] = charts;
+  assert.ok(charts.every(chart => chart.includes('ct/kWh')));
+  assert.deepEqual(axisValues(buy), axisValues(buyTomorrow));
+  assert.deepEqual(axisValues(sell), axisValues(sellTomorrow));
+  assert.ok(Math.max(...axisValues(buy)) >= 17 && Math.max(...axisValues(buy)) < 20);
+  assert.equal(Math.min(...axisValues(sell)), -20);
+  assert.equal(Math.max(...axisValues(sell)), 16);
+  assert.doesNotMatch(rendered, /class="plan-tariff"/);
+  assert.match(buy, /data-type="charge"[\s\S]*class="plan-threshold-label"[^>]*>6<\/text>/);
+  assert.match(sell, /data-type="discharge"[\s\S]*class="plan-threshold-label"[^>]*>2<\/text>/);
+  assert.doesNotMatch(buy, /data-type="discharge"/);
+  assert.doesNotMatch(sell, /data-type="charge"/);
+
+  const importBars = priceBars(buy), exportBars = priceBars(sell);
+  assert.equal(importBars.length, 3, 'null import is a gap');
+  assert.equal(exportBars.length, 4);
+  assert.deepEqual(importBars.map(bar => bar.x), exportBars.slice(0, 3).map(bar => bar.x));
+  assert.ok(importBars[1].height > importBars[0].height, 'import uses its own price during discharge');
+  assert.equal(importBars[2].height, 2, 'zero import stays visible');
+  assert.equal(exportBars[3].height, 2, 'zero export stays visible');
+  assert.equal(importBars[0].fill, 'var(--vcc-success, #4caf50)');
+  assert.equal(importBars[1].fill, 'var(--vcc-disabled, #bdbdbd)');
+  assert.equal(exportBars[0].fill, 'var(--vcc-disabled, #bdbdbd)');
+  assert.equal(exportBars[1].fill, '#ff6600');
+  assert.match(buy, /class="plan-pv-column"/);
+  assert.doesNotMatch(sell, /class="plan-pv-column"/);
+
+  const tooltip = chart => chart.match(/<foreignObject.*?<\/foreignObject>/s)?.[0];
+  card._onBarClick({}, 'today-charge', 0);
+  const importDetails = tooltip(priceCharts(flush())[0]);
+  assert.equal((importDetails.match(/ct\/kWh/g) || []).length, 1);
+  assert.match(importDetails, /<th>From<\/th><th>Import<\/th><th>Export<\/th><th>Plan<\/th>/);
+  for (const cells of [
+    ['01:00', '4.00', '-5.00', 'Charging'],
+    ['01:15', '10.00', '7.00', 'Discharging'],
+    ['01:30', '0.00', '12.00', 'PV Charging'],
+    ['01:45', '—', '0.00', 'Idle'],
+  ]) assert.ok(importDetails.includes(`<tr>${cells.map(cell => `<td>${cell}</td>`).join('')}</tr>`));
+  assert.doesNotMatch(buy, /<title>/);
+  assert.match(buy, /Import 4\.00 ct\/kWh · Export -5\.00 ct\/kWh · Charging/);
+  card._onBarClick({}, 'today-discharge', 0);
+  assert.equal(tooltip(priceCharts(flush())[1]), importDetails);
+
+  const changes = [];
+  card._thresholdDrag = { scale: { ...card._priceChartData().plots[0].scale, direction: 'charge' } };
+  card._finishThresholdDrag = commit => { changes.push(commit); card._thresholdDrag = null; };
+  push({ ...states, 'text.garage_sell_price': { state: '200' } });
+  assert.deepEqual(changes, [], 'export formula text preserves an import drag');
+  push({ ...card.hass.states, 'text.garage_buy_price': { state: '200' } });
+  assert.deepEqual(changes, [], 'import formula text preserves an import drag');
+});
+
+test('Each directional scale includes its off-scale cutoff, and drags cancel when that scale changes', () => {
+  const { card, push, flush } = setup();
+  const plan = ['2026-10-15', '2026-10-16'].map(date => ({ date, hour: 1, price: 100,
+    import_price: 4, export_price: 100, action: 'discharge',
+  }));
+  const states = {
+    ...card.hass.states,
+    'text.garage_sell_price': { state: '100' },
+    'switch.garage_relative_auto_mode': { state: 'on' },
+    'number.garage_charge_price_threshold': { state: '10' },
+    'number.garage_discharge_price_threshold': { state: '10' },
+  };
+  const publish = overrides => push({ ...states, 'sensor.garage_charge_plan': { state: 'ready', attributes: {
+    plan, price_formula_configured: true, price_reference_min: 100, price_reference_max: 4, ...overrides,
+  } } });
+  publish();
+  const charts = priceCharts(flush());
+  assert.equal(charts.length, 4);
+  for (const [index, chart] of charts.entries()) {
+    const expected = index % 2 === 0 ? ['charge', '-6'] : ['discharge', '110'];
+    assert.deepEqual(chart.match(/class="threshold-line-group" data-type="([^"]+)"[\s\S]*?class="plan-threshold-label"[^>]*>([^<]+)/)?.slice(1), expected);
+  }
+  assert.deepEqual(axisValues(charts[0]), axisValues(charts[2]));
+  assert.deepEqual(axisValues(charts[1]), axisValues(charts[3]));
+  assert.equal(Math.min(...axisValues(charts[0])), -7);
+  assert.equal(Math.max(...axisValues(charts[1])), 111);
+
+  const changes = [];
+  card._thresholdDrag = { scale: { ...card._priceChartData().plots[1].scale, direction: 'discharge' } };
+  card._finishThresholdDrag = commit => { changes.push(commit); card._thresholdDrag = null; };
+  push({ ...card.hass.states, 'sensor.garage_current_price': { state: '4' } });
+  assert.deepEqual(changes, [], 'fresh HA data with matching cutoff and prices keeps the drag');
+  push({ ...card.hass.states, 'number.garage_discharge_price_threshold': { state: '20' } });
+  assert.deepEqual(changes, [false], 'the external delta expands the scale and cancels the active drag');
+
+  publish({ price_reference_min: null, price_reference_max: null });
+  const [, sellWithoutReference] = priceCharts(flush());
+  assert.equal(Math.max(...axisValues(sellWithoutReference)), 101);
+  assert.doesNotMatch(flush(), /class="threshold-line-group"/);
+  publish({ price_formula_configured: false });
+  assert.equal(priceCharts(flush()).length, 2);
+  assert.doesNotMatch(flush(), /class="threshold-line-group"/);
+});
+
+test('Split Price pickers use both labeled prices for the same canonical interval', () => {
+  const { card, push, flush } = setup();
+  const entity = 'sensor.garage_charge_plan';
+  const plan = directionalPlan();
+  plan[0] = { ...plan[0], action: 'idle', price: 5, import_price: 5, export_price: 100 };
+  const publish = (price_formula_configured, periods = plan) => push({ ...card.hass.states,
+    [entity]: { state: 'ready', attributes: { price_formula_configured, plan: periods } },
+  });
+  publish(true);
+  flush();
+  for (const chartId of ['today-charge', 'today-discharge']) {
+    card._openPicker(chartId, 0);
+    const picker = card._renderPlanPicker();
+    assert.match(picker, /Import 5\.00 ct\/kWh · Export 100\.00 ct\/kWh · Idle/);
+    assert.match(picker, /Import unavailable · Export 0\.00 ct\/kWh · Idle/);
+    assert.equal(card._pickerBar.selected.size, 4);
+    assert.equal(card._currentPickerPeriod(card._pickerBar.rows[0]).price, 5);
+  }
+  publish(true, plan.slice(1));
+  assert.equal(card._currentPickerPeriod(card._pickerBar.rows[0]), null, 'a removed canonical interval cannot be selected');
+  assert.doesNotMatch(card._renderPlanPicker(), /Import 5\.00 ct\/kWh · Export 100\.00 ct\/kWh/);
+
+  card._closePicker();
+  publish(false);
+  flush();
+  card._openPicker('today', 0);
+  assert.match(card._renderPlanPicker(), /<span>5\.00 ct\/kWh · Idle<\/span>/);
+  assert.doesNotMatch(card._renderPlanPicker(), /Import|Export/);
+});
+
+test('Price respects the explicit formula flag, missing sides or days even with formula text states', () => {
+  const { card, push, flush } = setup();
+  const entity = 'sensor.garage_charge_plan';
+  const states = { ...card.hass.states, 'text.garage_buy_price': { state: '0' }, 'text.garage_sell_price': { state: '0' } };
+  const today = directionalPlan().map(({ export_price, ...entry }) => entry);
+  const missing = { date: '2026-10-16', hour: 1, action: 'idle' };
+  const publish = (attrs, plan = [...today, missing]) => push({ ...states, [entity]: { state: 'ready', attributes: { ...attrs, plan } } });
+
+  for (const attrs of [{}, { price_formula_configured: false }, { price_formula_configured: 'true' }]) {
+    publish(attrs, directionalPlan());
+    const rendered = flush();
+    assert.equal(priceCharts(rendered).length, 1);
+    assert.doesNotMatch(rendered, /Import · Charging|Export · Discharging/);
+    assert.match(rendered, /fill="#ff6600"/);
+  }
+
+  const attrs = { price_formula_configured: true };
+  publish(attrs);
+  const rendered = flush();
+  const [buy, sell] = priceCharts(rendered);
+  assert.equal(axisValues(buy).length, 5);
+  assert.equal(priceBars(sell).length, 0);
+  assert.match(rendered, /Export prices unavailable/);
+  assert.match(rendered, /Tomorrow — prices not yet available/);
+  assert.match(sell, /Import 0\.00 ct\/kWh · Export unavailable · PV Charging/);
+  publish(attrs, [missing, { ...missing, date: today[0].date, price: 45 }]);
+  assert.match(flush(), /No EPEX price data available/);
+  assert.equal(priceCharts(flush()).length, 0);
 });

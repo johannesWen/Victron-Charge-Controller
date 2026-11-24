@@ -19,10 +19,11 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN,
-    CONF_AC_GRID_SETPOINT_ENTITY, CONF_GRID_SETPOINT_ENTITY,
+    CONF_AC_GRID_SETPOINT_ENTITY, CONF_GRID_SETPOINT_ENTITY, CONF_REPLAN_TARIFFS, TARIFF_FORMULAS,
 )
 from .coordinator import VictronChargeControlCoordinator
 from .services import async_setup_services, async_unload_services
+from .tariffs import legacy_fixed_formula
 from .websocket_api import async_register_commands
 
 _LOGGER = logging.getLogger(__name__)
@@ -117,6 +118,25 @@ async def _async_register_card(hass: HomeAssistant) -> None:
         return
     hass.data[DOMAIN][CARD_REGISTERED_KEY] = True
     _LOGGER.info("Bundled Lovelace card registered at %s", card_url)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Move fixed History tariffs into each direction's shared formula."""
+    if entry.version != 1:
+        return False
+    if entry.minor_version < 2:
+        data, options = dict(entry.data), dict(entry.options)
+        for old_key, key in TARIFF_FORMULAS.items():
+            fixed = legacy_fixed_formula(options.pop(old_key, None))
+            if (data.get(key) or "").strip():
+                continue
+            if fixed is None:
+                data.pop(key, None)
+            else:
+                data[key] = fixed
+                data[CONF_REPLAN_TARIFFS] = True
+        hass.config_entries.async_update_entry(entry, data=data, options=options, minor_version=2)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
