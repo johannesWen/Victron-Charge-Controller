@@ -1368,6 +1368,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return buy, buy
         return buy, self._export_source.intervals(self.hass)
 
+    def _covered_tariffs(
+        self, buy: list[PriceInterval], sell: list[PriceInterval], now: datetime,
+    ) -> dict[str, list[str]]:
+        return {
+            key: self._tariffs[key] for key, intervals in (("import", buy), ("export", sell))
+            if any(period.end > now for period in intervals)
+        }
+
     async def async_set_tariff(self, key: str, formula: str) -> None:
         """Commit a validated tariff between control ticks and publish it now."""
         async with self._control_lock:
@@ -1547,10 +1555,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return
         buy, sell = self._price_intervals()
         now = dt_util.now()
-        covered = {
-            key: self._tariffs[key] for key, intervals in (("import", buy), ("export", sell))
-            if any(period.end > now for period in intervals)
-        }
+        covered = self._covered_tariffs(buy, sell, now)
         # The stored directions show which half of a partial plan already survived a save.
         partial = covered != self._tariffs
         queued = self._tariff_save_request
@@ -1641,16 +1646,20 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return
 
         self._planned_tariffs = data.get("auto_plan_tariffs")
+        entry_data = self.config_entry.data
         if (
             self.control_mode == MODE_AUTO and self._planned_tariffs is not None
-            and self._planned_tariffs != self._tariffs
-            and not self.config_entry.data.get(CONF_REPLAN_TARIFFS)
-            and self._tariffs == _configured_tariffs(self.config_entry.data)
+            and self._tariffs == _configured_tariffs(entry_data)
         ):
             # Config entries and plans are saved separately. Either write may survive a crash.
-            self.hass.config_entries.async_update_entry(self.config_entry, data={
-                **self.config_entry.data, CONF_REPLAN_TARIFFS: True,
-            })
+            needs_replan = self._planned_tariffs != self._tariffs
+            if needs_replan != bool(entry_data.get(CONF_REPLAN_TARIFFS)):
+                updated = dict(entry_data)
+                if needs_replan:
+                    updated[CONF_REPLAN_TARIFFS] = True
+                else:
+                    del updated[CONF_REPLAN_TARIFFS]
+                self.hass.config_entries.async_update_entry(self.config_entry, data=updated)
         self._charge_hours = applied["charge_hours"]
         self._discharge_hours = applied["discharge_hours"]
         self._pv_charge_hours = applied["pv_charge_hours"]
@@ -1692,9 +1701,13 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     def calculate_auto_schedule(self) -> bool:
         """Calculate optimal charge/discharge hours from EPEX spot prices."""
         buy, sell = self._price_intervals()
-        applied = self._apply_auto_schedule(buy, sell, dt_util.now())
+        now = dt_util.now()
+        applied = self._apply_auto_schedule(buy, sell, now)
         if applied:
-            self._planned_tariffs = self._tariffs
+            self._planned_tariffs = (
+                self._covered_tariffs(buy, sell, now)
+                if self.config_entry.data.get(CONF_REPLAN_TARIFFS) else self._tariffs
+            )
             self._async_schedule_save()
         return applied
 

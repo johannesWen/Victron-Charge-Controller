@@ -408,6 +408,7 @@ async def test_tariff_waits_for_separate_export_forecast(start_hass, mock_store)
         await set_tariff(hass, SELL, "price + 30")
         assert priced_actions(hass) == ["charge", "idle"]
         assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+        await hass.services.async_call(DOMAIN, "calculate_schedule", {}, blocking=True)
         await hass.async_block_till_done()
         writes = len(mock_store.save_calls)
         await coordinator.async_refresh()
@@ -467,6 +468,45 @@ async def test_restore_mismatched_tariff_and_auto_plan(start_hass, mock_store, o
         expected = ["charge", "idle" if older_copy == "config" else "charge"]
         assert priced_actions(hass) == expected
         assert len(mock_store._data["charge_hours"]) == expected.count("charge")
+        assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+
+
+async def test_restore_keeps_later_slot_edit_after_tariff_write_during_unload(start_hass, mock_store, monkeypatch):
+    async with start_hass(100, 20, "5", with_intervals=True) as (hass, coordinator):
+        await select_mode(hass, "auto")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        started, release = asyncio.Event(), asyncio.Event()
+        save = mock_store.async_save
+
+        async def stall_save(payload):
+            started.set()
+            await release.wait()
+            await save(payload)
+
+        with monkeypatch.context() as fault:
+            fault.setattr(mock_store, "async_save", stall_save)
+            try:
+                await set_tariff(hass, BUY, "0")
+                await asyncio.wait_for(started.wait(), 2)
+                assert priced_actions(hass) == ["charge", "charge"]
+                first = next(p for p in hass.states.get(PLAN).attributes["plan"] if "price" in p)
+                await hass.services.async_call(DOMAIN, "set_slot_action", {
+                    "start_time": first["start_time"], "action": "idle",
+                }, blocking=True)
+                await RestoreStateData.async_save_persistent_states(hass)
+                unload = asyncio.create_task(hass.config_entries.async_unload(coordinator.config_entry.entry_id))
+                async with asyncio.timeout(2):
+                    while not coordinator._shutdown_requested:
+                        await asyncio.sleep(0)
+            finally:
+                release.set()
+            assert await unload
+        assert len(mock_store._data["charge_hours"]) == 1
+        assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+
+    async with start_hass(100, 20, "5", with_intervals=True) as (hass, coordinator):
+        assert priced_actions(hass) == ["idle", "charge"]
         assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
 
 
