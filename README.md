@@ -249,7 +249,7 @@ Charge Duration and Discharge Duration limit Relative Auto Mode as well as Absol
 Permission switches, SOC protection, recurring blocks, PV Charge exclusions and fixed-plan overrides still apply.
 
 In the Price chart, both days show the same calculated absolute cutoffs using `sensor.<entity_prefix>_charge_plan` attributes `price_reference_min` and `price_reference_max`, in ct/kWh.
-Lines are hidden when the corresponding reference is unavailable or the cutoff is outside the chart scale.
+Each formula plot includes its direction’s cutoff in the scale. The combined plot shows cutoffs within its price scale. A missing reference hides the corresponding relative cutoff.
 Hold and drag a cutoff line to edit its delta; the delta is limited to the existing number entity's range and step before the displayed cutoff is calculated.
 Changing relative mode or its reference prices cancels an active drag without saving it.
 

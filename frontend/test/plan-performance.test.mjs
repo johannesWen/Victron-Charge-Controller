@@ -465,6 +465,80 @@ test('Formula plots align times and share scales across days by direction, with 
   assert.deepEqual(changes, [false], 'import scale changes cancel an import drag');
 });
 
+test('Each directional scale includes its off-scale cutoff, and drags cancel when that scale changes', () => {
+  const { card, push, flush } = setup();
+  const plan = ['2026-10-15', '2026-10-16'].map(date => ({ date, hour: 1, price: 100,
+    import_price: 4, export_price: 100, action: 'discharge',
+  }));
+  const states = {
+    ...card.hass.states,
+    'text.garage_sell_price': { state: '100' },
+    'switch.garage_relative_auto_mode': { state: 'on' },
+    'number.garage_charge_price_threshold': { state: '10' },
+    'number.garage_discharge_price_threshold': { state: '10' },
+  };
+  const publish = overrides => push({ ...states, 'sensor.garage_charge_plan': { state: 'ready', attributes: {
+    plan, price_formula_configured: true, price_reference_min: 100, price_reference_max: 4, ...overrides,
+  } } });
+  publish();
+  const charts = priceCharts(flush());
+  assert.equal(charts.length, 4);
+  for (const [index, chart] of charts.entries()) {
+    const expected = index % 2 === 0 ? ['charge', '-6'] : ['discharge', '110'];
+    assert.deepEqual(chart.match(/class="threshold-line-group" data-type="([^"]+)"[\s\S]*?class="plan-threshold-label"[^>]*>([^<]+)/)?.slice(1), expected);
+  }
+  assert.deepEqual(axisValues(charts[0]), axisValues(charts[2]));
+  assert.deepEqual(axisValues(charts[1]), axisValues(charts[3]));
+  assert.equal(Math.min(...axisValues(charts[0])), -6);
+  assert.equal(Math.max(...axisValues(charts[1])), 111);
+
+  const changes = [];
+  card._thresholdDrag = { scale: { ...card._priceChartData().plots[1].scale, direction: 'discharge' } };
+  card._finishThresholdDrag = commit => { changes.push(commit); card._thresholdDrag = null; };
+  push({ ...card.hass.states, 'sensor.garage_current_price': { state: '4' } });
+  assert.deepEqual(changes, [], 'fresh HA data with matching cutoff and prices keeps the drag');
+  push({ ...card.hass.states, 'number.garage_discharge_price_threshold': { state: '20' } });
+  assert.deepEqual(changes, [false], 'the external delta expands the scale and cancels the active drag');
+
+  publish({ price_reference_min: null, price_reference_max: null });
+  const [, sellWithoutReference] = priceCharts(flush());
+  assert.equal(Math.max(...axisValues(sellWithoutReference)), 101);
+  assert.doesNotMatch(flush(), /class="threshold-line-group"/);
+  publish({ price_formula_configured: false });
+  assert.equal(priceCharts(flush()).length, 2);
+  assert.doesNotMatch(flush(), /class="threshold-line-group"/);
+});
+
+test('Split Price pickers use both labeled prices for the same canonical interval', () => {
+  const { card, push, flush } = setup();
+  const entity = 'sensor.garage_charge_plan';
+  const plan = directionalPlan();
+  plan[0] = { ...plan[0], action: 'idle', price: 5, import_price: 5, export_price: 100 };
+  const publish = (price_formula_configured, periods = plan) => push({ ...card.hass.states,
+    [entity]: { state: 'ready', attributes: { price_formula_configured, plan: periods } },
+  });
+  publish(true);
+  flush();
+  for (const chartId of ['today-charge', 'today-discharge']) {
+    card._openPicker(chartId, 0);
+    const picker = card._renderPlanPicker();
+    assert.match(picker, /Import 5\.00 ct\/kWh · Export 100\.00 ct\/kWh · Idle/);
+    assert.match(picker, /Import unavailable · Export 0\.00 ct\/kWh · Idle/);
+    assert.equal(card._pickerBar.selected.size, 4);
+    assert.equal(card._currentPickerPeriod(card._pickerBar.rows[0]).price, 5);
+  }
+  publish(true, plan.slice(1));
+  assert.equal(card._currentPickerPeriod(card._pickerBar.rows[0]), null, 'a removed canonical interval cannot be selected');
+  assert.doesNotMatch(card._renderPlanPicker(), /Import 5\.00 ct\/kWh · Export 100\.00 ct\/kWh/);
+
+  card._closePicker();
+  publish(false);
+  flush();
+  card._openPicker('today', 0);
+  assert.match(card._renderPlanPicker(), /<span>5\.00 ct\/kWh · Idle<\/span>/);
+  assert.doesNotMatch(card._renderPlanPicker(), /Import|Export/);
+});
+
 test('Price respects the explicit formula flag, zero accounting rates and missing sides or days', () => {
   const { card, push, flush } = setup();
   const entity = 'sensor.garage_charge_plan';

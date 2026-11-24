@@ -77,7 +77,7 @@ const HELP_TEXT = {
       ] },
     { heading: 'Price cutoffs', items: [
       'With Relative Auto Mode off (the default), lines show the absolute price thresholds. With it on, Charge cutoff = maximum reference price minus Charge Price Delta; Discharge cutoff = minimum reference price plus Discharge Price Delta. Deltas are signed ct/kWh. Charge and Discharge Durations limit the selected periods; charging wins overlaps. Permissions and SOC protection still apply.',
-      'Both days use the same current/future reference prices from Charge Plan, including tomorrow or later and prices excluded by blocks or PV Charge. Lines are hidden when their reference is unavailable or outside the chart scale. Hold a line to drag its cutoff; this edits the corresponding delta in relative mode.',
+      'Both days use the same current/future reference prices from Charge Plan, including tomorrow or later and prices excluded by blocks or PV Charge. A line shows the cutoff when it falls within the scale. Each directional scale includes its cutoff when prices and the cutoff are available. Hold a cutoff line to drag it. In relative mode this edits the corresponding delta.',
       'Lines reflect current selection cutoffs. Reference prices can refresh without changing the saved schedule; Recalculate and the existing Auto-setting and Recalculation Hours triggers apply the new selection. Switching Relative Auto Mode recalculates only in Auto; restoring it after restart preserves schedules.',
     ] },
     { heading: 'PV forecast requirements',
@@ -1423,6 +1423,20 @@ class VictronChargeControllerCard extends LitElement {
     return type === 'charge' ? reference - value : reference + value;
   }
 
+  _priceCutoffs(context = this._priceThresholdContext(), acknowledge = false) {
+    const cutoffs = {};
+    const pending = !this._lastThresholdContext || this._lastThresholdContext.relative === context.relative
+      ? this._pendingThresholds : {};
+    for (const type of ['charge', 'discharge']) {
+      const value = parseFloat(this._val('number', `${type}_price_threshold`));
+      const override = pending[type];
+      const matched = override !== undefined && Math.abs(value - override) < 0.001;
+      if (acknowledge && matched) delete pending[type];
+      cutoffs[`${type}Threshold`] = this._thresholdCutoff(type, matched ? value : override ?? value, context);
+    }
+    return cutoffs;
+  }
+
   _svgYToPrice(svgY, scale) {
     const { scaleMin, scaleRange, padT, plotH } = scale;
     const clamped = Math.max(padT, Math.min(padT + plotH, svgY));
@@ -1476,6 +1490,8 @@ class VictronChargeControllerCard extends LitElement {
     if (commit && unlocked && value != null && this._thresholdContextMatches(context, type)) {
       const key = type === 'charge' ? 'charge_price_threshold' : 'discharge_price_threshold';
       const rounded = context.relative ? value : Math.round(value * 100) / 100;
+      // A rescaled cutoff can land at the same SVG position Lit cached before the drag.
+      if (this._thresholdDrag.scale.direction) this._thresholdDrag.restore?.();
       this._setNumber(key, rounded);
       // Store pending value so both charts update immediately
       this._pendingThresholds[type] = rounded;
@@ -2086,14 +2102,18 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
+  _directionalPriceDetails(entry) {
+    const format = price => Number.isFinite(price) ? `${price.toFixed(2)} ct/kWh` : 'unavailable';
+    return `Import ${format(entry.import_price)} · Export ${format(entry.export_price)}`;
+  }
+
   _hourPriceDetails(group, directional = false) {
     const format = price => price == null ? 'unavailable' : `${Number(price).toFixed(2)} ct/kWh`;
     return group.entries.map(entry => {
       if (directional) {
-        const rate = value => format(Number.isFinite(value) ? value : null);
         const action = entry.displayAction || entry.action;
         const planned = ACTION_META[action]?.label || (action === 'blocked' ? 'Blocked' : 'Idle');
-        return `${this._periodLabel(entry)} · Import ${rate(entry.import_price)} · Export ${rate(entry.export_price)} · ${planned}`;
+        return `${this._periodLabel(entry)} · ${this._directionalPriceDetails(entry)} · ${planned}`;
       }
       const prices = 'export_price' in entry
         ? `Buy ${format(entry.import_price)} · Sell ${format(entry.export_price)}`
@@ -2200,6 +2220,7 @@ class VictronChargeControllerCard extends LitElement {
   _renderPlanPicker() {
     const picker = this._pickerBar;
     if (!picker) return nothing;
+    const directional = /^(today|tomorrow)-(charge|discharge)$/.test(picker.chartId);
     const selected = picker.rows.filter(row => picker.selected.has(this._periodIdentity(row)) && this._currentPickerPeriod(row)).length;
     return html`<div class="vcc-help-overlay" role="presentation"
       @click=${e => { if (e.target === e.currentTarget) this._closePicker(); }}>
@@ -2213,9 +2234,11 @@ class VictronChargeControllerCard extends LitElement {
             const entry = this._currentPickerPeriod(row), available = !!entry;
             const label = row.end - row.start === 900000 ? forecastTime(row.start, this._planTimeZone()) : this._periodLabel(row);
             const reason = row.unavailableReason || (row.end <= Date.now() ? 'Past' : row.price == null ? 'Price unavailable' : 'Interval changed or unavailable');
+            const prices = available && (directional ? this._directionalPriceDetails(entry) : `${Number(entry.price).toFixed(2)} ct/kWh`);
+            const detail = available ? `${prices} · ${ACTION_META[entry.displayAction || entry.action]?.label || 'Idle'}` : reason;
             return html`<button type="button" class="plan-picker-period" aria-pressed=${String(available && picker.selected.has(this._periodIdentity(row)))}
               ?disabled=${!available || this._pickerApplying} @click=${() => this._togglePickerPeriod(row)}>
-              <strong>${label}</strong><span>${available ? `${Number(entry.price).toFixed(2)} ct/kWh · ${ACTION_META[entry.displayAction || entry.action]?.label || 'Idle'}` : reason}</span>
+              <strong>${label}</strong><span>${detail}</span>
             </button>`;
           })}
         </div>
@@ -3212,7 +3235,7 @@ class VictronChargeControllerCard extends LitElement {
     `;
   }
 
-  _priceChartData() {
+  _priceChartData(cutoffs = this._priceCutoffs()) {
     const { plan, price_formula_configured } = this._state('sensor', 'charge_plan')?.attributes ?? {};
     if (!Array.isArray(plan) || plan.length === 0) return null;
     const [todayDate, tomorrowDate] = [...new Set(plan.map(p => p.date))].sort();
@@ -3240,13 +3263,15 @@ class VictronChargeControllerCard extends LitElement {
       const plotTariffs = directional
         ? tariffs.filter(tariff => tariff.label === plot.tariffLabel).map(tariff => ({ ...tariff, label: `${tariff.label} accounting` }))
         : tariffs;
-      const scale = prices.length || directional ? this._priceChartScale(prices, plotTariffs) : null;
+      const cutoff = directional ? cutoffs[`${plot.direction}Threshold`] : null;
+      const scale = prices.length || directional ? this._priceChartScale(prices, plotTariffs, cutoff) : null;
       return { ...plot, tariffs: plotTariffs, scale };
     }) };
   }
 
-  _priceChartScale(prices, tariffs) {
+  _priceChartScale(prices, tariffs, cutoff = null) {
     const values = [...prices, ...tariffs.map(({ price }) => price)];
+    if (prices.length && Number.isFinite(cutoff)) values.push(cutoff);
     if (!values.length) return null;
     const min = Math.min(...values);
     const max = Math.max(...values);
@@ -3269,7 +3294,8 @@ class VictronChargeControllerCard extends LitElement {
 
   _renderAutoPlanContent() {
     const thresholdContext = this._syncThresholdContext();
-    const chart = this._priceChartData();
+    const cutoffs = this._priceCutoffs(thresholdContext, true);
+    const chart = this._priceChartData(cutoffs);
 
     if (!chart) {
       return html`
@@ -3284,20 +3310,7 @@ class VictronChargeControllerCard extends LitElement {
     const todayPlan = this._enrichPlanDisplayState(today);
     const tomorrowPlan = this._enrichPlanDisplayState(tomorrow);
 
-    const chargeThreshold = parseFloat(this._val('number', 'charge_price_threshold'));
-    const dischargeThreshold = parseFloat(this._val('number', 'discharge_price_threshold'));
-    // Use pending overrides until HA entity catches up
-    const ctCharge = this._thresholdCutoff('charge', this._pendingThresholds.charge ?? chargeThreshold, thresholdContext);
-    const ctDischarge = this._thresholdCutoff('discharge', this._pendingThresholds.discharge ?? dischargeThreshold, thresholdContext);
-    // Clear pending values once entity state matches
-    if (this._pendingThresholds.charge !== undefined && !isNaN(chargeThreshold) && Math.abs(chargeThreshold - this._pendingThresholds.charge) < 0.001) {
-      delete this._pendingThresholds.charge;
-    }
-    if (this._pendingThresholds.discharge !== undefined && !isNaN(dischargeThreshold) && Math.abs(dischargeThreshold - this._pendingThresholds.discharge) < 0.001) {
-      delete this._pendingThresholds.discharge;
-    }
-
-    const cutoffs = { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge };
+    const { chargeThreshold: ctCharge, dischargeThreshold: ctDischarge } = cutoffs;
     const todayChart = this._renderPriceDay(todayPlan, 'today', chart, cutoffs);
     const tomorrowChart = this._renderPriceDay(tomorrowPlan, 'tomorrow', chart, cutoffs);
 
