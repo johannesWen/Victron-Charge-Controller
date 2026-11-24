@@ -35,8 +35,8 @@
           "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
           "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged.",
           "epex_export_entity": "Select the sell-back sensor with its forecast. Leave empty to use the import sensor as the market input for both directions.",
-          "import_price_formula": "Adjust the import sensor price in ct/kWh, for example (price + 10 + 2) * 1.21. Leave empty for the sensor price.",
-          "export_price_formula": "Adjust the export sensor price in ct/kWh using price, numbers, +, -, *, / and parentheses. Leave empty for the sensor price."
+          "import_price_formula": "Price used for charging and import cost, in ct/kWh. Enter a fixed rate such as 25, use a formula such as (price + 12) * 1.21, or leave empty for the sensor price.",
+          "export_price_formula": "Price used for discharging, feed-in control and export revenue, in ct/kWh. Enter a fixed rate such as 8, use a formula such as price - 2, or leave empty for the sensor price."
         }
       },
       "reconfigure": {
@@ -73,8 +73,8 @@
           "max_discharge_power_entity": "Select the Victron maximum discharge power number in watts. Disable Discharge holds it at 0 W every five seconds during regular Charge windows, including at Max SOC, and releases it to -1 W afterwards. PV Charge is excluded. Leave empty to disable this feature.",
           "battery_power_entity": "Select a battery power sensor: positive when charging, negative when discharging, in W or kW. Battery Power Control uses this feedback during regular Charge and full Discharge, including force modes. Invalid or older-than-120-second reports fall back to grid-only control. PV Charge and solar-only discharge are unchanged.",
           "epex_export_entity": "Select the sell-back sensor with its forecast. Leave empty to use the import sensor as the market input for both directions.",
-          "import_price_formula": "Adjust the import sensor price in ct/kWh, for example (price + 10 + 2) * 1.21. Leave empty for the sensor price.",
-          "export_price_formula": "Adjust the export sensor price in ct/kWh using price, numbers, +, -, *, / and parentheses. Leave empty for the sensor price."
+          "import_price_formula": "Price used for charging and import cost, in ct/kWh. Enter a fixed rate such as 25, use a formula such as (price + 12) * 1.21, or leave empty for the sensor price.",
+          "export_price_formula": "Price used for discharging, feed-in control and export revenue, in ct/kWh. Enter a fixed rate such as 8, use a formula such as price - 2, or leave empty for the sensor price."
         }
       }
     },
@@ -134,8 +134,8 @@
           "power_limit": "Whole watts, at least 1 (default 15000). Sets the selectable ranges for charge power, discharge power, minimum and maximum grid setpoints, and both grid feed-in limits. Saving reloads the integration and clamps existing settings to the new ranges before control starts. This does not set an operating target or change device limits.",
           "idle_setpoint_limit": "Whole watts, at least 0 (default 500). Sets the independent Idle Setpoint range from minus this value to plus this value. Set to 0 to allow only 0 W. Saving reloads the integration and clamps the saved idle setpoint to this range.",
           "epex_export_entity": "Select the sell-back sensor with its forecast. Leave empty to use the import sensor as the market input for both directions.",
-          "import_price_formula": "Adjust the import sensor price in ct/kWh, for example (price + 10 + 2) * 1.21. Leave empty for the sensor price.",
-          "export_price_formula": "Adjust the export sensor price in ct/kWh using price, numbers, +, -, *, / and parentheses. Leave empty for the sensor price."
+          "import_price_formula": "Price used for charging and import cost, in ct/kWh. Enter a fixed rate such as 25, use a formula such as (price + 12) * 1.21, or leave empty for the sensor price.",
+          "export_price_formula": "Price used for discharging, feed-in control and export revenue, in ct/kWh. Enter a fixed rate such as 8, use a formula such as price - 2, or leave empty for the sensor price."
         }
       }
     },
@@ -344,7 +344,7 @@
       "message": "Reconfigure this integration and select a distinct AC grid setpoint (RAM) number entity. The existing AC power setpoint remains the permanent idle fallback. Schedules and settings are preserved."
     },
     "invalid_tariff": {
-      "message": "Enter a decimal price in ct/kWh or leave it blank to use the live EPEX price."
+      "message": "Enter a fixed rate or formula in ct/kWh using price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero, or leave the field empty to use the sensor price."
     }
   },
   "services": {

@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.victron_charge_control import (
     PLATFORMS,
+    async_migrate_entry,
     async_setup_entry,
     async_unload_entry,
 )
@@ -28,6 +29,16 @@ def mock_entry():
     entry.add_update_listener = MagicMock(return_value=MagicMock())
     entry.async_on_unload = MagicMock()
     return entry
+
+
+async def test_legacy_invalid_and_zero_rates_migrate_independently(mock_hass, mock_entry):
+    mock_entry.version = mock_entry.minor_version = 1
+    mock_entry.options = {"buy_price": "1e2", "sell_price": "0", "custom": 123}
+    assert await async_migrate_entry(mock_hass, mock_entry)
+    mock_hass.config_entries.async_update_entry.assert_called_once_with(
+        mock_entry, data={**MOCK_CONFIG_DATA, "export_price_formula": "0"},
+        options={"custom": 123}, minor_version=2,
+    )
 
 
 class TestAsyncSetupEntry:

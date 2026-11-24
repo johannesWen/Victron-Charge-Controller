@@ -33,6 +33,11 @@ CONF_POWER_LIMIT = "power_limit"
 CONF_IDLE_SETPOINT_LIMIT = "idle_setpoint_limit"
 CONF_BUY_PRICE = "buy_price"
 CONF_SELL_PRICE = "sell_price"
+TARIFF_FORMULAS = {
+    CONF_BUY_PRICE: CONF_IMPORT_PRICE_FORMULA,
+    CONF_SELL_PRICE: CONF_EXPORT_PRICE_FORMULA,
+}
+DATA_REPLAN_TARIFFS = f"{DOMAIN}_replan_tariffs"
 
 # --- Control modes ---
 MODE_OFF = "off"

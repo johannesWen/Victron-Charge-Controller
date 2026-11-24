@@ -23,8 +23,6 @@ from .const import (
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_EPEX_EXPORT_ENTITY,
-    CONF_IMPORT_PRICE_FORMULA,
-    CONF_EXPORT_PRICE_FORMULA,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
     CONF_GRID_FEED_IN_ENERGY_ENTITY,
@@ -40,8 +38,10 @@ from .const import (
     DEFAULT_POWER_LIMIT,
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
+    DATA_REPLAN_TARIFFS,
+    TARIFF_FORMULAS,
 )
-from .price_formula import parse_formula
+from .tariffs import validated_formula
 
 REQUIRED_ENTITY_KEYS = (
     CONF_AC_GRID_SETPOINT_ENTITY,
@@ -62,7 +62,7 @@ OPTIONAL_ENTITY_KEYS = (
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
 )
 
-FORMULA_KEYS = (CONF_IMPORT_PRICE_FORMULA, CONF_EXPORT_PRICE_FORMULA)
+FORMULA_KEYS = tuple(TARIFF_FORMULAS.values())
 OPTIONAL_DATA_KEYS = OPTIONAL_ENTITY_KEYS + FORMULA_KEYS
 
 
@@ -130,12 +130,21 @@ def _clean_entity_data(user_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _replan_if_pricing_changed(hass: Any, entry: ConfigEntry, data: dict[str, Any]) -> None:
+    """Replan once after the form reload has restored Auto and its fixed plan."""
+    if any(entry.data.get(key) != data.get(key) for key in (
+        *FORMULA_KEYS, CONF_EPEX_SPOT_ENTITY, CONF_EPEX_EXPORT_ENTITY,
+    )):
+        hass.data.setdefault(DATA_REPLAN_TARIFFS, set()).add(entry.entry_id)
+
+
 def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
-    """Validate required entities and optional entities when configured."""
+    """Validate entity references and normalize the submitted formula text."""
     errors: dict[str, str] = {}
     for key in FORMULA_KEYS:
         try:
-            parse_formula(user_input.get(key) or "")
+            if key in user_input:
+                user_input[key] = validated_formula(user_input[key] or "")
         except (TypeError, ValueError):
             errors[key] = "invalid_price_formula"
     for key in REQUIRED_ENTITY_KEYS:
@@ -188,6 +197,7 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Victron Charge Control."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None,
@@ -196,12 +206,14 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
         errors = {}
         if user_input is not None:
-            data = _clean_entity_data({
+            data = {
                 **{key: value for key, value in entry.data.items() if key not in OPTIONAL_DATA_KEYS},
                 **user_input,
-            })
+            }
             errors = _validate_entities(self.hass, data)
             if not errors:
+                data = _clean_entity_data(data)
+                _replan_if_pricing_changed(self.hass, entry, data)
                 return self.async_update_reload_and_abort(entry, data=data)
         return self.async_show_form(
             step_id="reconfigure",
@@ -314,9 +326,11 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                         )
                     ),
                 }
+                data = _clean_entity_data({**current_data, **data_update})
+                _replan_if_pricing_changed(self.hass, self._config_entry, data)
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
-                    data=_clean_entity_data({**current_data, **data_update}),
+                    data=data,
                     options=options,
                 )
                 # Retry failed setup even if a previous submission already saved these values.

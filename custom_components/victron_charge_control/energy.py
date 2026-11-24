@@ -8,23 +8,11 @@ while the coordinator's public/private surface stays unchanged.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from math import isfinite
 from typing import Any
 
 from .epex import get_entity_float
-
-_TARIFF_PATTERN = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
-
-
-def parse_tariff_eur_per_kwh(value: object) -> float | None:
-    """Convert a signed decimal tariff from ct/kWh to EUR/kWh."""
-    if not isinstance(value, str) or not _TARIFF_PATTERN.fullmatch(value):
-        return None
-    price = float(value)
-    return price / 100 if isfinite(price) else None
-
 
 def read_meter_delta(
     hass: Any,

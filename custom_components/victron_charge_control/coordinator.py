@@ -35,7 +35,6 @@ from .const import (
     CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
-    CONF_BUY_PRICE,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_EPEX_EXPORT_ENTITY,
@@ -48,7 +47,6 @@ from .const import (
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_MAX_DISCHARGE_POWER_ENTITY,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
-    CONF_SELL_PRICE,
     CONF_SOLAR_SURPLUS_ENTITY,
     DEFAULT_ACTION_CONFIRM_SECONDS,
     DEFAULT_CHARGE_POWER,
@@ -71,6 +69,7 @@ from .const import (
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
+    DATA_REPLAN_TARIFFS,
     EPEX_ATTR_DATA,
     EPEX_KEY_PRICE,
     EPEX_KEY_PRICE_EUR,
@@ -127,7 +126,7 @@ from .persistence import (
     deserialize_slots,
     serialize_slots,
 )
-from .energy import accumulate_cost_tracking, parse_tariff_eur_per_kwh, read_meter_delta
+from .energy import accumulate_cost_tracking, read_meter_delta
 from .decision import (
     DebounceState,
     DecisionState,
@@ -1354,6 +1353,22 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return buy, buy
         return buy, self._export_source.intervals(self.hass)
 
+    async def async_set_tariff(self, key: str, formula: str) -> None:
+        """Commit a validated tariff between control ticks and publish it now."""
+        async with self._control_lock:
+            data = dict(self.config_entry.data)
+            if formula == data.get(key, ""):
+                return
+            if formula:
+                data[key] = formula
+            else:
+                data.pop(key, None)
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            self._set_price_sources(data)
+            if self.control_mode == MODE_AUTO:
+                self.calculate_auto_schedule()
+        await self.async_refresh()
+
     def _source_slots(self) -> list[ScheduleSlot]:
         buy, sell = self._price_intervals()
         return sort_slots([item.slot for item in buy + sell])
@@ -1665,15 +1680,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             last_attr="_last_grid_feed_in_kwh",
         )
 
-        options = self.config_entry.options
-        buy_price = parse_tariff_eur_per_kwh(options.get(CONF_BUY_PRICE, ""))
-        sell_price = parse_tariff_eur_per_kwh(options.get(CONF_SELL_PRICE, ""))
         new_cost, new_revenue, new_import, new_export, baselines_changed = (
             accumulate_cost_tracking(
                 consumption_delta_kwh=consumption_delta_kwh,
                 feed_in_delta_kwh=feed_in_delta_kwh,
-                buy_price=import_eur if buy_price is None else buy_price,
-                sell_price=export_eur if sell_price is None else sell_price,
+                buy_price=import_eur,
+                sell_price=export_eur,
                 cost=self._grid_energy_cost,
                 revenue=self._grid_energy_revenue,
                 import_kwh=self._grid_energy_import,
@@ -2136,7 +2148,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                     current_price_ct, is_reduced, action, setpoint, calculation = decision
         if self._shutdown_requested:
             return self.data
-        if self._accounting_ready:
+        # A pricing form may have scheduled a reload while a device write was pending.
+        # Let the new coordinator account for that meter delta with its saved tariffs.
+        pending_reload = self.hass.data.get(DATA_REPLAN_TARIFFS, ())
+        if self._accounting_ready and self.config_entry.entry_id not in pending_reload:
             self._update_cost_tracking(price_view.eur_per_kwh, price_view.export_eur_per_kwh)
         return self._build_snapshot(
             action=action,
@@ -2484,23 +2499,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
         )
 
-        # Restore the previous charge plan from the persistent Store. If
-        # the Store is empty (fresh install, first ever start, or a
-        # migration from a pre-persistence version) the coordinator's
-        # in-memory state is left untouched — in particular we
-        # deliberately do NOT call calculate_auto_schedule() here so the
-        # user's previous plan is not silently overwritten on a Home
-        # Assistant restart. The user can still trigger a fresh plan via
-        # the **Recalculate Schedule** button or by waiting for the next
-        # configured replan hour.
-        #
-        # The load is the very first ``await`` in this method on
-        # purpose: it runs before any other code that could yield, and
-        # combined with ``_suspend_save`` (still True at this point) it
-        # guarantees the text entities' ``async_added_to_hass``
-        # restore-setters, which ran earlier during
-        # ``forward_entry_setups``, did not write a stale empty plan
-        # over the user's persisted one.
+        # Restore the plan before enabling saves or applying a tariff edit.
+        # Ordinary restarts keep the stored schedule.
         async with self._control_lock:
             await self._async_load_schedule()
         if self._shutdown_requested:
@@ -2509,7 +2509,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Text restore callbacks can refresh before the history sensors restore.
         self._accounting_ready = True
         self._grid_consumer_ready = True
-        await self.async_request_refresh()
+        pending = self.hass.data.get(DATA_REPLAN_TARIFFS, set())
+        if self.config_entry.entry_id in pending:
+            pending.remove(self.config_entry.entry_id)
+            self._suspend_save = False
+            if self.control_mode == MODE_AUTO:
+                self.calculate_auto_schedule()
+            await self.async_refresh()
+        else:
+            await self.async_request_refresh()
         if self._shutdown_requested:
             return
 
