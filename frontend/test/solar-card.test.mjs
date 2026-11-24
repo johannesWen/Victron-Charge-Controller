@@ -517,11 +517,11 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   else instance._finishThresholdDrag(false);
   assert.equal(instance._thresholdDrag, null);
   assert.equal(JSON.stringify(calls), JSON.stringify(commit ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: 24 }]] : []));
-  assert.equal(instance._pendingThresholds.charge, commit ? 24 : undefined);
-  assert.equal(textNode.nodeValue, commit ? '24' : '10');
-  assert.ok(Math.abs(Number(positions.y) - (commit ? 122.3 : 193)) < 1e-7);
+  assert.equal(instance._pendingThresholds.charge?.value, commit ? 24 : undefined);
+  assert.equal(textNode.nodeValue, '10', 'restore the preview before Lit renders the pending or confirmed cutoff');
+  assert.ok(Math.abs(Number(positions.y) - 193) < 1e-7);
   for (const line of lines) for (const key of ['y1', 'y2']) {
-    assert.ok(Math.abs(Number(line.attributes[key]) - (commit ? 118.8 : 189.5)) < 1e-7);
+    assert.ok(Math.abs(Number(line.attributes[key]) - 189.5) < 1e-7);
   }
   assert.equal(label.childNodes[0], marker);
   assert.equal(label.childNodes[1], textNode);

@@ -393,7 +393,7 @@ class VictronChargeControllerCard extends LitElement {
     this._onThresholdPointerMoveBound = this._onThresholdPointerMove.bind(this);
     this._onThresholdPointerUpBound = this._onThresholdPointerUp.bind(this);
     this._onThresholdTouchMoveBound = this._onThresholdTouchMove.bind(this);
-    // Pending threshold overrides (until HA entity catches up)
+    // Pending threshold edits (until HA confirms them or the write fails)
     this._pendingThresholds = {};
     this._lastThresholdContext = null;
     this._costRange = 'day';
@@ -728,11 +728,11 @@ class VictronChargeControllerCard extends LitElement {
     return Promise.reject(new Error('Home Assistant WebSocket API is unavailable'));
   }
 
-  _setNumber(key, value) {
+  _setNumber(key, value, onFail) {
     this._callService('number', 'set_value', {
       entity_id: this._eid('number', key),
       value: Number(value),
-    });
+    }, onFail);
   }
 
   _toggleSwitch(key) {
@@ -1429,7 +1429,7 @@ class VictronChargeControllerCard extends LitElement {
       ? this._pendingThresholds : {};
     for (const type of ['charge', 'discharge']) {
       const value = parseFloat(this._val('number', `${type}_price_threshold`));
-      const override = pending[type];
+      const override = pending[type]?.value;
       const matched = override !== undefined && Math.abs(value - override) < 0.001;
       if (acknowledge && matched) delete pending[type];
       cutoffs[`${type}Threshold`] = this._thresholdCutoff(type, matched ? value : override ?? value, context);
@@ -1476,6 +1476,7 @@ class VictronChargeControllerCard extends LitElement {
 
     if (!this._thresholdDrag) return;
     const { type, scale, unlocked, value, group, pointerId, context, restore } = this._thresholdDrag;
+    this._thresholdDrag = null;
     group.classList.remove('threshold-holding', 'threshold-unlocked');
     this.classList.remove('threshold-drag-active');
 
@@ -1487,22 +1488,23 @@ class VictronChargeControllerCard extends LitElement {
       }
     }
 
+    // Restore the preview so Lit can render the confirmed or pending cutoff.
+    restore?.();
     if (commit && unlocked && value != null && this._thresholdContextMatches(context, type)) {
       const rounded = context.relative || scale.direction ? value : Math.round(value * 100) / 100;
-      const previous = this._pendingThresholds[type] ?? parseFloat(context.value);
+      const previous = this._pendingThresholds[type]?.value ?? parseFloat(context.value);
       const unchanged = scale.direction && Math.abs(rounded - previous) < 1e-10;
-      // A rescaled cutoff can land at the same SVG position Lit cached before the drag.
-      if (scale.direction) restore?.();
       if (!unchanged) {
-        this._setNumber(`${type}_price_threshold`, rounded);
-        this._pendingThresholds[type] = rounded;
+        const pending = { value: rounded };
+        this._pendingThresholds[type] = pending;
+        this._setNumber(`${type}_price_threshold`, rounded, () => {
+          if (this._pendingThresholds[type] !== pending) return;
+          delete this._pendingThresholds[type];
+          if (this._thresholdDrag?.type === type) this._finishThresholdDrag(false);
+        });
         this.requestUpdate();
       }
-    } else {
-      restore?.();
     }
-
-    this._thresholdDrag = null;
   }
 
   _onThresholdPointerDown(e, type, scale) {

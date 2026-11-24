@@ -160,7 +160,7 @@ test('pending actions, fixed hours, names and activation expire at their own ten
   card._pendingFixedPlanNames[1] = { value: 'Evening', ts: now() };
   card._pendingFixedPlanHours[1] = { 3: { action: 'charge', ts: now() } };
   card._pendingActiveFixedPlan = { value: 1, ts: now() };
-  card._pendingThresholds.charge = 8;
+  card._pendingThresholds.charge = { value: 8 };
   flush();
   advance(4000);
   card._pendingPlanActions.second = { action: 'discharge', ts: now() };
@@ -173,7 +173,7 @@ test('pending actions, fixed hours, names and activation expire at their own ten
   assert.equal(Object.keys(card._pendingFixedPlanNames).length, 0);
   assert.equal(Object.keys(card._pendingFixedPlanHours).length, 0);
   assert.equal(card._pendingActiveFixedPlan, undefined);
-  assert.equal(card._pendingThresholds.charge, 8, 'threshold pending semantics stay separate');
+  assert.equal(card._pendingThresholds.charge.value, 8, 'threshold pending semantics stay separate');
   flush(); advance(4000); flush();
   assert.equal(Object.keys(card._pendingPlanActions).length, 0);
   assert.equal(timers.size, 1, 'only the minute timer remains');
