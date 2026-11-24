@@ -14,6 +14,7 @@ from custom_components.victron_charge_control import (
 )
 from custom_components.victron_charge_control.const import (
     CARD_REGISTERED_KEY,
+    CONF_REPLAN_TARIFFS,
     DOMAIN,
 )
 
@@ -36,7 +37,7 @@ async def test_legacy_invalid_and_zero_rates_migrate_independently(mock_hass, mo
     mock_entry.options = {"buy_price": "1e2", "sell_price": "0", "custom": 123}
     assert await async_migrate_entry(mock_hass, mock_entry)
     mock_hass.config_entries.async_update_entry.assert_called_once_with(
-        mock_entry, data={**MOCK_CONFIG_DATA, "export_price_formula": "0"},
+        mock_entry, data={**MOCK_CONFIG_DATA, "export_price_formula": "0", CONF_REPLAN_TARIFFS: True},
         options={"custom": 123}, minor_version=2,
     )
 

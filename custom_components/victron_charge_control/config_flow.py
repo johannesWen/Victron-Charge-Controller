@@ -38,7 +38,7 @@ from .const import (
     DEFAULT_POWER_LIMIT,
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DOMAIN,
-    DATA_REPLAN_TARIFFS,
+    CONF_REPLAN_TARIFFS,
     TARIFF_FORMULAS,
 )
 from .tariffs import validated_formula
@@ -130,12 +130,12 @@ def _clean_entity_data(user_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _replan_if_pricing_changed(hass: Any, entry: ConfigEntry, data: dict[str, Any]) -> None:
+def _replan_if_pricing_changed(entry: ConfigEntry, data: dict[str, Any]) -> None:
     """Replan once after the form reload has restored Auto and its fixed plan."""
     if any(entry.data.get(key) != data.get(key) for key in (
         *FORMULA_KEYS, CONF_EPEX_SPOT_ENTITY, CONF_EPEX_EXPORT_ENTITY,
     )):
-        hass.data.setdefault(DATA_REPLAN_TARIFFS, set()).add(entry.entry_id)
+        data[CONF_REPLAN_TARIFFS] = True
 
 
 def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
@@ -213,7 +213,7 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
             errors = _validate_entities(self.hass, data)
             if not errors:
                 data = _clean_entity_data(data)
-                _replan_if_pricing_changed(self.hass, entry, data)
+                _replan_if_pricing_changed(entry, data)
                 return self.async_update_reload_and_abort(entry, data=data)
         return self.async_show_form(
             step_id="reconfigure",
@@ -327,7 +327,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                     ),
                 }
                 data = _clean_entity_data({**current_data, **data_update})
-                _replan_if_pricing_changed(self.hass, self._config_entry, data)
+                _replan_if_pricing_changed(self._config_entry, data)
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,
                     data=data,

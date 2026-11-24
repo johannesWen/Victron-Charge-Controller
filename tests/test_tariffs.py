@@ -22,7 +22,7 @@ from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
 from custom_components import victron_charge_control
-from custom_components.victron_charge_control.const import DOMAIN
+from custom_components.victron_charge_control.const import CONF_REPLAN_TARIFFS, DOMAIN
 from custom_components.victron_charge_control.sensor import GridEnergyCostSensor
 
 from .conftest import MOCK_CONFIG_DATA_WITH_COST
@@ -268,6 +268,7 @@ async def test_tariff_edits_replan_auto_and_publish_rates(start_hass, route):
             await hass.async_block_till_done()
         assert hass.states.get(BUY).state == entry.data["import_price_formula"] == "price"
         assert hass.states.get(SELL).state == entry.data["export_price_formula"] == "price + 8"
+        assert CONF_REPLAN_TARIFFS not in entry.data
         assert priced_actions(hass) == ["charge", "discharge"]
         rates = hass.states.get(RATE).attributes
         assert rates["import_price_eur_per_kwh"] == 0.05
@@ -281,7 +282,8 @@ async def test_tariff_edits_replan_auto_and_publish_rates(start_hass, route):
         assert priced_actions(hass) == ["charge", "discharge"]
 
 
-async def test_legacy_fixed_input_migrates_before_first_delta(start_hass):
+@pytest.mark.parametrize("restart_after_migration", [False, True])
+async def test_legacy_fixed_input_migrates_before_first_delta(start_hass, restart_after_migration):
     renamed = "text.custom_buy_rate"
     async with start_hass(100, 20, "5", with_intervals=True) as (hass, coordinator):
         entry = coordinator.config_entry
@@ -304,6 +306,9 @@ async def test_legacy_fixed_input_migrates_before_first_delta(start_hass):
         hass.config_entries.async_update_entry(entry, minor_version=1, data={
             **entry.data, "import_price_formula": " ", "export_price_formula": "price - 1",
         }, options={**entry.options, "buy_price": "-0012", "sell_price": "99", "other": 42})
+        if restart_after_migration:
+            # Setup can fail after HA has already saved the migrated config entry.
+            assert await victron_charge_control.async_migrate_entry(hass, entry)
 
     async with start_hass(103, 22, "5", with_intervals=True) as (hass, coordinator):
         entry = coordinator.config_entry
@@ -311,6 +316,7 @@ async def test_legacy_fixed_input_migrates_before_first_delta(start_hass):
         assert float(hass.states.get(renamed).state) == -12
         assert hass.states.get(SELL).state == "price - 1"
         assert entry.minor_version == 2
+        assert CONF_REPLAN_TARIFFS not in entry.data
         assert entry.options == {"use_solcast_forecast": False, "other": 42}
         assert _history(hass) == pytest.approx((0.10, 0.21, 3, 2))
         assert priced_actions(hass) == ["pv_charge", "charge"]

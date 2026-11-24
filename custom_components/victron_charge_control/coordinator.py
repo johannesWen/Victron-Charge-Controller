@@ -69,7 +69,7 @@ from .const import (
     DEFAULT_SAFETY_STARTUP_GRACE_SECONDS,
     DEFAULT_SOC_HYSTERESIS,
     DOMAIN,
-    DATA_REPLAN_TARIFFS,
+    CONF_REPLAN_TARIFFS,
     EPEX_ATTR_DATA,
     EPEX_KEY_PRICE,
     EPEX_KEY_PRICE_EUR,
@@ -236,6 +236,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_setpoint_entity: str = entry.data[CONF_GRID_SETPOINT_ENTITY]
         self._ac_grid_setpoint_entity: str = entry.data[CONF_AC_GRID_SETPOINT_ENTITY]
         self._set_price_sources(entry.data)
+        self._tariff_replan_pending = bool(entry.data.get(CONF_REPLAN_TARIFFS))
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
         self._max_discharge_power_entity: str | None = entry.data.get(
             CONF_MAX_DISCHARGE_POWER_ENTITY
@@ -1363,10 +1364,12 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 data[key] = formula
             else:
                 data.pop(key, None)
+            if self.control_mode == MODE_AUTO:
+                data[CONF_REPLAN_TARIFFS] = True
+                self._tariff_replan_pending = True
             self.hass.config_entries.async_update_entry(self.config_entry, data=data)
             self._set_price_sources(data)
-            if self.control_mode == MODE_AUTO:
-                self.calculate_auto_schedule()
+            await self._async_finish_tariff_replan()
         await self.async_refresh()
 
     def _source_slots(self) -> list[ScheduleSlot]:
@@ -1516,7 +1519,27 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._schedule_save_tasks.add(task)
         task.add_done_callback(self._schedule_save_tasks.discard)
 
+    async def _async_finish_tariff_replan(self) -> None:
+        """Acknowledge the tariff change only after its restored Auto plan is durable."""
+        if not self._tariff_replan_pending or not self._discharge_storage_ready:
+            return
+        entry_data = self.config_entry.data
+        if self.control_mode == MODE_AUTO:
+            self.calculate_auto_schedule(save=False)
+            if not await self._async_save_schedule():
+                return
+        if self.config_entry.data is entry_data:
+            data = dict(entry_data)
+            data.pop(CONF_REPLAN_TARIFFS, None)
+            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+        self._tariff_replan_pending = False
+
     async def _async_load_schedule(self) -> None:
+        """Restore the plan and finish any tariff change that required a reload."""
+        await self._async_restore_schedule()
+        await self._async_finish_tariff_replan()
+
+    async def _async_restore_schedule(self) -> None:
         """Load the plan from the Store and apply it to the coordinator.
 
         If the Store is empty (fresh install, first ever start, or a
@@ -1590,7 +1613,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Auto schedule calculation from EPEX prices
     # ------------------------------------------------------------------
 
-    def calculate_auto_schedule(self) -> None:
+    def calculate_auto_schedule(self, *, save: bool = True) -> None:
         """Calculate optimal charge/discharge hours from EPEX spot prices."""
         pv_charge = (
             self._fixed_plan_base_snapshot[2]
@@ -1623,7 +1646,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             # Merge the active fixed plan on top of the fresh auto plan.
             self._apply_fixed_plan(reset_base=True)
         self._last_schedule_update = dt_util.now()
-        self._async_schedule_save()
+        if save:
+            self._async_schedule_save()
 
     # ------------------------------------------------------------------
     # Decision engine
@@ -2150,8 +2174,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return self.data
         # A pricing form may have scheduled a reload while a device write was pending.
         # Let the new coordinator account for that meter delta with its saved tariffs.
-        pending_reload = self.hass.data.get(DATA_REPLAN_TARIFFS, ())
-        if self._accounting_ready and self.config_entry.entry_id not in pending_reload:
+        if self._accounting_ready and (
+            self._tariff_replan_pending or not self.config_entry.data.get(CONF_REPLAN_TARIFFS)
+        ):
             self._update_cost_tracking(price_view.eur_per_kwh, price_view.export_eur_per_kwh)
         return self._build_snapshot(
             action=action,
@@ -2501,6 +2526,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Restore the plan before enabling saves or applying a tariff edit.
         # Ordinary restarts keep the stored schedule.
+        replan = self._tariff_replan_pending
         async with self._control_lock:
             await self._async_load_schedule()
         if self._shutdown_requested:
@@ -2509,12 +2535,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         # Text restore callbacks can refresh before the history sensors restore.
         self._accounting_ready = True
         self._grid_consumer_ready = True
-        pending = self.hass.data.get(DATA_REPLAN_TARIFFS, set())
-        if self.config_entry.entry_id in pending:
-            pending.remove(self.config_entry.entry_id)
-            self._suspend_save = False
-            if self.control_mode == MODE_AUTO:
-                self.calculate_auto_schedule()
+        if replan:
             await self.async_refresh()
         else:
             await self.async_request_refresh()

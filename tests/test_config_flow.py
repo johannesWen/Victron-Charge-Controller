@@ -22,6 +22,7 @@ from custom_components.victron_charge_control.const import (
     CONF_AC_GRID_SETPOINT_ENTITY,
     CONF_BATTERY_SOC_ENTITY,
     CONF_DC_COUPLED_PV_FEED_IN_ENTITY,
+    CONF_EPEX_EXPORT_ENTITY,
     CONF_EPEX_SPOT_ENTITY,
     CONF_GRID_CONSUMPTION_ENTITY,
     CONF_GRID_CONSUMER_ENTITY,
@@ -30,6 +31,7 @@ from custom_components.victron_charge_control.const import (
     CONF_IDLE_SETPOINT_LIMIT,
     CONF_MAX_GRID_FEED_IN_ENTITY,
     CONF_POWER_LIMIT,
+    CONF_REPLAN_TARIFFS,
     CONF_SAFETY_STARTUP_GRACE_SECONDS,
     CONF_SOLAR_SURPLUS_ENTITY,
     CONF_USE_SOLCAST_FORECAST,
@@ -219,11 +221,12 @@ async def test_edit_and_clear_epex_pricing(flow_hass, route):
     assert entry.data == MOCK_CONFIG_DATA
     await manager.async_configure(form["flow_id"], settings)
     await hass.async_block_till_done()
-    assert entry.data == settings
+    # The coordinator is stubbed in this flow fixture, so its pending replan remains.
+    assert entry.data == {**settings, CONF_REPLAN_TARIFFS: True}
     form = await open_form()
     await manager.async_configure(form["flow_id"], dict(MOCK_CONFIG_DATA))
     await hass.async_block_till_done()
-    assert entry.data == MOCK_CONFIG_DATA
+    assert entry.data == {**MOCK_CONFIG_DATA, CONF_REPLAN_TARIFFS: True}
 
 
 class TestConfigFlow:
@@ -449,7 +452,10 @@ class TestOptionsFlow:
         await options_flow.async_step_init({**MOCK_CONFIG_DATA, optional_key: blank})
 
         saved = options_flow.hass.config_entries.async_update_entry.call_args.kwargs["data"]
-        assert saved == MOCK_CONFIG_DATA
+        expected = dict(MOCK_CONFIG_DATA)
+        if optional_key == CONF_EPEX_EXPORT_ENTITY:
+            expected[CONF_REPLAN_TARIFFS] = True
+        assert saved == expected
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -490,6 +496,8 @@ class TestOptionsFlow:
             for key, value in submitted.items()
             if key not in (CONF_SAFETY_STARTUP_GRACE_SECONDS, CONF_USE_SOLCAST_FORECAST)
         }
+        if CONF_EPEX_EXPORT_ENTITY in removed_keys:
+            expected[CONF_REPLAN_TARIFFS] = True
         assert saved == {**expected, "unrelated_setting": "preserved"}
         assert options_flow.async_create_entry.call_args.kwargs["data"] == {
             CONF_POWER_LIMIT: DEFAULT_POWER_LIMIT,

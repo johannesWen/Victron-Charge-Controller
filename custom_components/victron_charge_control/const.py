@@ -37,7 +37,7 @@ TARIFF_FORMULAS = {
     CONF_BUY_PRICE: CONF_IMPORT_PRICE_FORMULA,
     CONF_SELL_PRICE: CONF_EXPORT_PRICE_FORMULA,
 }
-DATA_REPLAN_TARIFFS = f"{DOMAIN}_replan_tariffs"
+CONF_REPLAN_TARIFFS = "replan_after_tariff_change"
 
 # --- Control modes ---
 MODE_OFF = "off"

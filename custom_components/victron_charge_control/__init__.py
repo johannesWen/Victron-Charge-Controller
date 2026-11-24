@@ -19,7 +19,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CARD_FILE_NAME, CARD_REGISTERED_KEY, CARD_URL_PATH, DOMAIN,
-    CONF_AC_GRID_SETPOINT_ENTITY, CONF_GRID_SETPOINT_ENTITY, DATA_REPLAN_TARIFFS, TARIFF_FORMULAS,
+    CONF_AC_GRID_SETPOINT_ENTITY, CONF_GRID_SETPOINT_ENTITY, CONF_REPLAN_TARIFFS, TARIFF_FORMULAS,
 )
 from .coordinator import VictronChargeControlCoordinator
 from .services import async_setup_services, async_unload_services
@@ -134,7 +134,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 data.pop(key, None)
             else:
                 data[key] = fixed
-                hass.data.setdefault(DATA_REPLAN_TARIFFS, set()).add(entry.entry_id)
+                data[CONF_REPLAN_TARIFFS] = True
         hass.config_entries.async_update_entry(entry, data=data, options=options, minor_version=2)
     return True
 
