@@ -489,7 +489,7 @@ test('Each directional scale includes its off-scale cutoff, and drags cancel whe
   }
   assert.deepEqual(axisValues(charts[0]), axisValues(charts[2]));
   assert.deepEqual(axisValues(charts[1]), axisValues(charts[3]));
-  assert.equal(Math.min(...axisValues(charts[0])), -6);
+  assert.equal(Math.min(...axisValues(charts[0])), -7);
   assert.equal(Math.max(...axisValues(charts[1])), 111);
 
   const changes = [];

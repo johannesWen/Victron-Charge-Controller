@@ -676,6 +676,35 @@ function startThresholdDrag(result, type, timers) {
   } };
 }
 
+for (const { name, relative, type, exportPrice, current, max, step, target, expected } of [
+  { name: 'moves a relative charge cutoff below the old lower edge', relative: 'on', type: 'charge',
+    exportPrice: -20, current: 10, max: 100, step: .5, target: -7, expected: 11 },
+  { name: 'moves a relative discharge cutoff up a full step with flat negative prices', relative: 'on', type: 'discharge',
+    exportPrice: -2, current: 2, max: 100, step: 4, target: 4, expected: 6 },
+  { name: 'skips a relative charge write when a drag clamps to the current limit', relative: 'on', type: 'charge',
+    exportPrice: -20, current: 10, max: 10, step: .5, target: -7 },
+  { name: 'skips an absolute charge write when a drag clamps to the current limit', relative: 'off', type: 'charge',
+    exportPrice: -20, current: 10, max: 10, step: .5, target: 11 },
+]) {
+  test(`directional threshold drag ${name}`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = relativeSetup(relative), { card, states, prefix, calls } = result;
+    const attrs = states[`sensor.${prefix}_charge_plan`].attributes;
+    Object.assign(attrs, { price_formula_configured: true, price_reference_min: exportPrice, price_reference_max: 4 });
+    for (const entry of attrs.plan) Object.assign(entry, { price: exportPrice, import_price: 4, export_price: exportPrice, action: 'discharge' });
+    const entity_id = `number.${prefix}_${type}_price_threshold`;
+    states[entity_id] = { state: String(current), attributes: { min: -50, max, step } };
+
+    const drag = startThresholdDrag(result, type, t.mock.timers);
+    drag.move(target);
+    assert.equal(card._thresholdDrag.value, expected ?? current);
+    card._onThresholdPointerUp(drag.event);
+    assert.deepEqual(plain(calls), expected === undefined ? [] : [['number', 'set_value', { entity_id, value: expected }]]);
+    assert.equal(card._pendingThresholds[type], expected);
+    drag.assertRestored();
+  });
+}
+
 for (const [type, cutoff, delta, shown] of [
   ['charge', 20.02, 4, 20.13], ['charge', 24.5, -.25, 24.38], ['charge', -9, 30, -5.87], ['charge', 40, -10, 34.13],
   ['discharge', -3.02, 5, -3.13], ['discharge', -9.5, -1.25, -9.38], ['discharge', 24, 30, 21.87], ['discharge', -20, -10, -18.13],

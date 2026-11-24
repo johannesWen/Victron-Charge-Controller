@@ -1475,7 +1475,7 @@ class VictronChargeControllerCard extends LitElement {
     }
 
     if (!this._thresholdDrag) return;
-    const { type, unlocked, value, group, pointerId, context } = this._thresholdDrag;
+    const { type, scale, unlocked, value, group, pointerId, context, restore } = this._thresholdDrag;
     group.classList.remove('threshold-holding', 'threshold-unlocked');
     this.classList.remove('threshold-drag-active');
 
@@ -1488,16 +1488,18 @@ class VictronChargeControllerCard extends LitElement {
     }
 
     if (commit && unlocked && value != null && this._thresholdContextMatches(context, type)) {
-      const key = type === 'charge' ? 'charge_price_threshold' : 'discharge_price_threshold';
-      const rounded = context.relative ? value : Math.round(value * 100) / 100;
+      const rounded = context.relative || scale.direction ? value : Math.round(value * 100) / 100;
+      const previous = this._pendingThresholds[type] ?? parseFloat(context.value);
+      const unchanged = scale.direction && Math.abs(rounded - previous) < 1e-10;
       // A rescaled cutoff can land at the same SVG position Lit cached before the drag.
-      if (this._thresholdDrag.scale.direction) this._thresholdDrag.restore?.();
-      this._setNumber(key, rounded);
-      // Store pending value so both charts update immediately
-      this._pendingThresholds[type] = rounded;
-      this.requestUpdate();
+      if (scale.direction) restore?.();
+      if (!unchanged) {
+        this._setNumber(`${type}_price_threshold`, rounded);
+        this._pendingThresholds[type] = rounded;
+        this.requestUpdate();
+      }
     } else {
-      this._thresholdDrag.restore?.();
+      restore?.();
     }
 
     this._thresholdDrag = null;
@@ -1560,10 +1562,10 @@ class VictronChargeControllerCard extends LitElement {
     const svgY = this._clientToSvgY(e.clientY, svgEl);
     let price = this._svgYToPrice(svgY, scale);
     let value;
-    if (context.relative) {
+    if (context.relative || scale.direction) {
       const { min, max, step } = this._sliderLimits(`${type}_price_threshold`);
-      const delta = type === 'charge' ? context.max - price : price - context.min;
-      value = Math.max(min, Math.min(max, min + Math.round((delta - min) / step) * step));
+      const requested = context.relative ? (type === 'charge' ? context.max - price : price - context.min) : price;
+      value = Math.max(min, Math.min(max, min + Math.round((requested - min) / step) * step));
       value = Math.round(value * 1e10) / 1e10;
       price = this._thresholdCutoff(type, value, context);
     } else {
@@ -3264,19 +3266,26 @@ class VictronChargeControllerCard extends LitElement {
         ? tariffs.filter(tariff => tariff.label === plot.tariffLabel).map(tariff => ({ ...tariff, label: `${tariff.label} accounting` }))
         : tariffs;
       const cutoff = directional ? cutoffs[`${plot.direction}Threshold`] : null;
-      const scale = prices.length || directional ? this._priceChartScale(prices, plotTariffs, cutoff) : null;
+      const step = Number.isFinite(cutoff) ? this._sliderLimits(`${plot.direction}_price_threshold`).step : null;
+      const scale = prices.length || directional ? this._priceChartScale(prices, plotTariffs, cutoff, step) : null;
       return { ...plot, tariffs: plotTariffs, scale };
     }) };
   }
 
-  _priceChartScale(prices, tariffs, cutoff = null) {
+  _priceChartScale(prices, tariffs, cutoff = null, step = null) {
     const values = [...prices, ...tariffs.map(({ price }) => price)];
-    if (prices.length && Number.isFinite(cutoff)) values.push(cutoff);
+    const hasCutoff = prices.length > 0 && Number.isFinite(cutoff);
+    if (hasCutoff) values.push(cutoff);
     if (!values.length) return null;
     const min = Math.min(...values);
     const max = Math.max(...values);
     const range = max - min || 1;
-    return { scaleMin: Math.min(-1, min), scaleMax: Math.max(1, Math.ceil(max + range * 0.1)) };
+    const scaleMin = Math.min(-1, min);
+    const scaleMax = Math.max(1, Math.ceil(max + range * 0.1));
+    if (!hasCutoff) return { scaleMin, scaleMax };
+    // Keep at least one valid threshold step reachable on either side of the line.
+    const padding = Number.isFinite(step) ? Math.max(1, step) : 1;
+    return { scaleMin: Math.min(scaleMin, cutoff - padding), scaleMax: Math.max(scaleMax, cutoff + padding) };
   }
 
   _renderPriceDay(plan, chartId, { plots, directional }, cutoffs) {
