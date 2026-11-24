@@ -12,13 +12,17 @@ const template = (strings, ...values) => strings.reduce((text, string, index) =>
 function setup() {
   let now = Date.parse('2026-10-15T00:59:30Z'), nextTimer = 0;
   const timers = new Map(), listeners = new Map(), requests = [];
+  let formulaField;
   const document = {
     hidden: false,
     addEventListener: (name, callback) => listeners.set(name, callback),
     removeEventListener: name => listeners.delete(name),
   };
   const context = vm.createContext({
-    ...forecast, normalizeView, html: template, svg: template, css: template, nothing: '', document,
+    ...forecast, live: value => value, normalizeView, html: (strings, ...values) => {
+      if (strings[0].includes('class="price-formula-field"')) formulaField = { strings, values };
+      return template(strings, ...values);
+    }, svg: template, css: template, nothing: '', document,
     window: { addEventListener() {}, removeEventListener() {} },
     LitElement: class {
       requestUpdate(...args) { requests.push(args); }
@@ -52,7 +56,7 @@ function setup() {
   };
   const push = (states, context = {}) => { card.hass = { ...card.hass, states, ...context }; };
   requests.length = 0;
-  return { card, requests, timers, document, connect, visibility, advance, flush, push, pollerCalls, now: () => now };
+  return { card, requests, timers, document, connect, visibility, advance, flush, push, pollerCalls, formulaField: () => formulaField, now: () => now };
 }
 
 test('Plan stores every hass object but only integration entity identities and context request an update', () => {
@@ -274,58 +278,67 @@ test('each chart computes hour groups once and a late source removal prevents a 
   assert.equal(groups, 2, 'PV also computes each chart group once');
 });
 
-test('Settings edits each fixed price independently and rejects invalid drafts without clearing the saved rate', async () => {
-  const { card, push } = setup();
+test('Settings sends formula text, uses the latest entity state, and preserves edits after a rejected save', async () => {
+  const { card, push, flush, formulaField } = setup();
   card.setConfig({ view: 'settings', entity_prefix: 'garage' });
   const buy = 'text.cellar_garage_buy_price_2';
   const sell = 'text.garage_sell_price';
   const calls = [];
-  push({ ...card.hass.states, [buy]: { state: '24.75' }, [sell]: { state: '' } }, {
-    callService: (domain, service, data) => calls.push([domain, service, { ...data }]),
+  let rejectSave;
+  push({ ...card.hass.states, [buy]: { state: 'price + 5' }, [sell]: { state: '' } }, {
+    callService: (domain, service, data) => {
+      calls.push([domain, service, { ...data }]);
+      if (data.value === 'price / 0') return new Promise((resolve, reject) => { rejectSave = reject; });
+    },
   });
-  const rendered = card.render();
-  assert.match(rendered, /<label class="tariff-field">\s*<span>Buy price \(ct\/kWh\)<\/span>\s*<input type="text"[^>]*\.value=24\.75/);
-  assert.doesNotMatch(rendered, /<input[^>]*inputmode="decimal"/);
-  assert.match(rendered, /Sell price \(ct\/kWh\)<\/span>\s*<input[^>]*\?disabled=false placeholder=Enter fixed price/);
+  let rendered = flush();
+  assert.match(rendered, /Import price formula \(ct\/kWh\)<\/span>\s*<input[^>]*\.value=price \+ 5/);
+  assert.match(rendered, /Export price formula \(ct\/kWh\)<\/span>\s*<input[^>]*\?disabled=false placeholder=Market price/);
 
-  const input = {
-    value: '',
-    setCustomValidity(message) { this.message = message; },
-    setAttribute(key, value) { this[key] = value; },
-    reportValidity() { this.reported = true; },
+  const field = (key, label) => card._renderPriceFormulaField(key, label);
+  const fire = (name, event) => {
+    const { strings, values } = formulaField();
+    return values[strings.findIndex(part => part.endsWith('@' + name + '='))](event);
   };
-  for (const value of ['-', ' ', '2,5.7', 'NaN', '0x10', '1e2']) {
-    input.value = value;
-    card._setTariff('buy_price', input);
-    assert.equal(input.value, value);
-  }
-  assert.deepEqual(calls, []);
-  assert.equal(input['aria-invalid'], 'true');
-  assert.equal(input.reported, true);
-
-  input.value = '0';
-  await card._setTariff('buy_price', input);
-  input.value = ' -2,5 ';
-  await card._setTariff('sell_price', input);
-  input.value = '';
-  await card._setTariff('buy_price', input);
+  const edit = value => fire('input', { target: { value } });
+  field('sell_price', 'Export price formula');
+  edit(' -2,5 ');
+  await fire('blur');
+  field('buy_price', 'Import price formula');
+  edit('  ');
+  await fire('blur');
+  edit('price / 0');
+  const rejected = fire('blur');
+  edit(' (price + 3) * 1.25 ');
+  push({ ...card.hass.states, [buy]: { state: 'price + 7' } });
+  rejectSave(new Error('Invalid price formula'));
+  await rejected;
+  rendered = flush();
+  assert.match(rendered, /Service call failed: Invalid price formula/);
+  assert.match(rendered, /\.value= \(price \+ 3\) \* 1\.25 /);
+  field('buy_price', 'Import price formula');
+  await fire('blur');
+  push({ ...card.hass.states, [buy]: { state: '(price + 3) * 1.25' } });
+  assert.match(flush(), /\.value=\(price \+ 3\) \* 1\.25/);
+  push({ ...card.hass.states, [buy]: { state: 'price + 9' }, [sell]: { state: '-3' } });
+  rendered = flush();
+  assert.match(rendered, /\.value=price \+ 9/);
+  assert.match(rendered, /\.value=-3/);
   assert.deepEqual(calls, [
-    ['text', 'set_value', { entity_id: buy, value: '0' }],
     ['text', 'set_value', { entity_id: sell, value: '-2.5' }],
     ['text', 'set_value', { entity_id: buy, value: '' }],
+    ['text', 'set_value', { entity_id: buy, value: 'price / 0' }],
+    ['text', 'set_value', { entity_id: buy, value: '(price + 3) * 1.25' }],
   ]);
 
   for (const state of ['unknown', 'unavailable', undefined]) {
     push({ ...card.hass.states, [buy]: state === undefined ? undefined : { state } });
-    assert.match(card._renderTariffField('buy_price', 'Buy price'), /\?disabled=true placeholder=Unavailable/);
-    input.value = '15';
-    card._setTariff('buy_price', input);
-    assert.equal(input.value, '');
+    assert.match(field('buy_price', 'Import price formula'), /\?disabled=true placeholder=Unavailable/);
   }
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
 });
 
-test('Plan shows fixed rate lines on the shared Price scale and preserves missing spot data and controls', () => {
+test('Formula text leaves the shared Price scale, missing spot data, and controls unchanged', () => {
   const { card, push, flush } = setup();
   const buy = 'text.garage_buy_price';
   const sell = 'text.garage_sell_price';
@@ -341,22 +354,15 @@ test('Plan shows fixed rate lines on the shared Price scale and preserves missin
   };
   push(states);
   const rendered = flush();
-  const ys = [...rendered.matchAll(/class="plan-tariff" pointer-events="none">\s*<line [^>]*y1="([^"]+)"[^>]*stroke-dasharray="4,3"/g)]
-    .map(match => Number(match[1]));
-  assert.equal(ys.length, 4);
-  assert.deepEqual(ys.slice(0, 2), ys.slice(2));
-  assert.ok(ys[0] >= 38 && ys[0] < ys[1] && ys[1] <= 250);
-  assert.equal((rendered.match(/>Buy 50<\/text>/g) || []).length, 2);
-  assert.equal((rendered.match(/>Sell -10<\/text>/g) || []).length, 2);
+  const [todayChart, tomorrowChart] = priceCharts(rendered);
+  assert.deepEqual(axisValues(todayChart), axisValues(tomorrowChart));
+  assert.equal(Math.max(...axisValues(todayChart)), 5);
+  assert.doesNotMatch(rendered, /class="plan-tariff"/);
   assert.match(rendered, /class="threshold-line-group" data-type="charge"/);
   assert.match(rendered, /class="plan-bar-hit"/);
 
-  push({ ...states, [buy]: { state: '0' }, [sell]: { state: '0.0' } });
-  assert.equal((flush().match(/>Buy \/ Sell 0<\/text>/g) || []).length, 2);
-  push({ ...states, [buy]: { state: 'unavailable' }, [sell]: { state: '0' } });
-  assert.equal((flush().match(/>Sell 0<\/text>/g) || []).length, 2);
-  push({ ...states, [buy]: { state: '0' }, [sell]: { state: '' } });
-  assert.equal((flush().match(/>Buy 0<\/text>/g) || []).length, 2);
+  push({ ...states, [buy]: { state: '0' }, [sell]: { state: 'price - 5' } });
+  assert.equal(flush(), rendered);
 
   card._solarForecast = forecast.normalizeForecast({
     usable: true, time_zone: 'UTC',
@@ -424,9 +430,8 @@ test('Formula plots align times and share scales across days by direction, with 
   assert.deepEqual(axisValues(sell), axisValues(sellTomorrow));
   assert.ok(Math.max(...axisValues(buy)) >= 17 && Math.max(...axisValues(buy)) < 20);
   assert.equal(Math.min(...axisValues(sell)), -20);
-  assert.ok(Math.max(...axisValues(sell)) >= 100);
-  assert.match(sell, />Sell accounting 100<\/text>/);
-  assert.doesNotMatch(buy, /class="plan-tariff"/);
+  assert.equal(Math.max(...axisValues(sell)), 16);
+  assert.doesNotMatch(rendered, /class="plan-tariff"/);
   assert.match(buy, /data-type="charge"[\s\S]*class="plan-threshold-label"[^>]*>6<\/text>/);
   assert.match(sell, /data-type="discharge"[\s\S]*class="plan-threshold-label"[^>]*>2<\/text>/);
   assert.doesNotMatch(buy, /data-type="discharge"/);
@@ -466,9 +471,9 @@ test('Formula plots align times and share scales across days by direction, with 
   card._thresholdDrag = { scale: { ...card._priceChartData().plots[0].scale, direction: 'charge' } };
   card._finishThresholdDrag = commit => { changes.push(commit); card._thresholdDrag = null; };
   push({ ...states, 'text.garage_sell_price': { state: '200' } });
-  assert.deepEqual(changes, [], 'export scale changes preserve an import drag');
+  assert.deepEqual(changes, [], 'export formula text preserves an import drag');
   push({ ...card.hass.states, 'text.garage_buy_price': { state: '200' } });
-  assert.deepEqual(changes, [false], 'import scale changes cancel an import drag');
+  assert.deepEqual(changes, [], 'import formula text preserves an import drag');
 });
 
 test('Each directional scale includes its off-scale cutoff, and drags cancel when that scale changes', () => {
@@ -545,7 +550,7 @@ test('Split Price pickers use both labeled prices for the same canonical interva
   assert.doesNotMatch(card._renderPlanPicker(), /Import|Export/);
 });
 
-test('Price respects the explicit formula flag, zero accounting rates and missing sides or days', () => {
+test('Price respects the explicit formula flag, missing sides or days even with formula text states', () => {
   const { card, push, flush } = setup();
   const entity = 'sensor.garage_charge_plan';
   const states = { ...card.hass.states, 'text.garage_buy_price': { state: '0' }, 'text.garage_sell_price': { state: '0' } };
@@ -558,7 +563,6 @@ test('Price respects the explicit formula flag, zero accounting rates and missin
     const rendered = flush();
     assert.equal(priceCharts(rendered).length, 1);
     assert.doesNotMatch(rendered, /Import · Charging|Export · Discharging/);
-    assert.match(rendered, />Buy \/ Sell 0<\/text>/);
     assert.match(rendered, /fill="#ff6600"/);
   }
 
@@ -567,8 +571,6 @@ test('Price respects the explicit formula flag, zero accounting rates and missin
   const rendered = flush();
   const [buy, sell] = priceCharts(rendered);
   assert.equal(axisValues(buy).length, 5);
-  assert.match(buy, />Buy accounting 0<\/text>/);
-  assert.match(sell, />Sell accounting 0<\/text>/);
   assert.equal(priceBars(sell).length, 0);
   assert.match(rendered, /Export prices unavailable/);
   assert.match(rendered, /Tomorrow — prices not yet available/);

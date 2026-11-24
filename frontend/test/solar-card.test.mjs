@@ -15,7 +15,7 @@ function card({ now = '2026-10-15T00:15:00+02:00', templates = [] } = {}) {
     return rendered;
   };
   const context = vm.createContext({
-    ...forecast, html: render, svg: render, css: template, nothing: '',
+    ...forecast, live: value => value, html: render, svg: render, css: template, nothing: '',
     LitElement: class { requestUpdate() {} disconnectedCallback() {} },
     document: { addEventListener() {}, removeEventListener() {} }, window: { addEventListener() {}, removeEventListener() {} },
     setTimeout, clearTimeout,
@@ -527,7 +527,7 @@ for (const commit of [true, false]) test(`threshold drag preserves Lit label nod
   assert.equal(label.childNodes[1], textNode);
 });
 
-for (const update of ['tariff expands scale', 'spot expands scale', 'tariff fits scale']) {
+for (const update of ['formula text changes', 'spot expands scale']) {
   test(`threshold pointer-up after ${update} and before render`, t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const templates = [], calls = [], instance = card({ templates });
@@ -557,13 +557,13 @@ for (const update of ['tariff expands scale', 'spot expands scale', 'tariff fits
 
     const changed = update === 'spot expands scale'
       ? { [planId]: { state: 'ready', attributes: { plan: [plan[0], { ...plan[1], price: 35 }] } } }
-      : { [buyId]: { state: update === 'tariff expands scale' ? '50' : '10' } };
+      : { [buyId]: { state: '50' } };
     instance.hass = { ...instance.hass, states: { ...states, ...changed } };
     instance._onThresholdPointerUp(event({}, { type: 'pointerup', pointerId: 1 }));
 
     assert.equal(instance._thresholdDrag, null);
     assert.deepEqual(calls.map(([domain, service, data]) => [domain, service, { ...data }]),
-      update === 'tariff fits scale'
+      update === 'formula text changes'
         ? [['number', 'set_value', { entity_id: 'number.garage_charge_price_threshold', value: Math.round(value * 100) / 100 }]]
         : []);
   });
