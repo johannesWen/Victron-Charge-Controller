@@ -71,6 +71,29 @@ def test_missing_ends_quarter_cadence_never_fill_missing_records():
     assert len(gap) == 2 and all("price" not in item for item in gap)
 
 
+@pytest.mark.parametrize(("buy", "sell", "expected"), [
+    ("", "", None),
+    ("price * 2", "", (10, 5)),
+    ("", "100", (5, 100)),
+    ("0", "0", (0, 0)),
+])
+def test_plan_exposes_directional_prices_when_a_formula_is_set(controller, buy, sell, expected):
+    controller.update_entity_references({
+        **controller.config_entry.data, "import_price_formula": buy, "export_price_formula": sell,
+    })
+    publish(controller, [price()])
+    sensor = ChargePlanSensor(controller, MockConfigEntry())
+    sensor.async_write_ha_state = MagicMock()
+    sensor._handle_coordinator_update()
+    attrs = sensor.extra_state_attributes
+    assert attrs["price_formula_configured"] is (expected is not None)
+    period, = [p for p in attrs["plan"] if "price" in p]
+    if expected is None:
+        assert "import_price" not in period and "export_price" not in period
+    else:
+        assert (period["import_price"], period["export_price"]) == expected
+
+
 @pytest.mark.parametrize("relative", [False, True])
 def test_independent_forecasts_keep_native_budgets_and_resolve_overlaps(controller, relative):
     controller.update_entity_references({

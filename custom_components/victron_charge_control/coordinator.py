@@ -719,6 +719,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         return self._import_source.entity_id
 
     @property
+    def price_formula_configured(self) -> bool:
+        return bool(self._import_source.formula.strip() or self._export_source.formula.strip())
+
+    @property
     def max_grid_feed_in_entity(self) -> str:
         return self._max_grid_feed_in_entity
 
@@ -2345,7 +2349,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         _, reference_max = price_reference_bounds(buy, now)
         reference_min, _ = price_reference_bounds(sell, now)
         schedule = self._charge_hours + self._discharge_hours + self._pv_charge_hours
-        export_intervals = None if same_source else sell
+        export_intervals = sell if self.price_formula_configured or not same_source else None
         return EpexPriceView(
             current_price=current_price,
             eur_per_kwh=buy_ct / 100 if buy_ct is not None else None,

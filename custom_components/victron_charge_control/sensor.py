@@ -660,6 +660,7 @@ class ChargePlanSensor(VictronCCBaseSensor):
             self._attr_native_value = self._plan_summary(data)
             self._attr_extra_state_attributes = {
                 "plan": self._build_plan(data),
+                "price_formula_configured": self.coordinator.price_formula_configured,
                 "time_zone": self.coordinator.hass.config.time_zone,
                 "price_reference_min": data.price_reference_min,
                 "price_reference_max": data.price_reference_max,

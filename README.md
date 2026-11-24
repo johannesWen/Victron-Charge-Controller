@@ -108,7 +108,7 @@ In setup or **Configure**, enter a separate formula for each direction. The vari
 
 For example, suppose your import contract adds an energy tax of 10 ct/kWh and a supplier fee of 2 ct/kWh before applying 21% VAT. Set the import formula to `(price + 10 + 2) * 1.21`. For export at the raw market price, use the same market sensor and leave the export formula empty. A market price of 8 ct/kWh then gives **24.20 ct/kWh for import** and **8.00 ct/kWh for export**. Substitute your own contract rates. If a second EPEX sensor already calculates your sell-back rate, select it as the export sensor and leave its formula empty.
 
-Charging uses the import forecast. Discharging uses the export forecast, and feed-in control uses the current export price. With separate rates, hover over a Price chart interval to see both. Discharge bars show the export rate. Other bars normally show the import rate. A missing sensor or an undefined formula result (such as division by a zero market price) makes that direction’s price unavailable for the affected reading. Zero and negative prices are valid.
+Charging uses the import forecast. Discharging uses the export forecast, and feed-in control uses the current export price. A missing sensor or an undefined formula result (such as division by a zero market price) makes that direction’s price unavailable for the affected reading. Zero and negative prices are valid.
 
 ### Upgrade from a version before v2.2.1
 
@@ -202,9 +202,11 @@ Overview shows how mode power, solar power, Grid Consumer, and signed battery fe
 Zero battery feedback is hidden; older controller calculations without that term remain supported.
 When a limit caps the target, the original result appears in parentheses, such as `5,000 W (6,000 W)`.
 
-In the Plan card, switch from Price to PV forecast to view expected solar production.
-In Price view, dashed blue lines show any fixed buy and sell tariffs configured in Settings. Equal tariffs share one line.
-The chart shows the main Solcast forecast and a lower estimate, alongside electricity price intervals.
+With an import or export price formula configured, the Plan card’s **Price** view shows two plots per day. **Import · Charging** shows the import forecast, charging cutoff and selected charging intervals. **Export · Discharging** shows the corresponding export values. For example, a fixed export formula of `100` appears at 100 ct/kWh for every interval with an export price. The highlighted intervals show when discharge is planned. The plots align by time. Each direction uses its own ct/kWh scale across Today and Tomorrow. Hover over or tap an hour to see both prices and the planned action for each interval. Missing prices appear as gaps.
+
+Without a price formula, Price view shows one combined plot per day. If a separate export sensor is selected, discharge bars use its price. Fixed Buy and Sell tariffs from Settings appear as dashed accounting lines on their respective plots. Equal tariffs share a line in the combined plot.
+
+Switch to **PV forecast** to see the main Solcast forecast and a lower estimate alongside electricity price intervals.
 Each EPEX Spot input is detected automatically as 15-minute or 60-minute data. The planner ranks each direction’s whole source intervals, including when the two sensors have different resolutions.
 In a detected 15-minute feed, entries without `end_time` use the quarter-hour cadence. True hourly periods mixed into that feed require an explicit `end_time`.
 It uses the Home Assistant time zone even when your browser uses a different zone. Tooltip and picker times include UTC offsets to distinguish repeated times when daylight saving ends. Spring and fall days retain their actual 23 or 25 hours.
