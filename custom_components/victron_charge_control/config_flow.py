@@ -193,7 +193,35 @@ def _validate_entities(hass: Any, user_input: dict[str, Any]) -> dict[str, str]:
     return errors
 
 
-class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
+class _TariffForm:
+    """Merge edits against the rates shown when this form opened."""
+
+    _original_tariffs: dict[str, str] | None = None
+
+    def _merge_tariffs(
+        self, entry: ConfigEntry, submitted: dict[str, Any] | None, errors: dict[str, str],
+    ) -> dict[str, str]:
+        if submitted is None or self._original_tariffs is None:
+            self._original_tariffs = {
+                key: (entry.data.get(key) or "").strip() for key in FORMULA_KEYS
+            }
+            return {}
+
+        unchanged = {}
+        for key, original in self._original_tariffs.items():
+            saved = entry.data.get(key) or ""
+            current = saved.strip()
+            proposed = submitted.get(key, "")
+            if proposed in (original, current):
+                unchanged[key] = saved
+            elif current != original and key not in errors:
+                errors[key] = "tariff_changed"
+                # The field error lets the user explicitly retry their edit.
+                self._original_tariffs[key] = current
+        return unchanged
+
+
+class VictronChargeControlConfigFlow(_TariffForm, ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Victron Charge Control."""
 
     VERSION = 1
@@ -205,20 +233,22 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
         """Add the RAM actuator without replacing the entry or stored plan."""
         entry = self._get_reconfigure_entry()
         errors = {}
+        data = None
         if user_input is not None:
             data = {
                 **{key: value for key, value in entry.data.items() if key not in OPTIONAL_DATA_KEYS},
                 **user_input,
             }
             errors = _validate_entities(self.hass, data)
-            if not errors:
-                data = _clean_entity_data(data)
-                _replan_if_pricing_changed(entry, data)
-                return self.async_update_reload_and_abort(entry, data=data)
+        tariffs = self._merge_tariffs(entry, data, errors)
+        if data is not None and not errors:
+            data = _clean_entity_data({**data, **tariffs})
+            _replan_if_pricing_changed(entry, data)
+            return self.async_update_reload_and_abort(entry, data=data)
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=self.add_suggested_values_to_schema(
-                STEP_USER_DATA_SCHEMA, {**entry.data, **(user_input or {})}
+                STEP_USER_DATA_SCHEMA, entry.data if data is None else data
             ),
             errors=errors,
         )
@@ -258,7 +288,7 @@ class VictronChargeControlConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-class VictronChargeControlOptionsFlow(OptionsFlow):
+class VictronChargeControlOptionsFlow(_TariffForm, OptionsFlow):
     """Handle options flow — allows changing entities after setup."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
@@ -269,11 +299,10 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Manage the options — same entity selectors, pre-filled with current values."""
-        errors: dict[str, str] = {}
+        errors = _validate_entities(self.hass, user_input) if user_input is not None else {}
+        tariffs = self._merge_tariffs(self._config_entry, user_input, errors)
 
         if user_input is not None:
-            errors = _validate_entities(self.hass, user_input)
-
             limits = {}
             for key, default, minimum in (
                 (CONF_POWER_LIMIT, DEFAULT_POWER_LIMIT, 1),
@@ -326,7 +355,7 @@ class VictronChargeControlOptionsFlow(OptionsFlow):
                         )
                     ),
                 }
-                data = _clean_entity_data({**current_data, **data_update})
+                data = _clean_entity_data({**current_data, **data_update, **tariffs})
                 _replan_if_pricing_changed(self._config_entry, data)
                 self.hass.config_entries.async_update_entry(
                     self._config_entry,

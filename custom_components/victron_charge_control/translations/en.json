@@ -84,7 +84,8 @@
       "distinct_setpoints": "Select different entities for the permanent AC power setpoint and RAM AC grid setpoint.",
       "distinct_discharge_limit": "Select a maximum discharge power entity distinct from both grid setpoints and the grid feed-in limit.",
       "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings.",
-      "invalid_price_formula": "Use price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero."
+      "invalid_price_formula": "Use price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero.",
+      "tariff_changed": "This rate changed while the form was open. Submit again to apply your edit, or reopen the form to see the saved rate."
     },
     "abort": {
       "already_configured": "Already configured. Only one instance is supported."
@@ -147,7 +148,8 @@
       "battery_power_required": "Select a power sensor with W or kW units and positive charging / negative discharging readings.",
       "invalid_power_limit": "Enter a finite whole number of watts, at least 1.",
       "invalid_idle_setpoint_limit": "Enter a finite whole number of watts, at least 0.",
-      "invalid_price_formula": "Use price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero."
+      "invalid_price_formula": "Use price, finite numbers, +, -, *, / and parentheses (up to 128 characters). Check for division by zero.",
+      "tariff_changed": "This rate changed while the form was open. Submit again to apply your edit, or reopen the form to see the saved rate."
     }
   },
   "entity": {
