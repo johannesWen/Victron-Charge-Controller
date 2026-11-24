@@ -10,6 +10,7 @@ import asyncio
 import logging
 import math
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -151,6 +152,17 @@ from .forecast import SolcastForecastCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
+def _configured_tariffs(data: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Represent the effective market sources and formulas in the schedule Store."""
+    buy = data[CONF_EPEX_SPOT_ENTITY]
+    return {
+        "import": [buy, data.get(CONF_IMPORT_PRICE_FORMULA) or ""],
+        "export": [
+            data.get(CONF_EPEX_EXPORT_ENTITY) or buy, data.get(CONF_EXPORT_PRICE_FORMULA) or "",
+        ],
+    }
+
+
 @dataclass
 class EpexPriceView:
     """Snapshot of the EPEX data extracted on a single tick.
@@ -236,7 +248,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._grid_setpoint_entity: str = entry.data[CONF_GRID_SETPOINT_ENTITY]
         self._ac_grid_setpoint_entity: str = entry.data[CONF_AC_GRID_SETPOINT_ENTITY]
         self._set_price_sources(entry.data)
-        self._tariff_replan_pending = bool(entry.data.get(CONF_REPLAN_TARIFFS))
+        self._planned_tariffs: dict[str, list[str]] | None = None
+        self._tariff_save_failed = False
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
         self._max_discharge_power_entity: str | None = entry.data.get(
             CONF_MAX_DISCHARGE_POWER_ENTITY
@@ -1339,14 +1352,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             for previous, edited in zip(base, current)
         )
 
-    def _set_price_sources(self, data: dict[str, Any]) -> None:
-        self._import_source = EpexSource(
-            data[CONF_EPEX_SPOT_ENTITY], data.get(CONF_IMPORT_PRICE_FORMULA) or "",
-        )
-        self._export_source = EpexSource(
-            data.get(CONF_EPEX_EXPORT_ENTITY) or self._import_source.entity_id,
-            data.get(CONF_EXPORT_PRICE_FORMULA) or "",
-        )
+    def _set_price_sources(self, data: Mapping[str, Any]) -> None:
+        self._tariffs = _configured_tariffs(data)
+        self._import_source = EpexSource(*self._tariffs["import"])
+        self._export_source = EpexSource(*self._tariffs["export"])
 
     def _price_intervals(self) -> tuple[list[PriceInterval], list[PriceInterval]]:
         buy = self._import_source.intervals(self.hass)
@@ -1366,10 +1375,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 data.pop(key, None)
             if self.control_mode == MODE_AUTO:
                 data[CONF_REPLAN_TARIFFS] = True
-                self._tariff_replan_pending = True
             self.hass.config_entries.async_update_entry(self.config_entry, data=data)
             self._set_price_sources(data)
-            await self._async_finish_tariff_replan()
         await self.async_refresh()
 
     def _source_slots(self) -> list[ScheduleSlot]:
@@ -1465,7 +1472,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Deserialize an hour-of-day list, dropping any out-of-range value."""
         return deserialize_hours(raw)
 
-    async def _async_save_schedule(self, *, verify_release: bool = False) -> bool:
+    async def _async_save_schedule(self, *, verify: bool = False) -> bool:
         """Persist plan and release obligation together, in write order."""
         async with self._store_lock:
             if self._store_load_failed:
@@ -1485,17 +1492,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 payload["fixed_plan_base"] = [serialize_slots(slots) for slots in self._fixed_plan_base_snapshot]
                 payload["fixed_plan_applied"] = serialize_slots(self._fixed_plan_applied_slots)
             payload["discharge_release_entity"] = self._discharge_release_entity
+            if self._planned_tariffs is not None:
+                payload["auto_plan_tariffs"] = self._planned_tariffs
             try:
                 await self._store.async_save(payload)
-                if verify_release:
-                    # HA Store logs some disk failures without raising them.
-                    saved = await self._store.async_load()
-                    if (
-                        not isinstance(saved, dict)
-                        or saved.get("discharge_release_entity") != self._discharge_release_entity
-                    ):
-                        _LOGGER.warning("Discharge release obligation was not persisted — retrying")
-                        return False
+                # HA Store logs some disk failures without raising them.
+                if verify and await self._store.async_load() != payload:
+                    _LOGGER.warning("Charge plan or discharge release obligation was not persisted — retrying")
+                    return False
             except Exception:  # noqa: BLE001
                 _LOGGER.warning("Failed to persist charge plan to Store", exc_info=True)
                 return False
@@ -1520,24 +1524,47 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         task.add_done_callback(self._schedule_save_tasks.discard)
 
     async def _async_finish_tariff_replan(self) -> None:
-        """Acknowledge the tariff change only after its restored Auto plan is durable."""
-        if not self._tariff_replan_pending or not self._discharge_storage_ready:
-            return
+        """Commit available directions once and retry missing forecasts on later ticks."""
         entry_data = self.config_entry.data
+        if (
+            not entry_data.get(CONF_REPLAN_TARIFFS) or not self._discharge_storage_ready
+            or self._shutdown_requested or self.hass.state in (CoreState.stopping, CoreState.final_write)
+            or self._tariffs != _configured_tariffs(entry_data)
+        ):
+            return
         if self.control_mode == MODE_AUTO:
-            self.calculate_auto_schedule(save=False)
-            if not await self._async_save_schedule():
+            buy, sell = self._price_intervals()
+            now = dt_util.now()
+            covered = {
+                key: self._tariffs[key] for key, intervals in (("import", buy), ("export", sell))
+                if any(period.end > now for period in intervals)
+            }
+            # The stored directions show which half of a partial plan already survived a save.
+            partial = covered != self._tariffs
+            if not covered or (
+                partial and covered == self._planned_tariffs and not self._tariff_save_failed
+            ):
                 return
-        if self.config_entry.data is entry_data:
+            if not self._apply_auto_schedule(buy, sell, now):
+                return
+            self._planned_tariffs = covered
+            self._tariff_save_failed = not await self._async_save_schedule(verify=True)
+            if self._tariff_save_failed or partial:
+                return
+        if (
+            self.config_entry.data is entry_data and not self._shutdown_requested
+            and self.hass.state not in (CoreState.stopping, CoreState.final_write)
+        ):
             data = dict(entry_data)
             data.pop(CONF_REPLAN_TARIFFS, None)
             self.hass.config_entries.async_update_entry(self.config_entry, data=data)
-        self._tariff_replan_pending = False
 
-    async def _async_load_schedule(self) -> None:
+    async def _async_load_schedule(self) -> bool:
         """Restore the plan and finish any tariff change that required a reload."""
         await self._async_restore_schedule()
+        replan = bool(self.config_entry.data.get(CONF_REPLAN_TARIFFS))
         await self._async_finish_tariff_replan()
+        return replan
 
     async def _async_restore_schedule(self) -> None:
         """Load the plan from the Store and apply it to the coordinator.
@@ -1575,6 +1602,17 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             # RestoreEntity callbacks already populated.
             return
 
+        self._planned_tariffs = data.get("auto_plan_tariffs")
+        if (
+            self.control_mode == MODE_AUTO and self._planned_tariffs is not None
+            and self._planned_tariffs != self._tariffs
+            and not self.config_entry.data.get(CONF_REPLAN_TARIFFS)
+            and self._tariffs == _configured_tariffs(self.config_entry.data)
+        ):
+            # Config entries and plans are saved separately. Either write may survive a crash.
+            self.hass.config_entries.async_update_entry(self.config_entry, data={
+                **self.config_entry.data, CONF_REPLAN_TARIFFS: True,
+            })
         self._charge_hours = applied["charge_hours"]
         self._discharge_hours = applied["discharge_hours"]
         self._pv_charge_hours = applied["pv_charge_hours"]
@@ -1613,13 +1651,23 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
     # Auto schedule calculation from EPEX prices
     # ------------------------------------------------------------------
 
-    def calculate_auto_schedule(self, *, save: bool = True) -> None:
+    def calculate_auto_schedule(self) -> bool:
         """Calculate optimal charge/discharge hours from EPEX spot prices."""
+        buy, sell = self._price_intervals()
+        applied = self._apply_auto_schedule(buy, sell, dt_util.now())
+        if applied:
+            self._planned_tariffs = self._tariffs
+            self._async_schedule_save()
+        return applied
+
+    def _apply_auto_schedule(
+        self, import_prices: list[PriceInterval], export_prices: list[PriceInterval], now: datetime,
+    ) -> bool:
+        """Apply a plan only when the planner has usable current or future intervals."""
         pv_charge = (
             self._fixed_plan_base_snapshot[2]
             if self._fixed_plan_base_snapshot is not None else self._pv_charge_hours
         )
-        import_prices, export_prices = self._price_intervals()
         result = planning_calculate_auto_schedule(
             import_prices=import_prices,
             export_prices=export_prices,
@@ -1632,10 +1680,10 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             blocked_charging_hours=self._blocked_charging_hours,
             blocked_discharging_hours=self._blocked_discharging_hours,
             pv_charge_hours=pv_charge,
-            now=dt_util.now(),
+            now=now,
         )
         if result is None:
-            return
+            return False
         charge_slots, discharge_slots = result
         self._charge_hours = charge_slots
         self._discharge_hours = discharge_slots
@@ -1645,9 +1693,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             self._fixed_plan_applied_slots = []
             # Merge the active fixed plan on top of the fresh auto plan.
             self._apply_fixed_plan(reset_base=True)
-        self._last_schedule_update = dt_util.now()
-        if save:
-            self._async_schedule_save()
+        self._last_schedule_update = now
+        return True
 
     # ------------------------------------------------------------------
     # Decision engine
@@ -1970,7 +2017,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                         continue
                     return
                 self._discharge_release_entity = entity
-                if not await self._async_save_schedule(verify_release=True):
+                if not await self._async_save_schedule(verify=True):
                     self._discharge_last_attempt = (entity, value, self.hass.loop.time())
                     return
                 # Mode, schedule, toggle or configuration may change during disk I/O.
@@ -1993,7 +2040,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 return
             if value == -1:
                 self._discharge_release_entity = None
-                if not await self._async_save_schedule(verify_release=True):
+                if not await self._async_save_schedule(verify=True):
                     self._discharge_release_entity = entity
                     return
                 self._discharge_release_pending = False
@@ -2142,12 +2189,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """
         if self._shutdown_requested:
             return self.data
+        await self._async_finish_tariff_replan()
         self._sample_solar_surplus()
         decision = await self._async_reconcile_setpoint()
         if decision is None:
             return self.data
         current_price_ct, is_reduced, action, setpoint, calculation = decision
         inputs = self._setpoint_inputs()
+        price_tariffs = self._tariffs
         price_view = self._step_load_epex_view()
         self._clean_expired_slots()
         try:
@@ -2174,9 +2223,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             return self.data
         # A pricing form may have scheduled a reload while a device write was pending.
         # Let the new coordinator account for that meter delta with its saved tariffs.
-        if self._accounting_ready and (
-            self._tariff_replan_pending or not self.config_entry.data.get(CONF_REPLAN_TARIFFS)
-        ):
+        if self._accounting_ready and price_tariffs == _configured_tariffs(self.config_entry.data):
             self._update_cost_tracking(price_view.eur_per_kwh, price_view.export_eur_per_kwh)
         return self._build_snapshot(
             action=action,
@@ -2526,9 +2573,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
         # Restore the plan before enabling saves or applying a tariff edit.
         # Ordinary restarts keep the stored schedule.
-        replan = self._tariff_replan_pending
         async with self._control_lock:
-            await self._async_load_schedule()
+            replan = await self._async_load_schedule()
         if self._shutdown_requested:
             return
 

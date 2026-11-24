@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from types import MappingProxyType
@@ -14,9 +15,10 @@ import pytest
 from homeassistant import auth, loader
 from homeassistant.bootstrap import async_load_base_functionality
 from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreStateData
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
@@ -126,13 +128,13 @@ async def select_mode(hass, mode):
     }, blocking=True)
 
 
-def publish_intervals(hass):
+def publish_intervals(hass, entity_id="sensor.epex_spot"):
     tomorrow = (dt_util.now() + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
     periods = [
         {"start_time": (tomorrow + timedelta(hours=i)).isoformat(), "price_ct_per_kwh": price}
         for i, price in enumerate((5, 15))
     ]
-    hass.states.async_set("sensor.epex_spot", "5", {"unit_of_measurement": "ct/kWh", "data": periods})
+    hass.states.async_set(entity_id, "5", {"unit_of_measurement": "ct/kWh", "data": periods})
 
 
 def priced_actions(hass):
@@ -328,8 +330,13 @@ async def test_legacy_fixed_input_migrates_before_first_delta(start_hass, restar
         assert _history(hass) == pytest.approx((0.20, 0.30, 4, 3))
 
 
-async def test_options_save_during_inflight_refresh_prices_next_reading_once(start_hass, monkeypatch):
+@pytest.mark.parametrize("already_pending", [False, True])
+async def test_options_save_during_inflight_refresh_prices_next_reading_once(start_hass, monkeypatch, already_pending):
     async with start_hass(100, 20, "5") as (hass, coordinator):
+        if already_pending:
+            await select_mode(hass, "auto")
+            await set_tariff(hass, BUY, "10")
+            assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
         entered, released = asyncio.Event(), asyncio.Event()
 
         async def slow_write(**kwargs):
@@ -343,7 +350,9 @@ async def test_options_save_during_inflight_refresh_prices_next_reading_once(sta
         flow = hass.config_entries.options
         try:
             form = await flow.async_init(entry.entry_id)
-            result = await flow.async_configure(form["flow_id"], {**entry.data, "import_price_formula": "25"})
+            result = await flow.async_configure(form["flow_id"], {
+                **MOCK_CONFIG_DATA_WITH_COST, "import_price_formula": "25",
+            })
             assert result["type"] == "create_entry"
             hass.states.async_set("sensor.grid_consumption_kwh", "101")
         finally:
@@ -351,3 +360,110 @@ async def test_options_save_during_inflight_refresh_prices_next_reading_once(sta
         await running
         await hass.async_block_till_done()
         assert _history(hass) == pytest.approx((0.25, 0, 1, 0))
+
+
+@pytest.mark.parametrize("mode_after_restart", ["auto", "manual"])
+async def test_pending_tariff_recovers_on_forecast_event_after_restart(start_hass, mock_store, mode_after_restart):
+    async with start_hass(100, 20, "5", with_intervals=True) as (hass, coordinator):
+        await select_mode(hass, "auto")
+        await coordinator.async_refresh()
+        assert priced_actions(hass) == ["charge", "idle"]
+        await hass.async_block_till_done()
+        writes = len(mock_store.save_calls)
+        hass.states.async_set("sensor.epex_spot", "unavailable")
+        await set_tariff(hass, BUY, "0")
+        await coordinator.async_refresh()
+        assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+        assert not priced_actions(hass)
+        assert len(coordinator.charge_hours) == 1
+        assert len(mock_store.save_calls) == writes
+
+    async with start_hass(100, 20, "unavailable") as (hass, coordinator):
+        assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+        if mode_after_restart == "manual":
+            await select_mode(hass, "manual")
+            await coordinator.async_refresh()
+        expected = ["charge", "charge" if mode_after_restart == "auto" else "idle"]
+        updated = asyncio.Event()
+
+        @callback
+        def on_plan(event):
+            if priced_actions(hass) == expected:
+                updated.set()
+
+        unsubscribe = async_track_state_change_event(hass, [PLAN], on_plan)
+        try:
+            publish_intervals(hass)
+            await asyncio.wait_for(updated.wait(), 4)
+        finally:
+            unsubscribe()
+        assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+
+
+async def test_tariff_waits_for_separate_export_forecast(start_hass, mock_store):
+    pricing = {"epex_export_entity": "sensor.sell_back"}
+    async with start_hass(100, 20, "5", with_intervals=True, sell_back="unavailable", pricing=pricing) as (hass, coordinator):
+        await select_mode(hass, "auto")
+        await set_tariff(hass, SELL, "price + 30")
+        assert priced_actions(hass) == ["charge", "idle"]
+        assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+        await hass.async_block_till_done()
+        writes = len(mock_store.save_calls)
+        await coordinator.async_refresh()
+        assert len(mock_store.save_calls) == writes
+
+    async with start_hass(100, 20, "5", with_intervals=True, sell_back="unavailable") as (hass, coordinator):
+        assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+        assert priced_actions(hass) == ["charge", "idle"]
+        assert len(mock_store.save_calls) == writes
+        publish_intervals(hass, "sensor.sell_back")
+        await coordinator.async_refresh()
+        assert priced_actions(hass) == ["discharge", "discharge"]
+        assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+
+
+@pytest.mark.parametrize("partial", [False, True])
+async def test_failed_plan_write_retries_before_acknowledging_tariff(start_hass, mock_store, monkeypatch, partial):
+    pricing = {"epex_export_entity": "sensor.sell_back"} if partial else {}
+    async with start_hass(100, 20, "5", with_intervals=True, sell_back="unavailable", pricing=pricing) as (hass, coordinator):
+        await select_mode(hass, "auto")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert len(mock_store._data["charge_hours"]) == 1
+        with monkeypatch.context() as fault:
+            # HA Store can log a failed write and return normally.
+            fault.setattr(mock_store, "async_save", AsyncMock())
+            await set_tariff(hass, BUY, "0")
+            assert priced_actions(hass) == ["charge", "charge"]
+            assert len(mock_store._data["charge_hours"]) == 1
+            assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+        await coordinator.async_refresh()
+        assert len(mock_store._data["charge_hours"]) == 2
+        if partial:
+            assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+            publish_intervals(hass, "sensor.sell_back")
+            await coordinator.async_refresh()
+        assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+
+
+@pytest.mark.parametrize("older_copy", ["config", "plan"])
+async def test_restore_mismatched_tariff_and_auto_plan(start_hass, mock_store, older_copy):
+    async with start_hass(100, 20, "5", with_intervals=True) as (hass, coordinator):
+        await select_mode(hass, "auto")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        old_config = dict(coordinator.config_entry.data)
+        old_plan = deepcopy(mock_store._data)
+        await set_tariff(hass, BUY, "0")
+        assert priced_actions(hass) == ["charge", "charge"]
+        if older_copy == "config":
+            hass.config_entries.async_update_entry(coordinator.config_entry, data=old_config)
+
+    # A power loss or a backup can leave either store at its earlier revision.
+    if older_copy == "plan":
+        mock_store._data = old_plan
+    async with start_hass(100, 20, "5", with_intervals=True) as (hass, coordinator):
+        expected = ["charge", "idle" if older_copy == "config" else "charge"]
+        assert priced_actions(hass) == expected
+        assert len(mock_store._data["charge_hours"]) == expected.count("charge")
+        assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
