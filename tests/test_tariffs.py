@@ -58,6 +58,7 @@ def start_hass(tmp_path, monkeypatch, unused_tcp_port):
         hass.states.async_set("number.grid_setpoint", "0")
         hass.states.async_set("number.ac_grid_setpoint", "0")
         hass.states.async_set("number.max_grid_feed_in", "5000")
+        hass.states.async_set("number.max_discharge_power", "-1")
         hass.states.async_set("sensor.grid_consumption_kwh", str(import_kwh))
         hass.states.async_set("sensor.grid_feed_in_kwh", str(export_kwh))
         hass.states.async_set("sensor.epex_spot", price, {"unit_of_measurement": "ct/kWh"})
@@ -467,3 +468,106 @@ async def test_restore_mismatched_tariff_and_auto_plan(start_hass, mock_store, o
         assert priced_actions(hass) == expected
         assert len(mock_store._data["charge_hours"]) == expected.count("charge")
         assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+
+
+async def test_tariff_edits_queued_behind_another_store_writer(start_hass, mock_store, monkeypatch):
+    async with start_hass(100, 20, "5", with_intervals=True) as (hass, coordinator):
+        await select_mode(hass, "auto")
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        writes = []
+        save = mock_store.async_save
+
+        async def record_save(payload):
+            writes.append(payload["auto_plan_tariffs"]["import"][1])
+            await save(payload)
+
+        monkeypatch.setattr(mock_store, "async_save", record_save)
+        async with coordinator._store_lock:
+            for value in ("0", "-1", "-2"):
+                await asyncio.wait_for(set_tariff(hass, BUY, value), 2)
+            assert not writes
+        await hass.async_block_till_done()
+        assert writes == ["-2"]
+        assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+
+
+@pytest.mark.parametrize("discharge_limit", ["unused", "held", "new_hold"])
+async def test_watchdog_corrects_ram_during_stalled_tariff_saves(start_hass, mock_store, monkeypatch, discharge_limit):
+    ram = "number.ac_grid_setpoint"
+    limit = "number.max_discharge_power"
+    pricing = {"max_discharge_power_entity": limit} if discharge_limit != "unused" else {}
+    if discharge_limit == "new_hold":
+        pricing["import_price_formula"] = "25"
+    async with start_hass(100, 20, "5", pricing=pricing) as (hass, coordinator):
+        assert await async_setup_component(hass, "persistent_notification", {})
+        hour = dt_util.now().replace(minute=0, second=0, microsecond=0)
+        hass.states.async_set("sensor.epex_spot", "5", {
+            "unit_of_measurement": "ct/kWh",
+            "data": [{"start_time": hour.isoformat(), "price_ct_per_kwh": 5}],
+        })
+        await set_tariff(hass, "text.victron_charge_control_blocked_charging_hours", "")
+        coordinator.action_confirm_seconds = 0
+        coordinator.disable_discharge = discharge_limit != "unused"
+        await select_mode(hass, "auto")
+        # The first evaluation starts confirmation of Charge, the next publishes it.
+        await coordinator.async_refresh()
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert float(hass.states.get(ram).state) == (0 if discharge_limit == "new_hold" else 3000)
+        assert float(hass.states.get(limit).state) == (0 if discharge_limit == "held" else -1)
+
+        started = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        wrote = []
+        save = mock_store.async_save
+
+        async def slow_save(payload):
+            index = len(wrote)
+            wrote.append(payload["auto_plan_tariffs"]["import"][1])
+            if index < len(started):
+                started[index].set()
+                await release[index].wait()
+            await save(payload)
+
+        monkeypatch.setattr(mock_store, "async_save", slow_save)
+        try:
+            await asyncio.wait_for(set_tariff(hass, BUY, "0"), 2)
+            await asyncio.wait_for(started[0].wait(), 2)
+            for value in ("-1", "-2"):
+                await asyncio.wait_for(set_tariff(hass, BUY, value), 2)
+            assert hass.states.get(RATE).attributes["import_price_eur_per_kwh"] == -0.02
+            assert float(hass.states.get(ram).state) == 3000
+            assert float(hass.states.get(limit).state) == (0 if discharge_limit == "held" else -1)
+            assert wrote == ["0"]
+            assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+
+            idle = asyncio.Event()
+
+            @callback
+            def observe_ram(event):
+                if float(event.data["new_state"].state) == 0:
+                    idle.set()
+
+            unsubscribe = async_track_state_change_event(hass, [ram], observe_ram)
+            try:
+                hass.states.async_set("sensor.battery_soc", "unavailable")
+                await asyncio.wait_for(idle.wait(), 3)
+            finally:
+                unsubscribe()
+            assert coordinator.control_mode == "off"
+            assert float(hass.states.get(ram).state) == 0
+            assert float(hass.states.get(limit).state) == -1
+            assert not release[0].is_set()
+
+            release[0].set()
+            await asyncio.wait_for(started[1].wait(), 2)
+            assert wrote == ["0", "-2"]
+            assert coordinator.config_entry.data[CONF_REPLAN_TARIFFS]
+            release[1].set()
+            await hass.async_block_till_done()
+            assert CONF_REPLAN_TARIFFS not in coordinator.config_entry.data
+            assert mock_store._data["auto_plan_tariffs"]["import"][1] == "-2"
+        finally:
+            for gate in release:
+                gate.set()

@@ -151,6 +151,8 @@ from .forecast import SolcastForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+type _TariffSaveRequest = tuple[Mapping[str, Any], dict[str, list[str]] | None]
+
 
 def _configured_tariffs(data: Mapping[str, Any]) -> dict[str, list[str]]:
     """Represent the effective market sources and formulas in the schedule Store."""
@@ -250,6 +252,9 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._set_price_sources(entry.data)
         self._planned_tariffs: dict[str, list[str]] | None = None
         self._tariff_save_failed = False
+        self._tariff_save_request: _TariffSaveRequest | None = None
+        self._tariff_save_task: asyncio.Task[None] | None = None
+        self._discharge_save_deferred = False
         self._max_grid_feed_in_entity: str = entry.data[CONF_MAX_GRID_FEED_IN_ENTITY]
         self._max_discharge_power_entity: str | None = entry.data.get(
             CONF_MAX_DISCHARGE_POWER_ENTITY
@@ -1472,10 +1477,14 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """Deserialize an hour-of-day list, dropping any out-of-range value."""
         return deserialize_hours(raw)
 
-    async def _async_save_schedule(self, *, verify: bool = False) -> bool:
+    async def _async_save_schedule(
+        self, *, verify: bool = False, tariff_request: _TariffSaveRequest | None = None,
+    ) -> bool:
         """Persist plan and release obligation together, in write order."""
         async with self._store_lock:
             if self._store_load_failed:
+                return False
+            if tariff_request is not None and self._tariff_save_request is not tariff_request:
                 return False
             # Build inside the lock so a queued schedule save cannot erase cleanup.
             payload = build_plan_payload(
@@ -1523,8 +1532,8 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         self._schedule_save_tasks.add(task)
         task.add_done_callback(self._schedule_save_tasks.discard)
 
-    async def _async_finish_tariff_replan(self) -> None:
-        """Commit available directions once and retry missing forecasts on later ticks."""
+    def _prepare_tariff_replan(self) -> None:
+        """Apply available intervals under the control lock and queue their checkpoint."""
         entry_data = self.config_entry.data
         if (
             not entry_data.get(CONF_REPLAN_TARIFFS) or not self._discharge_storage_ready
@@ -1532,38 +1541,67 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
             or self._tariffs != _configured_tariffs(entry_data)
         ):
             return
-        if self.control_mode == MODE_AUTO:
-            buy, sell = self._price_intervals()
-            now = dt_util.now()
-            covered = {
-                key: self._tariffs[key] for key, intervals in (("import", buy), ("export", sell))
-                if any(period.end > now for period in intervals)
-            }
-            # The stored directions show which half of a partial plan already survived a save.
-            partial = covered != self._tariffs
-            if not covered or (
-                partial and covered == self._planned_tariffs and not self._tariff_save_failed
-            ):
-                return
-            if not self._apply_auto_schedule(buy, sell, now):
-                return
+        if self.control_mode != MODE_AUTO:
+            if self._tariff_save_request is None or self._tariff_save_request[0] is not entry_data:
+                self._tariff_save_request = (entry_data, None)
+            return
+        buy, sell = self._price_intervals()
+        now = dt_util.now()
+        covered = {
+            key: self._tariffs[key] for key, intervals in (("import", buy), ("export", sell))
+            if any(period.end > now for period in intervals)
+        }
+        # The stored directions show which half of a partial plan already survived a save.
+        partial = covered != self._tariffs
+        queued = self._tariff_save_request
+        if queued is not None and queued[0] is entry_data and queued[1] == covered:
+            return
+        if not covered or (partial and covered == self._planned_tariffs and not self._tariff_save_failed):
+            return
+        if self._apply_auto_schedule(buy, sell, now):
             self._planned_tariffs = covered
-            self._tariff_save_failed = not await self._async_save_schedule(verify=True)
-            if self._tariff_save_failed or partial:
-                return
-        if (
-            self.config_entry.data is entry_data and not self._shutdown_requested
-            and self.hass.state not in (CoreState.stopping, CoreState.final_write)
-        ):
-            data = dict(entry_data)
-            data.pop(CONF_REPLAN_TARIFFS, None)
-            self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            self._tariff_save_request = (entry_data, covered)
+
+    async def _async_persist_tariffs(self) -> None:
+        """Drain the latest tariff checkpoint without delaying the RAM watchdog."""
+        while (request := self._tariff_save_request) is not None:
+            entry_data, covered = request
+            saved = covered is None or await self._async_save_schedule(verify=True, tariff_request=request)
+            if self._tariff_save_request is not request:
+                continue
+            self._tariff_save_request = None
+            self._tariff_save_failed = not saved
+            running = not self._shutdown_requested and self.hass.state not in (
+                CoreState.stopping, CoreState.final_write,
+            )
+            if (
+                saved and running and self.config_entry.data is entry_data
+                and (self.control_mode != MODE_AUTO or covered == self._planned_tariffs == self._tariffs)
+            ):
+                data = dict(entry_data)
+                data.pop(CONF_REPLAN_TARIFFS, None)
+                self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+            if self._discharge_save_deferred:
+                self._discharge_save_deferred = False
+                if saved and running:
+                    self._discharge_last_attempt = None
+                    self.hass.async_create_task(self.async_request_refresh(), eager_start=False)
+
+    def _tariff_save_in_progress(self) -> bool:
+        return self._tariff_save_task is not None and not self._tariff_save_task.done()
+
+    async def _async_save_discharge_obligation(self) -> bool:
+        """Keep the previous release marker until storage is available for verification."""
+        if self._tariff_save_request is not None or self._tariff_save_in_progress():
+            self._discharge_save_deferred = True
+            return False
+        return await self._async_save_schedule(verify=True)
 
     async def _async_load_schedule(self) -> bool:
         """Restore the plan and finish any tariff change that required a reload."""
         await self._async_restore_schedule()
         replan = bool(self.config_entry.data.get(CONF_REPLAN_TARIFFS))
-        await self._async_finish_tariff_replan()
+        self._prepare_tariff_replan()
         return replan
 
     async def _async_restore_schedule(self) -> None:
@@ -2017,7 +2055,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                         continue
                     return
                 self._discharge_release_entity = entity
-                if not await self._async_save_schedule(verify=True):
+                if not await self._async_save_discharge_obligation():
                     self._discharge_last_attempt = (entity, value, self.hass.loop.time())
                     return
                 # Mode, schedule, toggle or configuration may change during disk I/O.
@@ -2040,7 +2078,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 return
             if value == -1:
                 self._discharge_release_entity = None
-                if not await self._async_save_schedule(verify=True):
+                if not await self._async_save_discharge_obligation():
                     self._discharge_release_entity = entity
                     return
                 self._discharge_release_pending = False
@@ -2166,8 +2204,15 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
 
     async def _async_update_data(self) -> ChargeControlData:
         """Serialize event, timer, and direct refreshes with shutdown."""
-        async with self._control_lock:
-            return await self._async_control_update()
+        try:
+            async with self._control_lock:
+                return await self._async_control_update()
+        finally:
+            if (
+                self._tariff_save_request is not None and not self._control_lock.locked()
+                and not self._tariff_save_in_progress()
+            ):
+                self._tariff_save_task = self.hass.async_create_task(self._async_persist_tariffs())
 
     async def _async_control_update(self) -> ChargeControlData:
         """Run the decision engine and apply the setpoint.
@@ -2189,7 +2234,7 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
         """
         if self._shutdown_requested:
             return self.data
-        await self._async_finish_tariff_replan()
+        self._prepare_tariff_replan()
         self._sample_solar_surplus()
         decision = await self._async_reconcile_setpoint()
         if decision is None:
@@ -2627,3 +2672,5 @@ class VictronChargeControlCoordinator(DataUpdateCoordinator[ChargeControlData]):
                 if await self._apply_setpoint(self.idle_setpoint, action=ACTION_IDLE, force=True):
                     self._idle_correction_pending = False
         await asyncio.gather(*self._schedule_save_tasks)
+        if self._tariff_save_task is not None:
+            await self._tariff_save_task
